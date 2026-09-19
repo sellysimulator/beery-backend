@@ -31,6 +31,7 @@ from ...core.bot import bot_for
 from ...core.config_models import DEFAULT_LIMITS, ConfigValidationError, GameConfig
 from ...core.enums import ROLE_ORDER, Role, RoleAssignmentMode, RoomState
 from ...core.game_engine import GameEngine
+from ...services.game_service import get_game_service
 from ...services.room_service import RoomService, merge_config_patch
 from ...services.state_service import get_state_service, next_free_alias
 from ..manager import sio, socket_manager
@@ -166,6 +167,7 @@ async def join(sid: str, data: dict | None = None) -> None:
     room_code: str
     lobby_event: dict
     joined_event: dict
+    reconnected_event: dict | None = None
     resync_events: list[tuple[str, dict]] = []
 
     async with state_svc.lock(room_id):
@@ -194,6 +196,16 @@ async def join(sid: str, data: dict | None = None) -> None:
                 "session_token": participant["session_token"],
                 "role": participant["role"],
                 "is_host": False,
+            }
+            # This is section 12's event (`12-socket-play.md §3.5`): without
+            # it the host is never told a dropped player has come back, and
+            # a pause-on-disconnect looks permanent even though resuming
+            # would work.
+            reconnected_event = {
+                "seq": state_svc.next_seq(room),
+                "alias": alias,
+                "display_name": participant.get("display_name"),
+                "role": participant.get("role"),
             }
 
             if room["state"] in _RUNNING_STATES and participant.get("role"):
@@ -261,6 +273,10 @@ async def join(sid: str, data: dict | None = None) -> None:
 
     await socket_manager.emit_to_room(room_code, "lobby_update", lobby_event)
     await socket_manager.emit_to_sid(sid, "joined", joined_event)
+    if reconnected_event is not None:
+        await socket_manager.emit_to_room(
+            room_code, "participant_reconnected", reconnected_event
+        )
     for event_name, event_payload in resync_events:
         await socket_manager.emit_to_sid(sid, event_name, event_payload)
 
@@ -777,3 +793,10 @@ async def start_game(sid: str, data: dict | None = None) -> None:
     for target_sid, payload in your_state_events:
         await socket_manager.emit_to_sid(target_sid, "your_state", payload)
     await socket_manager.emit_to_sid(host_target, "host_state", host_state_event)
+
+    # Section 12 (`12-socket-play.md §3.2`): play every bot role immediately,
+    # so a bot-filled room does not sit idle in week 1. This runs after the
+    # lock above has been released -- `run_bot_decisions` acquires its own,
+    # and appending it inside that block would deadlock every bot game for
+    # `LOCK_TIMEOUT_SECONDS` on the very first week.
+    await get_game_service().run_bot_decisions(room_code)

@@ -13,6 +13,7 @@ from typing import Any
 
 from ...api.deps import verify_firebase_id_token
 from ..manager import sio, socket_manager
+from .play import on_participant_disconnected
 
 logger = logging.getLogger(__name__)
 
@@ -73,5 +74,12 @@ async def connect(sid: str, environ: dict, auth: Any = None) -> Any:
 
 @sio.event
 async def disconnect(sid: str) -> None:
-    """Drop every per-sid mapping, so the identity map cannot leak."""
+    """Drop every per-sid mapping, so the identity map cannot leak.
+
+    Section 12's room-level cleanup runs first, while `sid_to_room` and
+    `sid_to_alias` still hold this sid -- afterwards there is no room code
+    left to look the participant up by (`12-socket-play.md`, module
+    docstring).
+    """
+    await on_participant_disconnected(sid)
     await socket_manager.disconnect(sid)
