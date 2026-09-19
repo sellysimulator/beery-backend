@@ -28,13 +28,6 @@ from conftest import (
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _state_service_exists() -> bool:
-    try:
-        return importlib.util.find_spec("app.services.state_service") is not None
-    except ModuleNotFoundError:
-        return False
-
-
 # --- AC 13 / FM 1 -----------------------------------------------------------
 
 
@@ -143,16 +136,25 @@ def test_client_fixture_works_with_app_services_absent(client):
 
 def test_naive_unconditional_patch_would_raise(monkeypatch):
     """FM 6: demonstrates the bug the ``fake_redis`` fixture guards against --
-    an unconditional ``monkeypatch.setattr`` on a module section 09 has not
-    written yet."""
-    if _state_service_exists():
-        pytest.skip("section 09 has landed; the unconditional patch now works")
+    an unconditional ``monkeypatch.setattr`` on a module that does not exist.
+
+    Aimed at a module that will never be written, not at
+    ``app.services.state_service``.  Pointed at the real one this skipped
+    itself the moment section 09 landed, which is the expiring-criterion trap
+    wearing a skip instead of a failure: a permanently-skipped test is worse
+    than a deleted one, because it keeps reporting and never reports anything.
+    The mechanism being demonstrated -- that resolving a dotted target imports
+    the module first, so the patch raises before it can patch -- is a property
+    of ``monkeypatch``, not of section 09, so any absent module shows it and
+    goes on showing it for the life of the project.
+    """
+    absent = "app.services.a_module_no_section_will_ever_write"
     with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("app.services.state_service")
+        importlib.import_module(absent)
     # monkeypatch re-raises the same failure (as a plain ImportError) because
     # resolving the dotted target imports the module first.
     with pytest.raises(ImportError):
-        monkeypatch.setattr("app.services.state_service.redis_client", object())
+        monkeypatch.setattr(f"{absent}.redis_client", object())
 
 
 # --- AC 20 ------------------------------------------------------------------

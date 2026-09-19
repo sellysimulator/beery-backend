@@ -13,6 +13,7 @@ message is asserted on.
 from __future__ import annotations
 
 import ast
+import itertools
 import sys
 from pathlib import Path
 from typing import Any
@@ -98,7 +99,9 @@ def climb_to_expected_demand(
     ``observe()``/``decide()``, never by driving an engine.
     """
     x = (target - (1 - theta) * anchor) / theta
-    assert x == int(x), "the worked example must be reachable with an integer observation"
+    assert x == int(
+        x
+    ), "the worked example must be reachable with an integer observation"
     bot.observe(int(x))
     bot.observe(0)  # second call's own value is irrelevant to decide()
 
@@ -327,7 +330,9 @@ def test_ac10_alpha_0_orders_exactly_half_up_expected_demand() -> None:
         (200, 0, 100),
         (0, 0, 0),
     ):
-        order = bot.decide(inventory=inventory, backlog=backlog, supply_line=supply_line)
+        order = bot.decide(
+            inventory=inventory, backlog=backlog, supply_line=supply_line
+        )
         assert order == expected_order
 
 
@@ -452,7 +457,7 @@ def test_ac14_a_full_36_week_all_bot_game_completes_without_violating_invariants
     # Invariant 6: accumulated cost is monotonically non-decreasing per role.
     for role in ROLE_ORDER:
         costs = [r.cumulative_cost for r in engine.history if r.role is role]
-        assert all(a <= b + 1e-9 for a, b in zip(costs, costs[1:]))
+        assert all(x <= y + 1e-9 for x, y in itertools.pairwise(costs))
 
 
 def test_ac15_the_bot_reproduces_bullwhip_amplification() -> None:
@@ -477,7 +482,9 @@ def test_ac16_beta_1_damps_the_bullwhip_ratio_for_every_role() -> None:
     high_beta_engine = run_all_bot_game(high_beta_config, SEED)
 
     low_stats = compute_stats(
-        low_beta_engine.history, low_beta_engine.demand_series, low_beta_engine.weeks_played
+        low_beta_engine.history,
+        low_beta_engine.demand_series,
+        low_beta_engine.weeks_played,
     )
     high_stats = compute_stats(
         high_beta_engine.history,
@@ -565,7 +572,9 @@ def test_fm2_backlog_increases_the_order() -> None:
     order_no_backlog = bot_no_backlog.decide(inventory=12, backlog=0, supply_line=8)
 
     bot_with_backlog = bot_for(Role.WHOLESALER, config)
-    order_with_backlog = bot_with_backlog.decide(inventory=12, backlog=14, supply_line=8)
+    order_with_backlog = bot_with_backlog.decide(
+        inventory=12, backlog=14, supply_line=8
+    )
 
     assert order_no_backlog == 11
     assert order_with_backlog == 15
@@ -582,12 +591,16 @@ def test_fm3_beta_0_and_beta_1_give_different_answers_on_the_backlogged_state() 
 
     beta_0_config = with_bot(base, beta=0.0)
     bot_0 = bot_for(Role.WHOLESALER, beta_0_config)
-    climb_to_expected_demand(bot_0, target=8.0, theta=beta_0_config.bot.theta, anchor=4.0)
+    climb_to_expected_demand(
+        bot_0, target=8.0, theta=beta_0_config.bot.theta, anchor=4.0
+    )
     order_beta_0 = bot_0.decide(inventory=0, backlog=14, supply_line=22)
 
     beta_1_config = with_bot(base, beta=1.0)
     bot_1 = bot_for(Role.WHOLESALER, beta_1_config)
-    climb_to_expected_demand(bot_1, target=8.0, theta=beta_1_config.bot.theta, anchor=4.0)
+    climb_to_expected_demand(
+        bot_1, target=8.0, theta=beta_1_config.bot.theta, anchor=4.0
+    )
     order_beta_1 = bot_1.decide(inventory=0, backlog=14, supply_line=22)
 
     assert order_beta_0 == 23
@@ -648,7 +661,7 @@ def test_fm6_four_bots_from_one_config_do_not_share_memory() -> None:
     bots[Role.FACTORY].observe(4)
 
     values = {role: bots[role].memory.expected_demand for role in ROLE_ORDER}
-    assert len(set(round(v, 6) for v in values.values())) == 4
+    assert len({round(v, 6) for v in values.values()}) == 4
 
 
 # --------------------------------------------------------------------------
