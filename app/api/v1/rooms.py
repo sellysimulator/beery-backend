@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import hmac
 import logging
-from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, status
 
@@ -28,6 +27,7 @@ from ...schemas.room import (
     RoomCreateResponse,
     RoomStatusResponse,
 )
+from ...services.config_merge import merge_config_patch
 from ...services.display_name import sanitise_display_name
 from ...services.state_service import get_state_service
 
@@ -72,11 +72,6 @@ _CONFIGURABLE_STATES = {
     RoomState.READY.value,
 }
 
-# Top-level config keys that are merged one level deeper than a plain
-# overwrite (§3.3 step 4). `demand` is handled separately because a change
-# of `kind` replaces the whole block rather than merging into it.
-_DEEP_MERGE_KEYS = ("roles", "visibility", "bot")
-
 
 def _check_host_secret(room: dict, provided: str | None) -> None:
     """Raise 403 unless `provided` matches the room's secret, timing-safely.
@@ -94,54 +89,10 @@ def _check_host_secret(room: dict, provided: str | None) -> None:
         )
 
 
-def _deep_merge_dicts(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
-    """Recursively merge `patch` over `base`, for plain JSON dicts.
-
-    A key present in `patch` whose value is itself a dict, and whose `base`
-    counterpart is also a dict, is merged recursively rather than replaced
-    wholesale -- this is what keeps `PUT {"roles": {"RETAILER": {...}}}`
-    from clobbering the other three roles, and the untouched fields of
-    RETAILER itself (§5 failure mode 7).
-    """
-    merged = dict(base)
-    for key, value in patch.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _deep_merge_dicts(merged[key], value)
-        else:
-            merged[key] = value
-    return merged
-
-
-def _merge_config(stored: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
-    """Merge a host's partial config over the stored one (§3.3 step 4).
-
-    Deep for `roles`, `visibility` and `bot`. `demand` is the one exception:
-    when the patch changes `kind`, the whole `demand` object is replaced --
-    not merged -- with whatever the patch supplied for the new kind, because
-    the parameters of one generator are meaningless to another (a leftover
-    `step_week` on a `SEASONAL` block, for instance). `GameConfig.
-    from_host_input` fills in any field the patch left unspecified with that
-    kind's own default, so this never has to know those defaults itself.
-    """
-    merged = dict(stored)
-    for key, value in patch.items():
-        if key == "demand" and isinstance(value, dict):
-            existing = stored.get("demand")
-            existing_kind = existing.get("kind") if isinstance(existing, dict) else None
-            new_kind = value.get("kind", existing_kind)
-            if new_kind != existing_kind:
-                merged["demand"] = dict(value)
-            else:
-                merged["demand"] = _deep_merge_dicts(existing or {}, value)
-        elif (
-            key in _DEEP_MERGE_KEYS
-            and isinstance(value, dict)
-            and isinstance(stored.get(key), dict)
-        ):
-            merged[key] = _deep_merge_dicts(stored[key], value)
-        else:
-            merged[key] = value
-    return merged
+# The merge itself lives in `app/services/config_merge.py`, so that section
+# 11's `config_update` -- which must merge identically (`11 §3.4`) -- can call
+# the same function instead of carrying a second copy of it.
+_merge_config = merge_config_patch
 
 
 @router.post("/create", response_model=RoomCreateResponse)
