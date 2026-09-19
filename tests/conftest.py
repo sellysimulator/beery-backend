@@ -13,6 +13,17 @@ Ported from ``Selly_Backend/tests/conftest.py`` as required by
 * ``client`` -- ``TestClient(app)`` that **depends on nothing**, so no route
   test drags the Redis patch (or the lifespan) in behind it.
 * ``lifespan_client`` -- ``with TestClient(app) as c`` for startup tests.
+* ``firebase_tokens`` -- a ``{token: claims}`` dict installed at the
+  ``firebase_admin`` SDK boundary, so ``init_firebase``,
+  ``verify_firebase_id_token`` and ``resolve_identity`` run **un-mocked** on
+  top of it and the reject path proves something.
+* ``fake_socket_manager`` -- a ``FakeSocketManager`` recording every emit as
+  ``(target, event, data)`` instead of touching transport.
+
+``firebase_tokens`` and ``fake_socket_manager`` live here, in the shared file,
+because sections 02, 11 and 12 all need them and **D19** forbids a later
+section editing this one: a per-section copy would be three implementations of
+one fake, drifting apart.
 
 It also neutralises ``Beery_Backend/.env`` before ``app`` is ever imported --
 see ``TEST_ENVIRONMENT`` below.
@@ -22,12 +33,14 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import os
 import shutil
 import sys
 import uuid
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -183,6 +196,241 @@ def lifespan_client():
 
     with TestClient(app) as c:
         yield c
+
+
+# --- Firebase (01-backend-skeleton.md §4, 00-conventions.md §5) -------------
+
+# Shaped like a real service account file so that anything which parses it
+# before handing it to the SDK sees what it expects.  It is not a key: the
+# private_key field is a placeholder and the fake never signs anything.
+FAKE_SERVICE_ACCOUNT_JSON = json.dumps(
+    {
+        "type": "service_account",
+        "project_id": "beery-test",
+        "private_key_id": "0" * 40,
+        "private_key": (
+            "-----BEGIN PRIVATE KEY-----\nnot-a-real-key\n-----END PRIVATE KEY-----\n"
+        ),
+        "client_email": "beery-test@beery-test.iam.gserviceaccount.com",
+        "client_id": "0" * 21,
+        "token_uri": "https://oauth2.googleapis.com/token",
+    }
+)
+
+
+class _FakeFirebaseApp:
+    """What the faked ``firebase_admin.initialize_app`` hands back."""
+
+    def __init__(self, name: str = "[DEFAULT]", credential: Any = None) -> None:
+        self.name = name
+        self.credential = credential
+        self.project_id = "beery-test"
+
+
+class _FakeCertificate:
+    """Stand-in for ``firebase_admin.credentials.Certificate``."""
+
+    def __init__(self, cert: Any) -> None:
+        self.cert = cert
+
+
+class FirebaseTokens(dict):
+    """A ``{token: claims}`` mapping standing in for Firebase verification.
+
+    A token present in the mapping verifies and yields its claims; **any**
+    other token fails verification with the SDK's own
+    ``InvalidIdTokenError``, which is what the real SDK raises for a bad or
+    expired token.  The starting state is empty **and unconfigured**, so
+    nothing is ever trusted by accident of test ordering.
+
+    A test that needs Firebase configured calls ``configure()``; one that
+    wants the unconfigured path again calls ``unconfigure()``.
+    """
+
+    def __init__(self, set_service_account: Callable[[str], None]) -> None:
+        super().__init__()
+        self._set_service_account = set_service_account
+        self.certificate_calls: list[Any] = []
+        self.initialize_app_calls: list[Any] = []
+        self.verify_calls: list[Any] = []
+
+    def configure(self, service_account_json: str = FAKE_SERVICE_ACCOUNT_JSON) -> str:
+        """Put ``settings.FIREBASE_SERVICE_ACCOUNT_JSON`` into a configured
+        state and return what it was set to."""
+        self._set_service_account(service_account_json)
+        return service_account_json
+
+    def unconfigure(self) -> None:
+        self._set_service_account("")
+
+    def add(self, token: str, **claims: Any) -> dict:
+        """Register ``token`` as verifiable, with ``claims`` (normally a
+        ``uid``)."""
+        self[token] = dict(claims)
+        return self[token]
+
+
+@pytest.fixture()
+def firebase_tokens(monkeypatch) -> FirebaseTokens:
+    """Fake Firebase at the SDK boundary, never at Beery's own boundary.
+
+    ``auth.verify_id_token``, ``credentials.Certificate`` and
+    ``initialize_app`` are replaced, plus
+    ``settings.FIREBASE_SERVICE_ACCOUNT_JSON``.  Everything Beery wrote on top
+    -- ``init_firebase``, ``verify_firebase_id_token``, ``resolve_identity``
+    -- runs as real, un-mocked code; mocking those instead would make the
+    reject path prove nothing.
+
+    Like ``fake_redis``, it tolerates the module it reaches for not existing
+    yet: ``app/core/firebase.py`` is section 02's.
+    """
+    firebase_admin = pytest.importorskip("firebase_admin")
+    firebase_auth = importlib.import_module("firebase_admin.auth")
+    firebase_credentials = importlib.import_module("firebase_admin.credentials")
+
+    from app.config import settings
+
+    def _set_service_account(value: str) -> None:
+        monkeypatch.setattr(
+            settings, "FIREBASE_SERVICE_ACCOUNT_JSON", value, raising=False
+        )
+
+    tokens = FirebaseTokens(_set_service_account)
+
+    def _verify_id_token(id_token: Any, *args: Any, **kwargs: Any) -> dict:
+        tokens.verify_calls.append(id_token)
+        try:
+            claims = tokens[id_token]
+        except (KeyError, TypeError):
+            raise _invalid_id_token_error(firebase_auth) from None
+        return dict(claims)
+
+    def _certificate(cert: Any) -> _FakeCertificate:
+        tokens.certificate_calls.append(cert)
+        return _FakeCertificate(cert)
+
+    def _initialize_app(
+        credential: Any = None, options: Any = None, name: str = "[DEFAULT]"
+    ) -> _FakeFirebaseApp:
+        tokens.initialize_app_calls.append(credential)
+        return _FakeFirebaseApp(name, credential)
+
+    # Unconfigured by default -- and pinned, so a `.env` entry or an earlier
+    # test cannot leave Firebase configured behind our back.
+    _set_service_account("")
+    monkeypatch.setattr(firebase_auth, "verify_id_token", _verify_id_token)
+    monkeypatch.setattr(firebase_credentials, "Certificate", _certificate)
+    monkeypatch.setattr(firebase_admin, "initialize_app", _initialize_app)
+
+    try:
+        firebase_module = importlib.import_module("app.core.firebase")
+    except ModuleNotFoundError:
+        pass  # section 02 has not landed yet
+    else:
+        # Covers a `from firebase_admin.auth import verify_id_token` style
+        # re-export, which patching the SDK module alone would not reach.
+        if hasattr(firebase_module, "verify_id_token"):
+            monkeypatch.setattr(firebase_module, "verify_id_token", _verify_id_token)
+
+    return tokens
+
+
+def _invalid_id_token_error(firebase_auth: Any) -> Exception:
+    """The error the real SDK raises for a bad or expired token."""
+    error_cls = getattr(firebase_auth, "InvalidIdTokenError", None)
+    message = "Fake Firebase: this token was not registered with firebase_tokens"
+    if error_cls is None:  # pragma: no cover - the SDK always defines it
+        return ValueError(message)
+    try:
+        return error_cls(message)
+    except TypeError:  # pragma: no cover - defensive
+        return ValueError(message)
+
+
+# --- Socket.IO (01-backend-skeleton.md §4) ---------------------------------
+
+
+class FakeSocketManager:
+    """Stand-in for ``app.sockets.manager.socket_manager``.
+
+    Mirrors the frozen ``SocketManager`` surface and records every emit as
+    ``(target, event, data)`` instead of touching transport, so a handler runs
+    as real code against fakes for its two I/O dependencies.  ``target`` is
+    the room id for ``emit_to_room`` and the sid for ``emit_to_sid``.
+    """
+
+    def __init__(self) -> None:
+        self.sid_to_room: dict[str, str] = {}
+        self.sid_to_alias: dict[str, str] = {}
+        self.sid_to_identity: dict[str, str] = {}
+        self.emits: list[tuple[str, str, Any]] = []
+        self.room_emits: list[tuple[str, str, Any]] = []
+        self.sid_emits: list[tuple[str, str, Any]] = []
+
+    async def connect(self, sid: str, environ: dict) -> None:
+        return None
+
+    async def disconnect(self, sid: str) -> None:
+        self.sid_to_room.pop(sid, None)
+        self.sid_to_alias.pop(sid, None)
+        self.sid_to_identity.pop(sid, None)
+
+    async def join_room(self, sid: str, room_id: str, alias: str) -> None:
+        self.sid_to_room[sid] = room_id
+        self.sid_to_alias[sid] = alias
+
+    async def leave_room(self, sid: str, room_id: str) -> None:
+        if self.sid_to_room.get(sid) == room_id:
+            self.sid_to_room.pop(sid, None)
+            self.sid_to_alias.pop(sid, None)
+
+    async def emit_to_room(self, room_id: str, event: str, data: Any) -> None:
+        record = (room_id, event, data)
+        self.emits.append(record)
+        self.room_emits.append(record)
+
+    async def emit_to_sid(self, sid: str, event: str, data: Any) -> None:
+        record = (sid, event, data)
+        self.emits.append(record)
+        self.sid_emits.append(record)
+
+    # -- read helpers -------------------------------------------------------
+
+    def emits_for(self, target: str) -> list[tuple[str, Any]]:
+        """``[(event, data), ...]`` for one room id or sid."""
+        return [(event, data) for who, event, data in self.emits if who == target]
+
+    def events_for(self, target: str) -> list[str]:
+        return [event for event, _data in self.emits_for(target)]
+
+    def clear(self) -> None:
+        self.emits.clear()
+        self.room_emits.clear()
+        self.sid_emits.clear()
+
+
+@pytest.fixture()
+def fake_socket_manager(monkeypatch) -> FakeSocketManager:
+    """A ``FakeSocketManager`` patched over the ``socket_manager`` singleton.
+
+    Every already-imported ``app.*`` module holding a reference to the
+    singleton is repointed at the fake, because a handler that did
+    ``from ..manager import socket_manager`` holds its own binding.  Like
+    ``fake_redis``, it tolerates the module not existing yet.
+    """
+    fsm = FakeSocketManager()
+    try:
+        manager_module = importlib.import_module("app.sockets.manager")
+    except ModuleNotFoundError:
+        return fsm  # a section-01-only checkout must still collect
+
+    monkeypatch.setattr(manager_module, "socket_manager", fsm, raising=False)
+    for name, module in list(sys.modules.items()):
+        if not name.startswith("app.") or module is None or module is manager_module:
+            continue
+        if hasattr(module, "socket_manager"):
+            monkeypatch.setattr(module, "socket_manager", fsm, raising=False)
+    return fsm
 
 
 @pytest.fixture(scope="session")

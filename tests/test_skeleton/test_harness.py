@@ -1,21 +1,29 @@
 """The test harness itself (01-backend-skeleton.md §4).
 
-Acceptance criteria 13, 19, 20 and failure modes 1, 2 and 6.  These tests
-exist because a harness that is wrong here makes *every* other test in the
-build error before any implementation is even wrong.
+Acceptance criteria 13, 19, 20 and failure modes 1, 2 and 6, plus the two
+shared fakes §4 hands to sections 02, 11 and 12 -- ``firebase_tokens`` and
+``fake_socket_manager``.  These tests exist because a harness that is wrong
+here makes *every* other test in the build error before any implementation is
+even wrong.
 """
 
 from __future__ import annotations
 
 import importlib
 import importlib.util
+import json
 import subprocess
 import sys
 import textwrap
 from pathlib import Path
 
 import pytest
-from conftest import FakeRedis, _FakeLock
+from conftest import (
+    FakeRedis,
+    FakeSocketManager,
+    FirebaseTokens,
+    _FakeLock,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -121,11 +129,16 @@ def test_client_fixture_does_not_depend_on_fake_redis(request, client):
 
 def test_client_fixture_works_with_app_services_absent(client):
     """AC 19 / FM 6: a test requesting ``client`` passes even with
-    ``app/services/`` not created at all."""
-    if (PROJECT_ROOT / "app" / "services").exists():
-        pytest.skip("app/services/ now exists; the bootstrap window has closed")
+    ``app/services/`` not created at all.
+
+    Once section 09 lands, ``app/services/`` exists and this can no longer be
+    observed directly -- which is why the guarantee is *also* enforced
+    structurally by ``test_client_fixture_does_not_depend_on_fake_redis``,
+    which never goes stale.  Serving a route through the fixture stays
+    meaningful either way, so this does not skip itself into silence."""
     response = client.get("/api/v1/health")
     assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
 
 
 def test_naive_unconditional_patch_would_raise(monkeypatch):
@@ -208,3 +221,139 @@ def test_two_fake_redis_instances_do_not_share_state(fake_redis):
     """Each test gets its own store; nothing leaks between rooms or tests."""
     other = FakeRedis()
     assert other is not fake_redis
+
+
+# --- the shared Firebase fake (§4) ------------------------------------------
+
+
+def test_firebase_tokens_starts_empty_and_unconfigured(firebase_tokens):
+    """§4: "The default state is **unconfigured**, so nothing is ever trusted
+    by accident of test ordering"."""
+    from app.config import settings
+
+    assert isinstance(firebase_tokens, FirebaseTokens)
+    assert firebase_tokens == {}
+    assert settings.FIREBASE_SERVICE_ACCOUNT_JSON == ""
+
+
+def test_firebase_tokens_configure_and_unconfigure(firebase_tokens):
+    from app.config import settings
+
+    configured = firebase_tokens.configure()
+    assert settings.FIREBASE_SERVICE_ACCOUNT_JSON == configured
+    assert json.loads(configured)["project_id"]
+
+    firebase_tokens.unconfigure()
+    assert settings.FIREBASE_SERVICE_ACCOUNT_JSON == ""
+
+
+def test_firebase_tokens_verifies_a_registered_token(firebase_tokens):
+    """§4: the fake is installed at ``auth.verify_id_token``, the SDK
+    boundary -- so everything Beery wrote on top of it runs un-mocked."""
+    from firebase_admin import auth
+
+    firebase_tokens.add("good-token", uid="firebase-uid-1", email="a@example.com")
+
+    claims = auth.verify_id_token("good-token")
+
+    assert claims["uid"] == "firebase-uid-1"
+    assert claims["email"] == "a@example.com"
+
+
+def test_firebase_tokens_rejects_an_unregistered_token(firebase_tokens):
+    """§4: "Any token **not** in the dict fails verification, matching the
+    real SDK for a bad or expired token" -- and it fails with the SDK's own
+    error, not a generic one, so a handler's ``except`` clause is exercised
+    exactly as it will be in production."""
+    from firebase_admin import auth
+
+    firebase_tokens.add("good-token", uid="firebase-uid-1")
+
+    with pytest.raises(auth.InvalidIdTokenError):
+        auth.verify_id_token("some-other-token")
+
+
+def test_firebase_tokens_records_sdk_initialisation(firebase_tokens):
+    """§4: ``credentials.Certificate`` and ``initialize_app`` are faked too,
+    so an init path can run without a service account and without a
+    network."""
+    import firebase_admin
+    from firebase_admin import credentials
+
+    cert = credentials.Certificate(json.loads(firebase_tokens.configure()))
+    app_handle = firebase_admin.initialize_app(cert)
+
+    assert firebase_tokens.certificate_calls
+    assert firebase_tokens.initialize_app_calls == [cert]
+    assert app_handle is not None
+
+
+def test_firebase_tokens_does_not_leak_between_tests(firebase_tokens):
+    """The reject path is only worth something if the dict really is empty at
+    the start of every test."""
+    from app.config import settings
+
+    assert firebase_tokens == {}
+    assert settings.FIREBASE_SERVICE_ACCOUNT_JSON == ""
+
+
+# --- the shared Socket.IO fake (§4) -----------------------------------------
+
+
+def test_fake_socket_manager_is_patched_over_the_singleton(fake_socket_manager):
+    """§4: handlers run as real code against fakes for their two I/O
+    dependencies, so the singleton they reach for must be the fake."""
+    import app.sockets.manager as manager_module
+
+    assert isinstance(fake_socket_manager, FakeSocketManager)
+    assert manager_module.socket_manager is fake_socket_manager
+
+
+@pytest.mark.asyncio
+async def test_fake_socket_manager_records_every_emit(fake_socket_manager):
+    """§4: "recording every emit as ``(target, event, data)`` instead of
+    touching transport"."""
+    await fake_socket_manager.emit_to_room("ABCD", "room_state", {"week": 1})
+    await fake_socket_manager.emit_to_sid("sid-1", "your_state", {"inventory": 12})
+
+    assert fake_socket_manager.emits == [
+        ("ABCD", "room_state", {"week": 1}),
+        ("sid-1", "your_state", {"inventory": 12}),
+    ]
+    assert fake_socket_manager.room_emits == [("ABCD", "room_state", {"week": 1})]
+    assert fake_socket_manager.sid_emits == [("sid-1", "your_state", {"inventory": 12})]
+    assert fake_socket_manager.emits_for("ABCD") == [("room_state", {"week": 1})]
+    assert fake_socket_manager.events_for("sid-1") == ["your_state"]
+
+    fake_socket_manager.clear()
+    assert fake_socket_manager.emits == []
+
+
+@pytest.mark.asyncio
+async def test_fake_socket_manager_mirrors_the_frozen_surface(fake_socket_manager):
+    """§2: the fake stands in for ``SocketManager``, so it tracks the same
+    three maps."""
+    await fake_socket_manager.connect("sid-1", {})
+    await fake_socket_manager.join_room("sid-1", "ABCD", "P1")
+
+    assert fake_socket_manager.sid_to_room["sid-1"] == "ABCD"
+    assert fake_socket_manager.sid_to_alias["sid-1"] == "P1"
+
+    await fake_socket_manager.leave_room("sid-1", "ABCD")
+    assert "sid-1" not in fake_socket_manager.sid_to_room
+
+    await fake_socket_manager.join_room("sid-2", "ABCD", "P2")
+    await fake_socket_manager.disconnect("sid-2")
+    assert fake_socket_manager.sid_to_room == {}
+    assert fake_socket_manager.sid_to_alias == {}
+
+
+def test_shared_fakes_compose_with_the_client_fixture(
+    client, fake_redis, firebase_tokens, fake_socket_manager
+):
+    """§4: a test that needs several of them simply requests several of them;
+    none of the four drags another in behind it."""
+    assert client.get("/api/v1/health").status_code == 200
+    assert isinstance(fake_redis, FakeRedis)
+    assert firebase_tokens == {}
+    assert fake_socket_manager.emits == []
