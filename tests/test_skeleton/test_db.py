@@ -10,14 +10,26 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import Integer, MetaData
-from sqlalchemy.orm import Mapped, Session, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 from app.db.base import Base
 from app.models.base import Base as ModelsBase
 from app.models.base import TimestampMixin, utcnow
 
 
-class _TimestampProbe(Base, TimestampMixin):
+class _ProbeBase(DeclarativeBase):
+    """A registry of this test file's own.
+
+    The probe below used to be mapped onto the application's ``Base``, which
+    put a ``tests_timestamp_probe`` table into ``Base.metadata`` for the whole
+    session.  Nothing noticed until section 13 shipped a migration: from then
+    on, every comparison of the live schema against the declared metadata --
+    including Alembic's autogenerate-is-empty check -- saw a table that exists
+    in no database and never will.  A separate registry exercises the mixin
+    exactly the same way without writing into the application's metadata."""
+
+
+class _TimestampProbe(_ProbeBase, TimestampMixin):
     """A throwaway mapped class, declared here so that AC 9 is asserted the
     way a later section's real model would inherit the mixin."""
 

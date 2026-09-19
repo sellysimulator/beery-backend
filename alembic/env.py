@@ -18,6 +18,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.config import settings
 from app.db.base import Base
 
+# Populates `Base.metadata`: importing the package imports every model module.
+# Without this the metadata is empty here and autogenerate would propose
+# dropping every table that exists.
+import app.models  # noqa: E402,F401
+
 config = context.config
 
 if config.config_file_name is not None:

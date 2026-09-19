@@ -149,9 +149,17 @@ def test_asyncio_is_not_a_declared_dependency():
 # --- AC 12 ------------------------------------------------------------------
 
 
-def test_alembic_upgrade_head_creates_only_the_version_table():
-    """AC 12 / §3.7: ``alembic upgrade head`` runs against an empty database
-    and creates only ``alembic_version`` -- section 01 writes no migration."""
+def test_alembic_upgrade_head_creates_exactly_the_declared_tables():
+    """AC 12 / §3.7: ``alembic upgrade head`` runs against an empty database and
+    creates ``alembic_version`` plus exactly the tables the models declare.
+
+    This asserted ``only alembic_version`` until section 13 shipped the first
+    revision, which made it true for exactly as long as there were no
+    migrations -- the same expiring-criterion trap as section 16's empty route
+    registry.  Comparing against ``Base.metadata`` instead holds for every
+    later revision as well, and still catches the thing this test is for: a
+    migration that creates a table nobody declared, or fails to create one
+    somebody did."""
     pytest.importorskip("testcontainers.mysql")
     if not _docker_available():
         pytest.skip("Docker is not available; cannot start a throwaway MySQL")
@@ -160,7 +168,7 @@ def test_alembic_upgrade_head_creates_only_the_version_table():
 
     MySqlContainer = _container_class("mysql", "MySqlContainer")
 
-    with MySqlContainer("mysql:8.0") as mysql:
+    with MySqlContainer("mysql:8.4") as mysql:
         env = dict(os.environ)
         env.update(
             {
@@ -193,7 +201,10 @@ def test_alembic_upgrade_head_creates_only_the_version_table():
         finally:
             engine.dispose()
 
-    assert tables == {"alembic_version"}
+    import app.models  # noqa: F401  -- populates Base.metadata
+    from app.db.base import Base
+
+    assert tables == {"alembic_version"} | set(Base.metadata.tables)
 
 
 # --- AC 21 ------------------------------------------------------------------
