@@ -561,17 +561,39 @@ def test_factory_only_columns_are_null_for_the_other_three_roles(
 # --- failure mode 8 --------------------------------------------------------
 
 
-def test_room_code_is_indexed_but_not_unique(db: Connection) -> None:
+def test_room_code_is_indexed_but_not_unique_on_its_own(db: Connection) -> None:
     """§2.2 and failure mode 8 -- room codes are recycled once a room
-    expires, so two games may share one."""
-    room_code_indexes = [
-        row for row in indexes(db, "games") if row["COLUMN_NAME"] == "room_code"
-    ]
-    assert room_code_indexes, "games.room_code is not indexed"
-    assert all(row["NON_UNIQUE"] == 1 for row in room_code_indexes)
+    expires, so two games may share one.
 
-    first = insert_game(db, room_code="BEER01")
-    second = insert_game(db, room_code="BEER01")
+    "Not unique" means **not unique on its own**. Section 14 added
+    ``UNIQUE (room_code, started_at)`` as the database-level backstop for
+    ``persist_game``'s idempotency (``14 §3.3``), so ``room_code`` is now a
+    member column of a unique index -- while remaining non-unique by itself,
+    which is the property this test exists to protect. The earlier form
+    asserted that *no* index touching ``room_code`` was unique, which no
+    schema carrying that constraint can satisfy, and which would have read as
+    a reason not to add the backstop at all.
+    """
+    rows = indexes(db, "games")
+    room_code_indexes = [row for row in rows if row["COLUMN_NAME"] == "room_code"]
+    assert room_code_indexes, "games.room_code is not indexed"
+
+    sizes: dict[str, int] = {}
+    for row in rows:
+        sizes[row["INDEX_NAME"]] = sizes.get(row["INDEX_NAME"], 0) + 1
+    single_column_unique = [
+        row["INDEX_NAME"]
+        for row in room_code_indexes
+        if row["NON_UNIQUE"] == 0 and sizes[row["INDEX_NAME"]] == 1
+    ]
+    assert (
+        not single_column_unique
+    ), f"games.room_code must not be unique on its own: {single_column_unique}"
+
+    # Two games may share a room code, so long as they did not start in the
+    # same second -- which two real games in one room never do.
+    first = insert_game(db, room_code="BEER01", started_at="2026-01-02 03:04:05")
+    second = insert_game(db, room_code="BEER01", started_at="2026-01-09 03:04:05")
     assert first != second
     assert (
         db.execute(

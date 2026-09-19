@@ -94,7 +94,19 @@ class Game(Base, TimestampMixin):
     # Denormalised so a match-history listing does not have to sum `weeks`.
     chain_total_cost: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
 
-    __table_args__ = (Index("ix_games_host_user_id", "host_user_id"),)
+    # Authorised late addition by section 14 (`14-end-of-game-persistence.md
+    # §3.3`): the documented idempotency key, `(room_code, started_at)`, as a
+    # real database constraint rather than a check-then-insert with no
+    # backstop. `started_at` has no fractional seconds (MySQL `DATETIME`),
+    # and `persist_game` truncates to whole seconds before comparing, so two
+    # games in the same room starting in the same microsecond -- not a case
+    # to design for -- is the only thing this could ever reject in error.
+    __table_args__ = (
+        Index("ix_games_host_user_id", "host_user_id"),
+        UniqueConstraint(
+            "room_code", "started_at", name="uq_games_room_code_started_at"
+        ),
+    )
 
 
 class GameConfigRow(Base, TimestampMixin):
@@ -229,6 +241,13 @@ class Participant(Base, TimestampMixin):
     NULL for a bot. `guest_identity` holds the server-only `guest_<uuid4>`
     string -- it is what attribution needs and what section 14's guest-claim
     flow looks the row up by. It is never returned by any endpoint.
+
+    `bullwhip_ratio` is an authorised late addition by section 14
+    (`14-end-of-game-persistence.md §3.5a`): the one `RoleStats` figure that is
+    persisted twice, because `user_stats.bullwhip_avg` needs it in a single
+    grouped SQL query and recomputing `Var(orders)/Var(demand)` in SQL would be
+    a second implementation of `population_variance`. NULL for a bot, for the
+    host, and for a `CONSTANT`-demand game.
     """
 
     __tablename__ = "participants"
@@ -252,6 +271,11 @@ class Participant(Base, TimestampMixin):
         nullable=True,
     )
     guest_identity: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # A ratio, so precision matters more than range (**D12**); NULL for a bot,
+    # the host, or a CONSTANT-demand game (`14 §3.5a`).
+    bullwhip_ratio: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 4), nullable=True
+    )
 
     __table_args__ = (
         Index("ix_participants_game_id_role", "game_id", "role"),

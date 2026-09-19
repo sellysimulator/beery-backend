@@ -73,14 +73,40 @@ def test_upgrade_head_on_an_empty_database_creates_exactly_nine_tables(
     assert len(_version_rows(blank_database)) == 1
 
 
-def test_there_is_exactly_one_revision() -> None:
-    """§4.1 -- one revision, ``0001_initial_schema``."""
+def test_the_revision_chain_is_linear_and_starts_at_the_initial_schema() -> None:
+    """§4.1 -- a single linear chain rooted at ``0001_initial_schema``.
+
+    This deliberately does **not** assert the exact list of revision files.
+    It used to (``scripts == ["0001_initial_schema.py"]``), which made it a
+    criterion that expires the instant any later section changes the schema
+    -- and it did: section 14 folded a column into ``0001`` rather than add
+    ``0002`` purely to keep this green, which is the tail wagging the dog.
+    A migration chain grows by design; what must stay true is that it is
+    one chain with one head and no gaps, so that is what is asserted here.
+    """
     scripts = sorted(
         path.name
         for path in ALEMBIC_VERSIONS.glob("*.py")
         if path.name != "__init__.py"
     )
-    assert scripts == ["0001_initial_schema.py"]
+    assert scripts, "there must be at least the initial revision"
+    assert scripts[0] == "0001_initial_schema.py"
+
+    numbers = [int(name[:4]) for name in scripts]
+    assert numbers == list(
+        range(1, len(numbers) + 1)
+    ), f"revision numbers must be contiguous from 0001, got {scripts}"
+
+    # Exactly one head: every `down_revision` but the first names its
+    # predecessor, and no two revisions claim the same parent.
+    parents = []
+    for name in scripts:
+        text_of = (ALEMBIC_VERSIONS / name).read_text()
+        match = re.search(r"^down_revision[^=]*=\s*(.+)$", text_of, re.MULTILINE)
+        assert match, f"{name} declares no down_revision"
+        parents.append(match.group(1).strip().strip("\"'"))
+    assert parents[0] in {"None", "none"}, "0001 must be the root"
+    assert len(set(parents)) == len(parents), f"branched history: {parents}"
 
 
 # --- criterion 2 -----------------------------------------------------------

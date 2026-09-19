@@ -29,8 +29,11 @@ from ..core.bot import bot_for
 from ..core.enums import ROLE_ORDER, Role, RoomState
 from ..core.game_engine import GameEngine, GamePhase, WeekRecord
 from ..core.stats import GameStats, compute_stats
+from ..db import session as db_session
 from ..sockets.manager import socket_manager
+from .db_service import build_snapshot, get_db_service
 from .state_service import StateService, get_state_service
+from .stats_service import get_stats_service
 
 logger = logging.getLogger(__name__)
 
@@ -141,19 +144,64 @@ def stats_to_payload(stats: GameStats) -> dict:
 async def persist_finished_game(
     room_code: str, room: dict, engine: GameEngine, stats: GameStats
 ) -> bool:
-    """Persistence seam for `14-end-of-game-persistence.md`, which has not
-    been built yet -- MySQL writes are this section's explicit *Out of
-    scope*. Until section 14 lands this is a deliberate no-op, so a
-    finished game still reaches `game_finished` and `persisted` accurately
-    reports `False` (`§3.8` steps 4-5).
+    """Persistence seam filled by `14-end-of-game-persistence.md §3.1`.
+
+    Called by `finish_game`, after the Redis lock has been released and
+    after `game_finished` has already been emitted -- the debrief never
+    waits on the database. Everything here is lock-free: `room` and `engine`
+    are values already copied out of Redis by the caller.
+
+    Never raises. A failure -- building the snapshot, writing it, or
+    recomputing stats afterwards -- is logged at ERROR naming `room_code`
+    and this returns `False`, so `finish_game` records `persisted: false`
+    and the debrief the clients already received is untouched (`§3.4`).
+
+    `stats` is accepted only because section 12 froze this signature; the
+    snapshot's own `GameStats` is `compute_stats` run again over the same
+    `history` and `demand_series` (`§3.5b`) -- the same function, over the
+    same data, deliberately not threaded through here to avoid a second copy
+    to keep in sync.
 
     Called and read as a bare module-level name, exactly as
-    `state_service.redis_client` is (`09-state-service.md §3`), so a test —
-    or section 14 — can monkeypatch `app.services.game_service.
-    persist_finished_game` without this module having captured a stale
-    reference.
+    `state_service.redis_client` is (`09-state-service.md §3`), so a test can
+    monkeypatch `app.services.game_service.persist_finished_game` without
+    this module having captured a stale reference. The database session is
+    opened the same way: through `db_session.SessionLocal()`, read off the
+    `app.db.session` module at call time rather than captured by a bare
+    `from ... import SessionLocal`, so a test that monkeypatches
+    `app.db.session.SessionLocal` reaches this call too.
     """
-    return False
+    try:
+        snapshot = build_snapshot(room, engine.config, engine)
+    except Exception:
+        logger.exception(
+            "Building the persistence snapshot for room %s failed.", room_code
+        )
+        return False
+
+    db = db_session.SessionLocal()
+    try:
+        try:
+            game_id = get_db_service().persist_game(db, snapshot)
+        except Exception:
+            db.rollback()
+            logger.exception("Persisting finished game for room %s failed.", room_code)
+            return False
+
+        try:
+            get_stats_service().recompute_for_game(db, game_id)
+        except Exception:
+            # The game itself is already committed; a stats failure here
+            # does not undo it, and the next finished game recomputes these
+            # users' stats from scratch anyway.
+            logger.exception(
+                "Recomputing stats after persisting game %s (room %s) failed.",
+                game_id,
+                room_code,
+            )
+        return True
+    finally:
+        db.close()
 
 
 class GameService:
