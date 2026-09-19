@@ -3,6 +3,7 @@
 from typing import Any
 from urllib.parse import quote
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -46,6 +47,25 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env", case_sensitive=True, extra="ignore"
     )
+
+    @field_validator("CORS_ORIGINS")
+    @classmethod
+    def _reject_wildcard_origin(cls, value: list[str]) -> list[str]:
+        """Never allow ``"*"`` in ``CORS_ORIGINS``.
+
+        The app hardcodes ``allow_credentials=True`` (``app/main.py``), and a
+        wildcard origin combined with credentials is an invalid, permissive
+        combination that browsers themselves refuse to honour -- but only
+        after the server has already advertised it. Reject it at config load
+        instead (23-deployment-and-ci.md AC 5, failure mode 2).
+        """
+        if "*" in value:
+            raise ValueError(
+                'CORS_ORIGINS must never contain "*": this app sets '
+                "allow_credentials=True, and the two together are an "
+                "invalid, permissive combination."
+            )
+        return value
 
     @property
     def db_url(self) -> str:

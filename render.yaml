@@ -1,0 +1,53 @@
+# Render Blueprint for the Beery backend (00-decisions.md D17,
+# 23-deployment-and-ci.md §3). One web service, built from the committed
+# Dockerfile -- plain uvicorn, no gunicorn (game_stack.md §3).
+#
+# Managed MySQL and managed Redis are NOT declared here: Render's own managed
+# database offering is PostgreSQL, and this project's managed MySQL and
+# managed Redis are provisioned separately (e.g. PlanetScale/RDS and Redis
+# Cloud/Upstash) and wired in through the DB_* and REDIS_URL environment
+# variables below, set on the platform, never committed. See DEPLOY.md.
+#
+# The managed MySQL instance MUST run engine version 8.4 -- the same
+# `mysql:8.4` image `tests/test_models/conftest.py` pins its Testcontainers
+# schema suite to (23-deployment-and-ci.md AC 15). Provisioning a different
+# major version makes CI prove the wrong engine.
+services:
+  - type: web
+    name: beery-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: starter
+    healthCheckPath: /api/v1/health
+    # Runs once per deploy, before traffic is switched to the new instance --
+    # not `create_all()`, and not at application startup, where a migration
+    # racing N container instances is a lock-contention problem waiting to
+    # happen (§3.3).
+    preDeployCommand: alembic upgrade head
+    envVars:
+      - key: DEBUG
+        value: "false"
+      # Never ["*"]: this app sets allow_credentials=True (§3.2, AC 5).
+      - key: CORS_ORIGINS
+        value: '["https://beersim.web.app","http://localhost:5173"]'
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        sync: false
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_DATABASE
+        sync: false
+      - key: DB_REQUIRE_SSL
+        sync: false
+      # Must point at a live, non-free-tier instance -- a reclaimed free-tier
+      # Redis returns NXDOMAIN and every room operation fails (§3.4).
+      - key: REDIS_URL
+        sync: false
+      # The whole service account JSON, on one line, single-quoted or
+      # unquoted -- double quotes corrupt it (§3.2, AC 6, failure mode 3).
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false

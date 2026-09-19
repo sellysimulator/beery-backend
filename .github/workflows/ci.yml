@@ -1,0 +1,61 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Beery_Backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: Lint (ruff)
+        run: ruff check app tests
+      - name: Format check (black)
+        run: black --check app tests
+      - name: Type check (mypy on app/core)
+        run: mypy app/core
+      - name: Tests with coverage (overall floor 80%)
+        run: pytest -m "not dbschema" --cov=app --cov-report=term-missing --cov-fail-under=80
+      - name: Enforce app/core coverage floor (95%)
+        run: coverage report --include="app/core/*" --fail-under=95
+      - name: Build image
+        run: docker build -t beery-backend:ci .
+
+  dbschema:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Beery_Backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: Schema suite against ephemeral MySQL (Testcontainers)
+        run: |
+          set -o pipefail
+          pytest -m dbschema -q | tee /tmp/dbschema.log
+          if ! grep -qE '[1-9][0-9]* passed' /tmp/dbschema.log; then
+            echo "::error::dbschema suite reported zero passing tests (no Docker daemon reachable?)."
+            exit 1
+          fi
+
+  deploy:
+    needs: [test, dbschema]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render deploy
+        run: curl -fsS -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
