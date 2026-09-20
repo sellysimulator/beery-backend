@@ -18,13 +18,12 @@ import random
 import secrets
 from datetime import datetime, timezone
 
-import redis.asyncio as aioredis
-
 from ..config import settings
 from ..core.bot import BotAgent
 from ..core.config_models import GameConfig
 from ..core.enums import ROLE_ORDER, Role
 from ..core.game_engine import GameEngine
+from .state_backend import StateBackend, build_state_backend
 
 logger = logging.getLogger(__name__)
 
@@ -38,13 +37,20 @@ _ROOM_KEY_PREFIX = "room:"
 _LOCK_KEY_PREFIX = "lock:room:"
 _MAX_CODE_ATTEMPTS = 10
 
+# Module-level singleton, deliberately built here rather than lazily. The
+# name stays `redis_client` although it may hold an `InMemoryBackend`: it is
+# read by that exact name at 25 call sites, in `09-state-service.md §3`, and
+# by `tests/conftest.py`'s monkeypatch. Renaming it buys clarity and costs a
+# sweep of all three; `build_state_backend` is where the choice is legible.
 # Module-level singleton, deliberately built here rather than lazily. Every
 # method below reads this name -- `redis_client`, exactly -- at call time
 # rather than capturing it anywhere, because `tests/conftest.py` monkeypatches
 # `app.services.state_service.redis_client` after `get_state_service()` has
 # already built its singleton; a service holding a reference captured at
 # construction would keep talking to this real client forever.
-redis_client: aioredis.Redis = aioredis.from_url(settings.REDIS_URL)
+redis_client: StateBackend = build_state_backend(
+    settings.REDIS_ENABLED, settings.REDIS_URL
+)
 
 
 def new_room_document(

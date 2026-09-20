@@ -102,7 +102,8 @@ unmarked async test fails loudly rather than being silently skipped.
 | Variable | Notes |
 |---|---|
 | `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_DATABASE` | MySQL. `DB_REQUIRE_SSL` and `DB_SSL_CA` for managed instances. |
-| `REDIS_URL` | Live room state, and the Socket.IO client manager. |
+| `REDIS_ENABLED` | **`false` by default.** When false, live room state is held in this process and there is no Redis dependency at all. See *Room state and Redis* below. |
+| `REDIS_URL` | Only read when `REDIS_ENABLED` is true. Live room state, and the Socket.IO client manager. |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | The **entire** service account JSON on one line. |
 | `CORS_ORIGINS` | Never `["*"]` — the app sets `allow_credentials=True` and the two together are an invalid, permissive combination. |
 | `DEBUG` | Drives log level and the Socket.IO packet loggers. Never hardcode those to `True`: engine.io logs every packet's full payload at INFO. |
@@ -122,6 +123,86 @@ will return 503. Only guest play will work.
 That is deliberate. Guest play is fully functional without Firebase, so refusing to boot would
 turn a partial degradation into a total one — but the failure is confusing enough to deserve a
 CRITICAL line rather than silence.
+
+## Room state and Redis
+
+Live room state — lobbies, seating, the running `GameEngine` — is authoritative in a key-value
+store, and MySQL is written only when a game finishes (`00-decisions.md` **D4**). Which store
+holds it is a one-line switch.
+
+**`REDIS_ENABLED` is `false` by default**, so out of the box the app has no Redis dependency:
+room documents live in a dict in this process. This is the right setting for a single
+instance, which is what a classroom deployment is.
+
+### What you give up, and what you get
+
+Two constraints come with the in-memory backend, both of them **deployment** facts that no
+process can detect from the inside:
+
+1. **This must be the only instance serving the app.** Two instances means two players in one
+   room land on different processes and never see each other — no error, no log, just a lobby
+   that will not fill. If you scale past one instance, or add `--workers`, you must turn Redis
+   on in the same change.
+2. **Restarting the process ends every game in progress.** A game reaches MySQL only when it
+   finishes, so a deploy or a crash mid-session loses the rooms. Redis survives an app restart;
+   it does not survive its own restart or eviction, so this is a narrowing of the window rather
+   than a guarantee.
+
+The app says which backend is active every time it starts, at WARNING for the in-memory one.
+`GET /api/v1/health/deep` reports it as `state_backend: "memory" | "redis"`.
+
+What you get in exchange, measured on this build: a player's order submission costs **5** state
+round trips and a full week costs **23**, so a 36-week game is around 830 — invisible in
+memory, and 1.7 s of added latency against a same-region Redis, 12 s against a distant one,
+spread across the session. The sharper case is an all-bot demo, which runs **220** round trips
+inside a single `start_game` call: 199 ms in memory, up to 3.3 s against a distant Redis.
+
+### Turning Redis on
+
+```bash
+REDIS_ENABLED=true
+REDIS_URL=redis://:password@host:6379/0
+```
+
+Both are required together. `REDIS_ENABLED=true` with an empty `REDIS_URL` refuses to start,
+with a message naming the setting rather than `from_url`'s complaint about URL schemes.
+
+Nothing else changes. `app/services/state_backend.py` chooses between
+`redis.asyncio.Redis` and `InMemoryBackend`, both satisfying the same five-method protocol;
+`app/sockets/manager.py` switches the Socket.IO client manager to `AsyncRedisManager` on the
+same flag, which is what makes cross-instance fan-out work and is the one thing the in-memory
+backend cannot replace.
+
+**The two backends are deliberately identical in semantics, not merely similar.** Both store
+JSON strings and both require an explicit `save_room`. It is tempting to have the in-memory one
+hold live `GameEngine` objects and skip serialisation — worth about 3.4 ms of CPU per handler at
+week 36 — and it must not, because a handler's mutations would then take effect without saving,
+which works in memory and breaks the moment anyone sets `REDIS_ENABLED=true`. Keep the switch a
+deployment choice and never a behavioural one.
+
+### What the suite does and does not prove
+
+The suite passes with `REDIS_ENABLED` either way, and it is worth being clear about why that
+is weaker evidence than it looks: `tests/conftest.py` monkeypatches `state_service.redis_client`
+with an in-memory fake in both modes, so **neither run talks to a real Redis**. What the flag
+changes there is only which client the app builds at import.
+
+- `tests/test_services/test_state_backend.py` covers the switch itself and the in-memory
+  backend's semantics — TTL expiry, lock serialisation under a forced suspension, and the
+  refusal to start with `REDIS_ENABLED=true` and no URL.
+- Everything above it is exercised against the fake.
+
+So a change to `state_backend.py` needs a **manual smoke test against a real Redis** before you
+trust it:
+
+```bash
+docker run --rm -p 6379:6379 redis:7-alpine
+REDIS_ENABLED=true REDIS_URL=redis://localhost:6379/0 \
+  ./venv/bin/uvicorn app.main:application --reload
+curl localhost:8080/api/v1/health/deep    # expect state_backend "redis", redis true
+```
+
+Then create a room, join from a second browser and play a week.
 
 ## Layout
 

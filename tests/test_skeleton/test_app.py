@@ -112,22 +112,51 @@ def test_shallow_health_survives_an_unreachable_database(monkeypatch, client):
 
 
 def test_deep_health_shape_is_always_http_200(client):
-    """AC 4: always HTTP 200, with both flags reported."""
+    """AC 4: always HTTP 200, with every flag reported.
+
+    ``state_backend`` was added when Redis became optional: ``redis`` alone
+    cannot distinguish "reachable" from "not in use", and a reader needs to
+    know which.
+    """
     response = client.get("/api/v1/health/deep")
     assert response.status_code == 200
     body = response.json()
-    assert set(body) == {"status", "database", "redis"}
+    assert set(body) == {"status", "database", "redis", "state_backend"}
     assert body["status"] in {"ok", "degraded"}
     assert isinstance(body["database"], bool)
     assert isinstance(body["redis"], bool)
+    assert body["state_backend"] in {"redis", "memory"}
 
 
-def test_deep_health_is_degraded_when_neither_backend_is_reachable(client):
+def test_deep_health_with_redis_off_ignores_redis_entirely(client, monkeypatch):
+    """Redis switched off must not pin the probe at ``degraded`` forever.
+
+    A readiness probe that always says "not ready" is a probe nobody reads,
+    so an unused dependency reports healthy and ``state_backend`` carries
+    the fact that it is unused.
+    """
+    from app.api.v1 import health as health_module
+
+    monkeypatch.setattr(health_module.settings, "REDIS_ENABLED", False)
+    body = client.get("/api/v1/health/deep").json()
+    assert body["state_backend"] == "memory"
+    assert body["redis"] is True
+    # The database is still pinned unreachable by `tests/conftest.py`.
+    assert body["database"] is False
+    assert body["status"] == "degraded"
+
+
+def test_deep_health_is_degraded_when_neither_backend_is_reachable(client, monkeypatch):
     """AC 4: ``status: "degraded"`` and both flags ``false``.
 
     ``tests/conftest.py`` pins the whole suite at unreachable, test-only
     coordinates, so "neither is reachable" is a property of the configuration
-    rather than of whatever happens to be listening on this machine."""
+    rather than of whatever happens to be listening on this machine.
+    Redis has to be switched **on** for its reachability to be asked about
+    at all."""
+    from app.api.v1 import health as health_module
+
+    monkeypatch.setattr(health_module.settings, "REDIS_ENABLED", True)
     assert not _database_reachable()
     assert not _redis_reachable()
     response = client.get("/api/v1/health/deep")
@@ -217,7 +246,7 @@ def test_deep_health_is_degraded_when_only_redis_is_reachable(live_redis_url):
     """AC 4 / §2: ``status`` is ``"ok"`` **only** when both flags are true --
     exactly one reachable is still ``"degraded"``.  A partial outage is the
     one a health check exists to surface."""
-    body = _deep_health_with(REDIS_URL=live_redis_url)
+    body = _deep_health_with(REDIS_ENABLED="true", REDIS_URL=live_redis_url)
     assert body["redis"] is True
     assert body["database"] is False
     assert body["status"] == "degraded"
@@ -225,7 +254,7 @@ def test_deep_health_is_degraded_when_only_redis_is_reachable(live_redis_url):
 
 def test_deep_health_is_degraded_when_only_the_database_is_reachable(live_mysql_env):
     """AC 4 / §2: the mirror image of the case above."""
-    body = _deep_health_with(**live_mysql_env)
+    body = _deep_health_with(REDIS_ENABLED="true", **live_mysql_env)
     assert body["database"] is True
     assert body["redis"] is False
     assert body["status"] == "degraded"
@@ -233,7 +262,9 @@ def test_deep_health_is_degraded_when_only_the_database_is_reachable(live_mysql_
 
 def test_deep_health_is_ok_only_when_both_are_reachable(live_redis_url, live_mysql_env):
     """AC 4 / §2: the positive half of the same rule."""
-    body = _deep_health_with(REDIS_URL=live_redis_url, **live_mysql_env)
+    body = _deep_health_with(
+        REDIS_ENABLED="true", REDIS_URL=live_redis_url, **live_mysql_env
+    )
     assert body["database"] is True
     assert body["redis"] is True
     assert body["status"] == "ok"

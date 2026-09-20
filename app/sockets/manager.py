@@ -11,7 +11,14 @@ logger = logging.getLogger(__name__)
 
 sio = AsyncServer(
     async_mode="asgi",
-    client_manager=AsyncRedisManager(settings.REDIS_URL),
+    # `None` selects Socket.IO's in-process manager. Guard on the setting,
+    # never on a try/except around the constructor: `AsyncRedisManager("")`
+    # constructs happily and only fails later, at connect time, on the hot
+    # path. Cross-instance fan-out is the one thing the in-memory state
+    # backend cannot replace, so this and `REDIS_ENABLED` move together.
+    client_manager=(
+        AsyncRedisManager(settings.REDIS_URL) if settings.REDIS_ENABLED else None
+    ),
     cors_allowed_origins=settings.CORS_ORIGINS,
     # Never hardcoded to True: engine.io logs every packet's full payload at
     # INFO, which is CPU on the hot path and writes wire data into the logs.

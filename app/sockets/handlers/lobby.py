@@ -34,6 +34,7 @@ from ...core.game_engine import GameEngine
 from ...services.game_service import get_game_service
 from ...services.room_service import RoomService, merge_config_patch
 from ...services.state_service import get_state_service, next_free_alias
+from ..errors import guarded
 from ..manager import sio, socket_manager
 
 logger = logging.getLogger(__name__)
@@ -95,6 +96,7 @@ def _game_started_payload(room: dict, engine: GameEngine, seq: int) -> dict:
 
 
 @sio.event
+@guarded("join_error")
 async def join_waiting(sid: str, data: dict | None = None) -> None:
     """The host claims or re-claims the room (``§3.1``, **D18**)."""
     data = _payload(data)
@@ -149,6 +151,7 @@ async def join_waiting(sid: str, data: dict | None = None) -> None:
 
 
 @sio.event
+@guarded("join_error")
 async def join(sid: str, data: dict | None = None) -> None:
     """A player arrives or returns (``§3.2``). Idempotent by identity."""
     data = _payload(data)
@@ -285,6 +288,7 @@ async def join(sid: str, data: dict | None = None) -> None:
 
 
 @sio.event
+@guarded("join_error")
 async def leave(sid: str, data: dict | None = None) -> None:
     """Permitted only before the game starts (``§3.3``)."""
     data = _payload(data)
@@ -337,6 +341,7 @@ async def leave(sid: str, data: dict | None = None) -> None:
 
 
 @sio.event
+@guarded("join_error")
 async def config_update(sid: str, data: dict | None = None) -> None:
     """The real-time twin of ``PUT /rooms/{code}/config`` (``§3.4``)."""
     data = _payload(data)
@@ -394,6 +399,7 @@ async def config_update(sid: str, data: dict | None = None) -> None:
 
 
 @sio.event
+@guarded("join_error")
 async def set_role_mode(sid: str, data: dict | None = None) -> None:
     """Host only. Clears every assignment, even if the mode is unchanged
     (``§3.5``)."""
@@ -459,6 +465,7 @@ async def set_role_mode(sid: str, data: dict | None = None) -> None:
 
 
 @sio.event
+@guarded("join_error")
 async def assign_role(sid: str, data: dict | None = None) -> None:
     """Host authority. ``role: null`` unseats (``§3.5``)."""
     data = _payload(data)
@@ -541,6 +548,7 @@ async def assign_role(sid: str, data: dict | None = None) -> None:
 
 
 @sio.event
+@guarded("join_error")
 async def claim_role(sid: str, data: dict | None = None) -> None:
     """First come, first served in ``PLAYER_CHOOSES`` (``§3.5``). Atomic:
     the check and the write happen inside one lock acquisition."""
@@ -620,6 +628,7 @@ async def claim_role(sid: str, data: dict | None = None) -> None:
 
 
 @sio.event
+@guarded("join_error")
 async def release_role(sid: str, data: dict | None = None) -> None:
     """The caller gives up their role. Pre-start only (``§3.5``)."""
     data = _payload(data)
@@ -673,6 +682,7 @@ async def release_role(sid: str, data: dict | None = None) -> None:
 
 
 @sio.event
+@guarded("join_error")
 async def start_game(sid: str, data: dict | None = None) -> None:
     """Host authority. ``can_start`` is the whole gate (``§2.2``, ``§3.6``):
     the invalid-config case, the already-running case and the

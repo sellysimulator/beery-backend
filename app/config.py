@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     DB_REQUIRE_SSL: bool = False
     DB_SSL_CA: str = ""
 
+    # Room state lives in this process unless this is switched on. See
+    # `app/services/state_backend.py` for what the switch changes and the
+    # single-instance constraint it carries.
+    REDIS_ENABLED: bool = False
     REDIS_URL: str = ""
     FIREBASE_SERVICE_ACCOUNT_JSON: str = ""
 

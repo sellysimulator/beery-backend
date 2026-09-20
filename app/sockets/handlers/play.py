@@ -30,6 +30,7 @@ from ...core.game_engine import EngineStateError, GamePhase
 from ...services.game_service import get_game_service
 from ...services.room_service import RoomService
 from ...services.state_service import get_state_service
+from ..errors import guarded
 from ..manager import sio, socket_manager
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,7 @@ async def _emit_error(sid: str, message: str, code: str) -> None:
 
 
 @sio.event
+@guarded("error")
 async def submit_order(sid: str, data: dict | None = None) -> None:
     """``§3.1``. All the behaviour lives in ``GameService.submit`` -- this
     handler only unpacks the wire payload."""
@@ -79,6 +81,7 @@ async def submit_order(sid: str, data: dict | None = None) -> None:
 
 
 @sio.event
+@guarded("error")
 async def pause_game(sid: str, data: dict | None = None) -> None:
     """``§3.6``. ``RUNNING`` -> ``PAUSED``. No-op if not currently running."""
     data = _payload(data)
@@ -115,6 +118,7 @@ async def pause_game(sid: str, data: dict | None = None) -> None:
 
 
 @sio.event
+@guarded("error")
 async def resume_game(sid: str, data: dict | None = None) -> None:
     """``§3.6``. ``PAUSED`` -> ``RUNNING``, then a full state re-broadcast."""
     data = _payload(data)
@@ -155,6 +159,7 @@ async def resume_game(sid: str, data: dict | None = None) -> None:
 
 
 @sio.event
+@guarded("error")
 async def force_close_week(sid: str, data: dict | None = None) -> None:
     """``§3.6``. Delegates the actual close to ``GameService`` with no lock
     held, exactly as a human submission does."""
@@ -192,6 +197,7 @@ async def force_close_week(sid: str, data: dict | None = None) -> None:
 
 
 @sio.event
+@guarded("error")
 async def substitute_bot(sid: str, data: dict | None = None) -> None:
     """``§3.6``. A no-op, not an error, when the role is already a bot.
     ``engine.set_bot(role)`` is what makes every subsequent ``WeekRecord``
@@ -268,6 +274,7 @@ async def substitute_bot(sid: str, data: dict | None = None) -> None:
 
 
 @sio.event
+@guarded("error")
 async def end_game_early(sid: str, data: dict | None = None) -> None:
     """``§3.6``. Abandons the open week and finishes with the weeks
     actually played -- ``engine.end_early()`` never settles it."""
@@ -317,6 +324,7 @@ async def end_game_early(sid: str, data: dict | None = None) -> None:
 
 
 @sio.event
+@guarded("error")
 async def request_state(sid: str, data: dict | None = None) -> None:
     """``§3.7``. Purely a read: mutates nothing, acquires no lock."""
     data = _payload(data)

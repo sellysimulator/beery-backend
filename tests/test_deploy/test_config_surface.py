@@ -378,6 +378,11 @@ def test_fm4_dead_redis_health_ok_deep_degraded(
     """
     from app.config import settings
 
+    # Redis has to be switched **on** for its reachability to be asked
+    # about: with `REDIS_ENABLED` false — the default since the state
+    # backend became switchable — an unused dependency reports healthy,
+    # and this failure mode is about a dependency that is in use and dead.
+    monkeypatch.setattr(settings, "REDIS_ENABLED", True)
     monkeypatch.setattr(settings, "REDIS_URL", "redis://127.0.0.1:1/0")
 
     shallow = client.get("/api/v1/health")

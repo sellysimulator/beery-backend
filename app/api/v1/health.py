@@ -32,7 +32,12 @@ class DeepHealthResponse(BaseModel):
 
     status: str
     database: bool
+    #: Reachability of Redis. `True` when it is switched off, because a
+    #: dependency that is not in use cannot be unhealthy -- read it with
+    #: `state_backend`, which says whether it is in use at all.
     redis: bool
+    #: `"redis"` or `"memory"`. Which store holds live room state.
+    state_backend: str
 
 
 def _ping_database() -> None:
@@ -52,8 +57,17 @@ async def _database_reachable() -> bool:
 
 
 async def _redis_reachable() -> bool:
+    """True when Redis is reachable, or when it is deliberately not in use.
+
+    Returning `False` for "switched off" would pin `/health/deep` to
+    `degraded` forever on a single-instance deployment that never wanted
+    Redis -- a readiness probe that always says "not ready" is a probe
+    nobody reads.
+    """
+    if not settings.REDIS_ENABLED:
+        return True
     if not settings.REDIS_URL:
-        logger.warning("Deep health: REDIS_URL is not set.")
+        logger.warning("Deep health: REDIS_ENABLED is true but REDIS_URL is not set.")
         return False
     client = None
     try:
@@ -95,4 +109,5 @@ async def health_deep() -> DeepHealthResponse:
         status="ok" if database_ok and redis_ok else "degraded",
         database=database_ok,
         redis=redis_ok,
+        state_backend="redis" if settings.REDIS_ENABLED else "memory",
     )
