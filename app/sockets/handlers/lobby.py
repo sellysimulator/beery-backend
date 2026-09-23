@@ -143,6 +143,24 @@ async def join_waiting(sid: str, data: dict | None = None) -> None:
         config_event = {"seq": state_svc.next_seq(room), "config": room["config"]}
         host_reconnected_event = {"seq": state_svc.next_seq(room)} if was_away else None
 
+        # A refreshed host console has an empty store and renders nothing until
+        # a `host_state` arrives; without this one it waits for the next week
+        # close, and forever once the game is over. Allocated last so its seq is
+        # the highest of this claim and the client applies it. `game_started` is
+        # deliberately not replayed: it would force the client back to RUNNING
+        # over a PAUSED or FINISHED `lobby_update`.
+        host_state_event: dict | None = None
+        if (
+            room["state"] in _RUNNING_STATES
+            or room["state"] == RoomState.FINISHED.value
+        ):
+            engine = state_svc.load_engine(room)
+            if engine is not None:
+                host_state_event = {
+                    "seq": state_svc.next_seq(room),
+                    **engine.host_view(),
+                }
+
         await state_svc.save_room(room_code, room)
 
     await socket_manager.emit_to_sid(
@@ -154,6 +172,8 @@ async def join_waiting(sid: str, data: dict | None = None) -> None:
         await socket_manager.emit_to_room(
             room_code, "host_reconnected", host_reconnected_event
         )
+    if host_state_event is not None:
+        await socket_manager.emit_to_sid(sid, "host_state", host_state_event)
 
 
 # --- join --------------------------------------------------------------------- #

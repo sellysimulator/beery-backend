@@ -10,6 +10,9 @@ the same way: the most recently finished `games` row for that code, because
 codes are reused once a room expires (`13 §2.2`). Since only *finished*
 games are ever written to MySQL (**D4**), any row found here is by
 definition a finished game -- there is no separate status filter.
+
+`GET /games/id/{public_id}/results` serves the same payload addressed by the
+game's permanent `public_id`, for links that must outlive the room code.
 """
 
 from __future__ import annotations
@@ -46,6 +49,7 @@ router = APIRouter(prefix="/games", tags=["games"])
 
 _INTERNAL_ERROR_DETAIL = "Internal server error."
 _NO_RESULTS_DETAIL = "No finished game found for that code."
+_NO_GAME_DETAIL = "No finished game found for that id."
 _EXPORT_FORBIDDEN_DETAIL = "Not authorised to export this game."
 
 _claim_service = ClaimService()
@@ -71,6 +75,17 @@ def find_latest_finished_game(db: Session, room_code: str) -> Game | None:
         .where(Game.room_code == room_code)
         .order_by(Game.finished_at.desc())
         .limit(1)
+    ).scalar_one_or_none()
+
+
+def find_game_by_public_id(db: Session, public_id: str) -> Game | None:
+    """The game a stable results URL names, or None.
+
+    Unlike a room code, a `public_id` is never reused, so there is no
+    "latest" to choose between.
+    """
+    return db.execute(
+        select(Game).where(Game.public_id == public_id)
     ).scalar_one_or_none()
 
 
@@ -177,6 +192,7 @@ def build_results_response(db: Session, game: Game) -> ResultsResponse:
         )
 
     return ResultsResponse(
+        public_id=game.public_id,
         room_code=game.room_code,
         weeks_played=game.weeks_played,
         duration_weeks=game.duration_weeks,
@@ -323,6 +339,31 @@ def get_results(
         raise
     except Exception:
         logger.exception("Failed to read results for room %s.", room_code)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=_INTERNAL_ERROR_DETAIL,
+        ) from None
+
+
+@router.get("/id/{public_id}/results", response_model=ResultsResponse)
+def get_results_by_public_id(
+    public_id: str, db: Annotated[Session, Depends(get_db)]
+) -> ResultsResponse:
+    """The same payload as `get_results`, addressed by the game's permanent
+    `public_id` rather than its recyclable room code. No authentication, for
+    the same reason: a results URL is shareable.
+    """
+    try:
+        game = find_game_by_public_id(db, public_id)
+        if game is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=_NO_GAME_DETAIL
+            )
+        return build_results_response(db, game)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to read results for game %s.", public_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=_INTERNAL_ERROR_DETAIL,

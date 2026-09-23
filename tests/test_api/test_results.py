@@ -51,6 +51,10 @@ def RESULTS_URL(room_code: str) -> str:
     return f"/api/v1/games/{room_code}/results"
 
 
+def RESULTS_BY_ID_URL(public_id: str) -> str:
+    return f"/api/v1/games/id/{public_id}/results"
+
+
 CLAIM_URL = "/api/v1/games/claim"
 
 # Config parameters (host teaching knobs) that §3.1 says must never appear in
@@ -438,3 +442,76 @@ async def test_fm12_unfinished_game_in_redis_is_404_not_a_partial_payload(
 
     assert response.status_code == 404
     assert isinstance(response.json()["detail"], str)
+
+
+# ---------------------------------------------------------------------------
+# Stable results URL: GET /games/id/{public_id}/results
+# ---------------------------------------------------------------------------
+
+
+def test_public_id_results_match_room_code_results(
+    api_client, session_factory, fake_redis
+):
+    game = persist_full_game(session_factory, duration_weeks=6, seed=21)
+
+    by_code = api_client.get(RESULTS_URL(game["room_code"])).json()
+    public_id = by_code["public_id"]
+    assert isinstance(public_id, str) and len(public_id) == 32
+    assert public_id != str(game["game_id"])
+
+    response = api_client.get(RESULTS_BY_ID_URL(public_id))
+
+    assert response.status_code == 200
+    assert response.json() == by_code
+
+
+def test_public_id_keeps_resolving_the_older_game_after_its_code_is_reused(
+    api_client, session_factory, fake_redis
+):
+    room_code = unique_room_code()
+    persist_full_game(
+        session_factory,
+        room_code=room_code,
+        duration_weeks=8,
+        seed=22,
+        started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 1, 1, 2, tzinfo=timezone.utc),
+    )
+    older_id = api_client.get(RESULTS_URL(room_code)).json()["public_id"]
+    persist_full_game(
+        session_factory,
+        room_code=room_code,
+        duration_weeks=10,
+        seed=23,
+        started_at=datetime(2026, 3, 1, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 3, 1, 2, tzinfo=timezone.utc),
+    )
+
+    newer = api_client.get(RESULTS_URL(room_code)).json()
+    older = api_client.get(RESULTS_BY_ID_URL(older_id)).json()
+
+    assert newer["public_id"] != older_id
+    assert newer["weeks_played"] == 10
+    assert older["weeks_played"] == 8
+    assert older["public_id"] == older_id
+
+
+def test_unknown_public_id_is_404_with_string_detail(api_client, fake_redis):
+    response = api_client.get(RESULTS_BY_ID_URL("0" * 32))
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "No finished game found for that id."
+
+
+def test_public_id_results_require_no_authentication_and_leak_nothing(
+    api_client, session_factory, fake_redis
+):
+    game = persist_full_game(session_factory, duration_weeks=6, seed=24)
+    public_id = api_client.get(RESULTS_URL(game["room_code"])).json()["public_id"]
+
+    response = api_client.get(RESULTS_BY_ID_URL(public_id))
+
+    assert response.status_code == 200
+    keys = keys_recursive(response.json())
+    assert not keys & FORBIDDEN_IDENTITY_KEYS
+    assert not keys & FORBIDDEN_CONFIG_KEYS

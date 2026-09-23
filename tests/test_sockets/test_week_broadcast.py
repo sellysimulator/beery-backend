@@ -352,6 +352,66 @@ async def test_persistence_failure_does_not_break_the_debrief(
     assert "game_finished" in fake_socket_manager.events_for(game["room_code"])
 
 
+async def test_game_persisted_carries_the_public_id_after_a_successful_persist(
+    make_room, start_running_game, state_svc, fake_socket_manager, monkeypatch
+):
+    """Once persistence succeeds, the room hears ``game_persisted`` with the
+    game's permanent ``public_id`` -- after ``game_finished``, never before,
+    since the permanent results URL does not exist until the write lands."""
+    public_id = "a" * 32
+
+    async def succeeding_persist(room_code, room, engine, stats):
+        return public_id
+
+    monkeypatch.setattr(
+        game_service_module, "persist_finished_game", succeeding_persist
+    )
+
+    room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
+    game = await start_running_game(room)
+
+    await end_game_early(
+        game["host_sid"],
+        {"room_id": game["room_code"], "host_secret": game["host_secret"]},
+    )
+
+    stored, _engine = await _current(state_svc, game["room_code"])
+    assert stored["persisted"] is True
+
+    emits = fake_socket_manager.emits_for(game["room_code"])
+    events = [event for event, _data in emits]
+    assert events.index("game_finished") < events.index("game_persisted")
+    finished_seq = next(
+        data["seq"] for event, data in emits if event == "game_finished"
+    )
+    persisted = next(data for event, data in emits if event == "game_persisted")
+    assert persisted["game_id"] == public_id
+    assert persisted["seq"] > finished_seq
+
+
+async def test_no_game_persisted_when_persistence_fails(
+    make_room, start_running_game, state_svc, fake_socket_manager, monkeypatch
+):
+    """A failed write has no permanent URL to announce."""
+
+    async def failing_persist(room_code, room, engine, stats):
+        return None
+
+    monkeypatch.setattr(game_service_module, "persist_finished_game", failing_persist)
+
+    room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
+    game = await start_running_game(room)
+
+    await end_game_early(
+        game["host_sid"],
+        {"room_id": game["room_code"], "host_secret": game["host_secret"]},
+    )
+
+    events = fake_socket_manager.events_for(game["room_code"])
+    assert "game_finished" in events
+    assert "game_persisted" not in events
+
+
 async def test_game_finished_is_emitted_before_persistence_even_if_it_hangs(
     make_room, start_running_game, state_svc, fake_socket_manager, monkeypatch
 ):

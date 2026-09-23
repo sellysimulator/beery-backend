@@ -21,6 +21,7 @@ permanent tax on every raw query section 14 and 15 write.
 
 from datetime import datetime
 from decimal import Decimal
+from uuid import uuid4
 
 from sqlalchemy import (
     BigInteger,
@@ -49,6 +50,7 @@ __all__ = [
     "User",
     "UserStats",
     "Week",
+    "new_public_id",
 ]
 
 # Money. The engine accumulates in float and rounds to two decimals only at this
@@ -62,12 +64,23 @@ BOT_PARAM = Numeric(6, 4)
 DEMAND_SCALAR = Numeric(10, 4)
 
 
+def new_public_id() -> str:
+    """An opaque, unguessable id for a game's public results URL."""
+    return uuid4().hex
+
+
 class Game(Base, TimestampMixin):
     """One finished game. The row every other table in this module hangs off."""
 
     __tablename__ = "games"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # The id a public results URL carries. `id` is sequential, so exposing it
+    # would let anyone walk every game ever played; a room code is not stable,
+    # because codes are recycled. This is both unguessable and permanent.
+    public_id: Mapped[str] = mapped_column(
+        String(32), nullable=False, default=new_public_id
+    )
     # Indexed but NOT unique: room codes are recycled once a room expires.
     room_code: Mapped[str] = mapped_column(String(8), nullable=False, index=True)
     # Nullable: a guest may host (**D3**), and deleting an account must not
@@ -106,6 +119,7 @@ class Game(Base, TimestampMixin):
         UniqueConstraint(
             "room_code", "started_at", name="uq_games_room_code_started_at"
         ),
+        UniqueConstraint("public_id", name="uq_games_public_id"),
     )
 
 

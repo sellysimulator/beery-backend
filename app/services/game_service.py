@@ -25,11 +25,14 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy import select
+
 from ..core.bot import bot_for
 from ..core.enums import ROLE_ORDER, Role, RoomState
 from ..core.game_engine import GameEngine, GamePhase, WeekRecord
 from ..core.stats import GameStats, compute_stats
 from ..db import session as db_session
+from ..models.game import Game
 from ..sockets.manager import socket_manager
 from .db_service import build_snapshot, get_db_service
 from .state_service import StateService, get_state_service
@@ -143,7 +146,7 @@ def stats_to_payload(stats: GameStats) -> dict:
 
 async def persist_finished_game(
     room_code: str, room: dict, engine: GameEngine, stats: GameStats
-) -> bool:
+) -> str | None:
     """Persistence seam filled by `14-end-of-game-persistence.md §3.1`.
 
     Called by `finish_game`, after the Redis lock has been released and
@@ -153,8 +156,10 @@ async def persist_finished_game(
 
     Never raises. A failure -- building the snapshot, writing it, or
     recomputing stats afterwards -- is logged at ERROR naming `room_code`
-    and this returns `False`, so `finish_game` records `persisted: false`
+    and this returns `None`, so `finish_game` records `persisted: false`
     and the debrief the clients already received is untouched (`§3.4`).
+    On success it returns the game's `public_id`, which `finish_game`
+    broadcasts so clients can link to the permanent results URL.
 
     `stats` is accepted only because section 12 froze this signature; the
     snapshot's own `GameStats` is `compute_stats` run again over the same
@@ -177,16 +182,21 @@ async def persist_finished_game(
         logger.exception(
             "Building the persistence snapshot for room %s failed.", room_code
         )
-        return False
+        return None
 
     db = db_session.SessionLocal()
     try:
         try:
             game_id = get_db_service().persist_game(db, snapshot)
+            # Read before the stats recompute, whose failure could leave the
+            # session needing a rollback.
+            public_id = db.execute(
+                select(Game.public_id).where(Game.id == game_id)
+            ).scalar_one()
         except Exception:
             db.rollback()
             logger.exception("Persisting finished game for room %s failed.", room_code)
-            return False
+            return None
 
         try:
             get_stats_service().recompute_for_game(db, game_id)
@@ -199,7 +209,7 @@ async def persist_finished_game(
                 game_id,
                 room_code,
             )
-        return True
+        return public_id
     finally:
         db.close()
 
@@ -658,17 +668,28 @@ class GameService:
             room["room_code"], "game_finished", finished_payload
         )
 
-        persisted = False
+        public_id: str | None = None
         try:
-            persisted = await persist_finished_game(
+            public_id = await persist_finished_game(
                 room["room_code"], room, engine, stats
             )
         except Exception:
             logger.exception("Persisting finished game %s failed.", room["room_code"])
-            persisted = False
+            public_id = None
 
-        room["persisted"] = bool(persisted)
+        persisted = isinstance(public_id, str)
+        room["persisted"] = persisted
+        persisted_payload: dict | None = None
+        if persisted:
+            persisted_payload = {"seq": state_svc.next_seq(room), "game_id": public_id}
         await state_svc.save_room(room["room_code"], room)
+
+        # Only now does the permanent results URL exist. Clients already hold
+        # the debrief from `game_finished`; this just lets them link to it.
+        if persisted_payload is not None:
+            await socket_manager.emit_to_room(
+                room["room_code"], "game_persisted", persisted_payload
+            )
 
 
 _game_service: GameService | None = None

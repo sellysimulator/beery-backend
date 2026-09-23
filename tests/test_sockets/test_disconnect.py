@@ -180,7 +180,9 @@ async def test_host_reclaim_in_the_lobby_announces_nothing(
     await register_sid(sid)
     fake_socket_manager.clear()
 
-    await join_waiting(sid, {"room_id": room["room_code"], "host_secret": room["host_secret"]})
+    await join_waiting(
+        sid, {"room_id": room["room_code"], "host_secret": room["host_secret"]}
+    )
 
     assert "host_reconnected" not in fake_socket_manager.events_for(room["room_code"])
 

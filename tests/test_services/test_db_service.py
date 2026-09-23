@@ -472,7 +472,7 @@ async def test_fm2_fm3_persist_finished_game_logs_error_and_does_not_raise(
     with caplog.at_level(logging.ERROR):
         result = await persist_finished_game(room_code, room, engine, stats)
 
-    assert result is False, "a failed persist must return False, not raise"
+    assert result is None, "a failed persist must return None, not raise"
 
     error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert error_records, "expected an ERROR-level log record"
@@ -675,7 +675,7 @@ async def test_ac20_persistence_runs_with_the_room_lock_released(
 
     result = await persist_finished_game(room["room_code"], room, engine, stats)
 
-    assert result is True
+    assert isinstance(result, str) and len(result) == 32
     assert lock_calls == []
 
 

@@ -46,6 +46,9 @@ class RoleResult(BaseModel):
 
 
 class ResultsResponse(BaseModel):
+    # Additive: the stable id for `GET /games/id/{public_id}/results`. A room
+    # code is recycled once the room expires; this is not.
+    public_id: str
     room_code: str
     weeks_played: int
     duration_weeks: int

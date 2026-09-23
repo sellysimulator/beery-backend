@@ -444,3 +444,98 @@ async def test_config_update_after_start_is_rejected_and_changes_nothing(
     after = await state_svc.get_room(room["room_code"])
     assert after["config"] == before["config"]
     assert "join_error" in fake_socket_manager.events_for("sid-host")
+
+
+# --- host refresh resync ------------------------------------------------- #
+
+
+async def _reclaim_as_refreshed_host(game, connect_identity, fake_socket_manager):
+    """A refresh is a new sid for the same identity, with the stored secret."""
+    fake_socket_manager.clear()
+    await connect_identity("sid-host-refreshed", game["host_identity"])
+    await join_waiting(
+        "sid-host-refreshed",
+        {"room_id": game["room_code"], "host_secret": game["host_secret"]},
+    )
+    return fake_socket_manager.emits_for("sid-host-refreshed")
+
+
+def _highest_other_seq(fake_socket_manager) -> int:
+    return max(
+        data["seq"]
+        for _target, event, data in fake_socket_manager.emits
+        if event != "host_state" and isinstance(data, dict) and "seq" in data
+    )
+
+
+async def test_reclaim_of_running_room_resends_host_state_last(
+    make_room, start_running_game, connect_identity, fake_socket_manager
+):
+    room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
+    game = await start_running_game(room)
+
+    emits = await _reclaim_as_refreshed_host(
+        game, connect_identity, fake_socket_manager
+    )
+
+    host_states = [data for event, data in emits if event == "host_state"]
+    assert len(host_states) == 1
+    # The client drops any seq it has already seen, so this one must be the
+    # newest of the claim or the console stays on its waiting notice.
+    assert host_states[0]["seq"] > _highest_other_seq(fake_socket_manager)
+
+
+async def test_reclaim_of_paused_room_resends_host_state_without_game_started(
+    make_room, start_running_game, connect_identity, fake_socket_manager
+):
+    from app.sockets.handlers.play import pause_game
+
+    room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
+    game = await start_running_game(room)
+    await pause_game(
+        game["host_sid"],
+        {"room_id": game["room_code"], "host_secret": game["host_secret"]},
+    )
+
+    emits = await _reclaim_as_refreshed_host(
+        game, connect_identity, fake_socket_manager
+    )
+
+    events = [event for event, _data in emits]
+    assert "host_state" in events
+    assert "game_started" not in fake_socket_manager.events_for(game["room_code"])
+    assert "game_started" not in events
+
+
+async def test_reclaim_of_finished_room_resends_host_state(
+    make_room, start_running_game, connect_identity, fake_socket_manager
+):
+    from app.sockets.handlers.play import end_game_early
+
+    room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
+    game = await start_running_game(room)
+    await end_game_early(
+        game["host_sid"],
+        {"room_id": game["room_code"], "host_secret": game["host_secret"]},
+    )
+
+    emits = await _reclaim_as_refreshed_host(
+        game, connect_identity, fake_socket_manager
+    )
+
+    host_states = [data for event, data in emits if event == "host_state"]
+    assert len(host_states) == 1
+    assert host_states[0]["phase"] == "FINISHED"
+
+
+async def test_claim_of_lobby_room_sends_no_host_state(
+    make_room, fake_socket_manager, register_sid
+):
+    room = await make_room()
+    await register_sid("sid-host")
+
+    await join_waiting(
+        "sid-host", {"room_id": room["room_code"], "host_secret": room["host_secret"]}
+    )
+
+    assert "host_state" not in fake_socket_manager.events_for("sid-host")
