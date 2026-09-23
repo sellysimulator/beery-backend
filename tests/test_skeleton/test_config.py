@@ -186,18 +186,46 @@ def test_unknown_keyword_is_ignored(monkeypatch):
 
 
 def test_hard_limit_defaults(monkeypatch):
+    """§5's ceilings, asserted at the place that actually enforces each one.
+
+    Only ``MAX_DISPLAY_NAME_LENGTH`` is a setting. The other ten were fields
+    on ``Settings`` and were read by nothing -- ``app/core`` is pure and
+    cannot import ``app.config``, so the game ceilings are injected as
+    ``Limits`` and the store's ceilings are module constants. Asserting them
+    here, at their owners, keeps §5 covered without a ``.env`` variable that
+    silently does nothing.
+    """
+    from app.core.config_models import DEFAULT_LIMITS
+    from app.services import state_service
+
     s = _isolated(monkeypatch)
-    assert s.MAX_ORDER_QUANTITY == 9_999
-    assert s.MAX_WEEKS_LIMIT == 104
-    assert s.MIN_WEEKS == 8
-    assert s.MAX_DELAY_WEEKS == 8
-    assert s.MIN_DELAY_WEEKS == 1
-    assert s.MAX_INITIAL_QUANTITY == 9_999
-    assert s.MAX_UNIT_VALUE == 1_000_000.0
-    assert s.MAX_PLAYERS == 4
     assert s.MAX_DISPLAY_NAME_LENGTH == 24
-    assert s.ROOM_TTL_SECONDS == 86_400
-    assert s.LOCK_TIMEOUT_SECONDS == 10
+
+    assert DEFAULT_LIMITS.max_order_quantity == 9_999
+    assert DEFAULT_LIMITS.max_weeks == 104
+    assert DEFAULT_LIMITS.min_weeks == 8
+    assert DEFAULT_LIMITS.max_delay_weeks == 8
+    assert DEFAULT_LIMITS.min_delay_weeks == 1
+    assert DEFAULT_LIMITS.max_initial_quantity == 9_999
+    assert DEFAULT_LIMITS.max_unit_value == 1_000_000.0
+
+    assert state_service.ROOM_TTL_SECONDS == 86_400
+    assert state_service.LOCK_TIMEOUT_SECONDS == 10
+
+    # The dead fields stay deleted: re-declaring one makes `.env` lie again.
+    for dead in (
+        "MAX_ORDER_QUANTITY",
+        "MAX_WEEKS_LIMIT",
+        "MIN_WEEKS",
+        "MAX_DELAY_WEEKS",
+        "MIN_DELAY_WEEKS",
+        "MAX_INITIAL_QUANTITY",
+        "MAX_UNIT_VALUE",
+        "MAX_PLAYERS",
+        "ROOM_TTL_SECONDS",
+        "LOCK_TIMEOUT_SECONDS",
+    ):
+        assert dead not in Settings.model_fields
 
 
 def test_transport_and_service_defaults(monkeypatch):
@@ -211,6 +239,7 @@ def test_transport_and_service_defaults(monkeypatch):
     assert s.DB_DATABASE == "beery"
     assert s.DB_REQUIRE_SSL is False
     assert s.DB_SSL_CA == ""
+    assert s.REDIS_ENABLED is False
     assert s.REDIS_URL == ""
     assert s.FIREBASE_SERVICE_ACCOUNT_JSON == ""
 

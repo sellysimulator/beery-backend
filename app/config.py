@@ -35,18 +35,19 @@ class Settings(BaseSettings):
     REDIS_URL: str = ""
     FIREBASE_SERVICE_ACCOUNT_JSON: str = ""
 
-    # Hard ceilings — see 00-decisions.md §5
-    MAX_ORDER_QUANTITY: int = 9_999
-    MAX_WEEKS_LIMIT: int = 104
-    MIN_WEEKS: int = 8
-    MAX_DELAY_WEEKS: int = 8
-    MIN_DELAY_WEEKS: int = 1
-    MAX_INITIAL_QUANTITY: int = 9_999
-    MAX_UNIT_VALUE: float = 1_000_000.0
-    MAX_PLAYERS: int = 4
+    # Hard ceilings — see 00-decisions.md §5.
+    #
+    # Only the display-name cap is a setting. The rest of §5 is deliberately
+    # NOT declared here, because nothing would read it: `app/core` is pure and
+    # must not import `app.config` (00-conventions.md §4), so the order,
+    # week, delay, quantity, unit-value and player ceilings live on
+    # `core.config_models.Limits` / `DEFAULT_LIMITS` and arrive by injection,
+    # and the room TTL and lock timeout are module constants in
+    # `services/state_service.py`. They were fields here until they were found
+    # to be read nowhere: an operator setting `MAX_WEEKS_LIMIT` in `.env` got
+    # silence, not a different ceiling. Change a ceiling at the site that owns
+    # it, and do not re-add a field here that no code reads.
     MAX_DISPLAY_NAME_LENGTH: int = 24
-    ROOM_TTL_SECONDS: int = 86_400
-    LOCK_TIMEOUT_SECONDS: int = 10
 
     model_config = SettingsConfigDict(
         env_file=".env", case_sensitive=True, extra="ignore"

@@ -42,8 +42,7 @@ _MAX_CODE_ATTEMPTS = 10
 # read by that exact name at 25 call sites, in `09-state-service.md §3`, and
 # by `tests/conftest.py`'s monkeypatch. Renaming it buys clarity and costs a
 # sweep of all three; `build_state_backend` is where the choice is legible.
-# Module-level singleton, deliberately built here rather than lazily. Every
-# method below reads this name -- `redis_client`, exactly -- at call time
+# Every method below reads this name -- `redis_client`, exactly -- at call time
 # rather than capturing it anywhere, because `tests/conftest.py` monkeypatches
 # `app.services.state_service.redis_client` after `get_state_service()` has
 # already built its singleton; a service holding a reference captured at

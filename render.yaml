@@ -2,11 +2,18 @@
 # 23-deployment-and-ci.md §3). One web service, built from the committed
 # Dockerfile -- plain uvicorn, no gunicorn (game_stack.md §3).
 #
-# Managed MySQL and managed Redis are NOT declared here: Render's own managed
-# database offering is PostgreSQL, and this project's managed MySQL and
-# managed Redis are provisioned separately (e.g. PlanetScale/RDS and Redis
-# Cloud/Upstash) and wired in through the DB_* and REDIS_URL environment
-# variables below, set on the platform, never committed. See DEPLOY.md.
+# Managed MySQL is NOT declared here: Render's own managed database offering
+# is PostgreSQL, so this project's managed MySQL is provisioned separately
+# (e.g. PlanetScale/RDS) and wired in through the DB_* environment variables
+# below, set on the platform, never committed. See DEPLOY.md.
+#
+# Redis is OPTIONAL and is likewise not declared here. Since the state
+# backend became switchable, REDIS_ENABLED=false (the default) keeps live
+# room state in the process and the service has no Redis dependency at all --
+# correct for the single-instance classroom deployment this plan describes,
+# at the cost of losing in-progress games on any restart or deploy. Turning
+# it on means provisioning Redis separately (e.g. Redis Cloud/Upstash) and
+# setting both REDIS_ENABLED and REDIS_URL below. See DEPLOY.md.
 #
 # The managed MySQL instance MUST run engine version 8.4 -- the same
 # `mysql:8.4` image `tests/test_models/conftest.py` pins its Testcontainers
@@ -43,8 +50,17 @@ services:
         sync: false
       - key: DB_REQUIRE_SSL
         sync: false
-      # Must point at a live, non-free-tier instance -- a reclaimed free-tier
-      # Redis returns NXDOMAIN and every room operation fails (§3.4).
+      # Optional. "false" keeps live room state in this process, which
+      # REQUIRES that this service runs as exactly one instance with no
+      # `--workers`, and loses in-progress games on every deploy or restart.
+      # Set it to "true" -- together with a REDIS_URL -- before scaling past
+      # one instance, or the two instances silently split every room.
+      - key: REDIS_ENABLED
+        value: "false"
+      # Read only when REDIS_ENABLED is "true", and then required: an empty
+      # REDIS_URL with the flag on refuses to start. It must point at a live,
+      # non-free-tier instance -- a reclaimed free-tier Redis returns NXDOMAIN
+      # and every room operation fails (§3.4).
       - key: REDIS_URL
         sync: false
       # The whole service account JSON, on one line, single-quoted or
