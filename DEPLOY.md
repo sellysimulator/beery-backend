@@ -163,4 +163,9 @@ Run this before a class, every time.
    and no database credential, and fails outright if every test in it
    skipped (an all-skipped run looks identical to a passing one otherwise).
 4. `docker build .`
-5. On `main`: trigger a Render deploy.
+
+There is no deploy step in the workflow. Render's auto-deploy is set to
+`checksPass` (`autoDeployTrigger` in `render.yaml`, "After CI checks pass" in
+the dashboard): a push to `main` deploys only once every check above has
+passed. Do not add a deploy hook back alongside it -- a passing push would
+deploy twice.

@@ -45,11 +45,3 @@ jobs:
             echo "::error::dbschema suite reported zero passing tests (no Docker daemon reachable?)."
             exit 1
           fi
-
-  deploy:
-    needs: [test, dbschema]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Trigger Render deploy
-        run: curl -fsS -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"

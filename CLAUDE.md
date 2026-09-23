@@ -121,7 +121,7 @@ do not edit it to register one.
 | Alembic | `alembic.ini` has **no `sqlalchemy.url`** — `alembic/env.py` reads `settings.db_url` and imports `app.models` so `Base.metadata` is populated. Head is `0002`. |
 | Deployment | `render.yaml`: one Docker web service, `healthCheckPath: /api/v1/health`, `preDeployCommand: alembic upgrade head`, `REDIS_ENABLED=false`. MySQL is **not** declared there — provisioned externally and wired in via env. Redis is **optional** and likewise not declared; with the flag off the deployment has no Redis at all, which is only valid at exactly one instance. |
 | Docker | `python:3.11-slim`, plain uvicorn (no gunicorn), `--http h11 --proxy-headers`, `CMD` binds `${PORT:-8080}`. `.dockerignore` excludes `.env`, `tests/`, `venv/`, `.git/`. |
-| CI | `.github/workflows/ci.yml`, runs at repo root (this repo IS `Beery_Backend`; no `working-directory`). jobs: `test` (ruff + black + mypy app/core + pytest `-m "not dbschema"` at ≥80% + `app/core` at ≥95% + docker build), `dbschema` (Testcontainers MySQL, fails if nothing passed), `deploy` (Render hook on `main`). |
+| CI | `.github/workflows/ci.yml`, runs at repo root (this repo IS `Beery_Backend`; no `working-directory`). jobs: `test` (ruff + black + mypy app/core + pytest `-m "not dbschema"` at ≥80% + `app/core` at ≥95% + docker build), `dbschema` (Testcontainers MySQL, fails if nothing passed). No deploy job: Render auto-deploys `main` after checks pass (`autoDeployTrigger: checksPass`). |
 
 ## Commands
 
@@ -159,7 +159,7 @@ docker build -t beery-backend .
 docker run --rm -p 8080:8080 --env-file .env beery-backend
 ```
 
-**Deploy** is not a local command: push to `main` → CI → Render deploy hook, which builds
+**Deploy** is not a local command: push to `main` → CI → Render auto-deploy once all checks pass, which builds
 the Dockerfile and runs `alembic upgrade head` as a pre-deploy step. There is no bind
 mount in the image, so a source change needs a rebuild.
 

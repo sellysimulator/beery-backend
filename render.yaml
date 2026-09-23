@@ -27,6 +27,11 @@ services:
     dockerContext: .
     plan: starter
     healthCheckPath: /api/v1/health
+    # Render deploys a push to the linked branch only once every GitHub check
+    # on that commit has passed -- this IS the CI gate. There is deliberately no
+    # deploy job or deploy hook in ci.yml: with both, a passing push deploys
+    # twice, and with plain on-commit auto-deploy a failing push ships anyway.
+    autoDeployTrigger: checksPass
     # Runs once per deploy, before traffic is switched to the new instance --
     # not `create_all()`, and not at application startup, where a migration
     # racing N container instances is a lock-contention problem waiting to
