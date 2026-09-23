@@ -375,3 +375,41 @@ async def test_reconnect_moves_the_sid_mapping_rather_than_duplicating_it(
     stored = await _room_after(state_svc, room["room_code"])
     assert stored["sid_to_alias"].get("sid-new") == alias
     assert "sid-old" not in stored["sid_to_alias"]
+
+
+# --- rejoin after the end ------------------------------------------------------ #
+
+
+async def test_rejoin_after_game_finished_resends_position_without_game_started(
+    make_room, start_running_game, connect_identity, fake_socket_manager
+):
+    from app.sockets.handlers.play import end_game_early
+
+    room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
+    game = await start_running_game(room)
+    await end_game_early(
+        game["host_sid"],
+        {"room_id": game["room_code"], "host_secret": game["host_secret"]},
+    )
+
+    fake_socket_manager.clear()
+    await connect_identity(
+        "sid-retailer-reloaded", game["identities_by_role"]["RETAILER"]
+    )
+    await join("sid-retailer-reloaded", {"room_id": game["room_code"]})
+
+    emits = fake_socket_manager.emits_for("sid-retailer-reloaded")
+    events = [event for event, _data in emits]
+    assert "join_error" not in events
+    # A replayed `game_started` would flip the client back to RUNNING.
+    assert "game_started" not in events
+    your_states = [data for event, data in emits if event == "your_state"]
+    assert len(your_states) == 1
+    assert your_states[0]["role"] == "RETAILER"
+    assert your_states[0]["phase"] == "FINISHED"
+    lobby_seq = next(
+        data["seq"]
+        for _target, event, data in fake_socket_manager.room_emits
+        if event == "lobby_update"
+    )
+    assert your_states[0]["seq"] > lobby_seq

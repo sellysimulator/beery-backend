@@ -261,6 +261,23 @@ async def join(sid: str, data: dict | None = None) -> None:
                             },
                         )
                     )
+            elif room["state"] == RoomState.FINISHED.value and participant.get("role"):
+                # A player who reloads after the end has an empty store and
+                # would wait forever for a position. `your_state` alone: a
+                # replayed `game_started` would put the client back to RUNNING
+                # over the FINISHED `lobby_update`.
+                engine = state_svc.load_engine(room)
+                if engine is not None:
+                    role = Role(participant["role"])
+                    resync_events.append(
+                        (
+                            "your_state",
+                            {
+                                "seq": state_svc.next_seq(room),
+                                **engine.player_view(role),
+                            },
+                        )
+                    )
 
             await state_svc.save_room(room_code, room)
         else:
