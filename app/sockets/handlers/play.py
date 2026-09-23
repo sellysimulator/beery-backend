@@ -395,6 +395,7 @@ async def _disconnect_from_room(sid: str) -> None:
     room_code_out = room_code
     disconnected_payload: dict | None = None
     paused_payload: dict | None = None
+    host_disconnected_payload: dict | None = None
 
     async with state_svc.lock(room_code):
         room = await state_svc.get_room(room_code)
@@ -440,11 +441,11 @@ async def _disconnect_from_room(sid: str) -> None:
 
         if is_host:
             room["host_sid"] = None
-            if room["state"] == RoomState.RUNNING.value:
-                reason = "The host disconnected"
-                room["state"] = RoomState.PAUSED.value
-                room["paused_reason"] = reason
-                paused_payload = {"seq": state_svc.next_seq(room), "reason": reason}
+            # A host leaving never pauses: players keep playing and are only
+            # told, by a transient alert. The host reclaims with
+            # `join_waiting`, which announces `host_reconnected`.
+            if room["state"] in (RoomState.RUNNING.value, RoomState.PAUSED.value):
+                host_disconnected_payload = {"seq": state_svc.next_seq(room)}
 
         await state_svc.save_room(room_code_out, room)
 
@@ -454,3 +455,7 @@ async def _disconnect_from_room(sid: str) -> None:
         )
     if paused_payload is not None:
         await socket_manager.emit_to_room(room_code_out, "game_paused", paused_payload)
+    if host_disconnected_payload is not None:
+        await socket_manager.emit_to_room(
+            room_code_out, "host_disconnected", host_disconnected_payload
+        )

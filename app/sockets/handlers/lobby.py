@@ -110,6 +110,7 @@ async def join_waiting(sid: str, data: dict | None = None) -> None:
     host_secret_value: str
     lobby_event: dict
     config_event: dict
+    host_reconnected_event: dict | None
 
     async with state_svc.lock(room_id):
         room = await state_svc.get_room(room_id)
@@ -128,6 +129,9 @@ async def join_waiting(sid: str, data: dict | None = None) -> None:
         if by_secret and identity and not room.get("host_identity"):
             room["host_identity"] = identity
 
+        # Only a mid-game reclaim is news to the players: `host_disconnected`
+        # was sent for the drop, so this closes that loop.
+        was_away = not room.get("host_sid") and room["state"] in _RUNNING_STATES
         room["host_sid"] = sid
         # Real sio, deliberately -- not socket_manager.join_room, which
         # requires an alias. The host holds no alias and must never appear
@@ -137,6 +141,7 @@ async def join_waiting(sid: str, data: dict | None = None) -> None:
         host_secret_value = room["host_secret"]
         lobby_event = _room_service.lobby_payload(room, state_svc.next_seq(room))
         config_event = {"seq": state_svc.next_seq(room), "config": room["config"]}
+        host_reconnected_event = {"seq": state_svc.next_seq(room)} if was_away else None
 
         await state_svc.save_room(room_code, room)
 
@@ -145,6 +150,10 @@ async def join_waiting(sid: str, data: dict | None = None) -> None:
     )
     await socket_manager.emit_to_room(room_code, "lobby_update", lobby_event)
     await socket_manager.emit_to_sid(sid, "config_updated", config_event)
+    if host_reconnected_event is not None:
+        await socket_manager.emit_to_room(
+            room_code, "host_reconnected", host_reconnected_event
+        )
 
 
 # --- join --------------------------------------------------------------------- #

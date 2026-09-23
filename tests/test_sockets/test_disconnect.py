@@ -123,7 +123,7 @@ async def test_disconnect_of_a_bot_role_never_pauses(
 # --- AC 23 -------------------------------------------------------------------- #
 
 
-async def test_disconnect_of_host_pauses_but_does_not_end_and_secret_reclaims(
+async def test_disconnect_of_host_alerts_but_never_pauses_and_secret_reclaims(
     make_room, start_running_game, register_sid, state_svc, fake_socket_manager
 ):
     room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
@@ -133,15 +133,13 @@ async def test_disconnect_of_host_pauses_but_does_not_end_and_secret_reclaims(
     await disconnect(game["host_sid"])
 
     stored, _engine = await _current(state_svc, game["room_code"])
-    assert stored["state"] == "PAUSED"
-    assert stored["state"] != "FINISHED"
-    payload = next(
-        data
-        for _room_id, event, data in fake_socket_manager.room_emits
-        if event == "game_paused"
-    )
-    assert "host" in payload["reason"].lower()
+    assert stored["state"] == "RUNNING"
+    assert stored["host_sid"] is None
+    events = fake_socket_manager.events_for(game["room_code"])
+    assert "game_paused" not in events
+    assert "host_disconnected" in events
 
+    fake_socket_manager.clear()
     new_host_sid = "sid-host-reclaimed"
     await register_sid(new_host_sid)
     await join_waiting(
@@ -149,13 +147,42 @@ async def test_disconnect_of_host_pauses_but_does_not_end_and_secret_reclaims(
     )
     stored, _engine = await _current(state_svc, game["room_code"])
     assert stored["host_sid"] == new_host_sid
-
-    await resume_game(
-        new_host_sid,
-        {"room_id": game["room_code"], "host_secret": game["host_secret"]},
-    )
-    stored, _engine = await _current(state_svc, game["room_code"])
     assert stored["state"] == "RUNNING"
+    assert "host_reconnected" in fake_socket_manager.events_for(game["room_code"])
+
+
+async def test_disconnect_of_host_while_paused_keeps_the_existing_pause(
+    make_room, start_running_game, state_svc, fake_socket_manager
+):
+    room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
+    game = await start_running_game(room)
+    await disconnect(game["sids_by_role"]["RETAILER"])
+    stored, _engine = await _current(state_svc, game["room_code"])
+    assert stored["state"] == "PAUSED"
+    reason = stored["paused_reason"]
+    fake_socket_manager.clear()
+
+    await disconnect(game["host_sid"])
+
+    stored, _engine = await _current(state_svc, game["room_code"])
+    assert stored["state"] == "PAUSED"
+    assert stored["paused_reason"] == reason
+    events = fake_socket_manager.events_for(game["room_code"])
+    assert "game_paused" not in events
+    assert "host_disconnected" in events
+
+
+async def test_host_reclaim_in_the_lobby_announces_nothing(
+    make_room, register_sid, fake_socket_manager
+):
+    room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
+    sid = "sid-host-lobby"
+    await register_sid(sid)
+    fake_socket_manager.clear()
+
+    await join_waiting(sid, {"room_id": room["room_code"], "host_secret": room["host_secret"]})
+
+    assert "host_reconnected" not in fake_socket_manager.events_for(room["room_code"])
 
 
 # --- AC 24 / failure mode 15 -------------------------------------------------- #
