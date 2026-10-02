@@ -53,7 +53,12 @@ services:
         sync: false
       - key: DB_DATABASE
         sync: false
+      # TLS to MySQL, no plaintext fallback.
       - key: DB_REQUIRE_SSL
+        value: "true"
+      # This project's MySQL CA certificate: paste the PEM as-is. Not a
+      # secret, but set per service -- never shared with another game.
+      - key: DB_SSL_CA
         sync: false
       # Optional. "false" keeps live room state in this process, which
       # REQUIRES that this service runs as exactly one instance with no

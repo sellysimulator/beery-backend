@@ -192,3 +192,29 @@ def test_a_name_that_sanitises_to_empty_is_stored_empty_not_null(db_session):
     db_session.flush()
 
     assert also_empty.display_name == ""
+
+
+# --- concurrent first sign-in -------------------------------------------------
+
+
+def test_upsert_that_loses_the_insert_race_updates_the_winner_row(db_session):
+    """Two concurrent upserts for one uid can both miss the lookup and both
+    INSERT; the loser must update the winner's row, not 500 on the unique key.
+    Simulated by committing the row and making the first lookup miss."""
+    db_session.add(User(firebase_uid="uid-race", display_name="Old"))
+    db_session.commit()
+
+    service = UserService()
+    real_lookup = service.get_by_firebase_uid
+    calls = {"n": 0}
+
+    def lookup(db, firebase_uid, **kwargs):
+        calls["n"] += 1
+        return None if calls["n"] == 1 else real_lookup(db, firebase_uid, **kwargs)
+
+    service.get_by_firebase_uid = lookup  # type: ignore[method-assign]
+
+    user = service.upsert_user(db_session, "uid-race", "New", None, None)
+
+    assert user.display_name == "New"
+    assert [u.display_name for u in _users(db_session)] == ["New"]

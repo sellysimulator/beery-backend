@@ -5,10 +5,32 @@ Acceptance criteria 6, 7 and 11, and failure modes 4, 8 and 9.
 
 from __future__ import annotations
 
+import logging
+import ssl
+
+import pymysql
 import pytest
+from pymysql.constants import CLIENT
 from sqlalchemy.engine import make_url
 
 from app.config import Settings, settings
+from app.core.checks import db_tls_check
+
+# A throwaway self-signed CA (its key was discarded). Only its parseability
+# matters: no connection is ever verified against it.
+_TEST_CA_PEM = """\
+-----BEGIN CERTIFICATE-----
+MIIBmDCCAT2gAwIBAgIUGXD542pZtQa9SLnAxCsSm1qTBHwwCgYIKoZIzj0EAwIw
+GDEWMBQGA1UEAwwNTm92dXMgdGVzdCBDQTAgFw0yNjEwMDIyMDU2NTZaGA8yMTI2
+MDkwODIwNTY1NlowGDEWMBQGA1UEAwwNTm92dXMgdGVzdCBDQTBZMBMGByqGSM49
+AgEGCCqGSM49AwEHA0IABHCAFZW6AwimQZTLzv3AWFqneF3rOhSXVy6aK0h6Fo5U
+J20/SnI5CKMQwuqY6YSC2kuzF8UHqaEHiCLfyL7WFXyjYzBhMB0GA1UdDgQWBBQ8
+FdhkXQM4IflDyllXsNm5kjFtMDAfBgNVHSMEGDAWgBQ8FdhkXQM4IflDyllXsNm5
+kjFtMDAPBgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIBBjAKBggqhkjOPQQD
+AgNJADBGAiEAiY0rLhkAr086mBgEi/LBgn23cS3BLxLUsjLph2QblP8CIQCkPZEJ
+KZ781IJHaBK1rqXuL8CPgjD3c3nx86yO47mExA==
+-----END CERTIFICATE-----
+"""
 
 
 def _isolated(monkeypatch, **overrides) -> Settings:
@@ -135,14 +157,91 @@ def test_db_connect_args_empty_without_ssl(monkeypatch):
     assert s.db_connect_args == {}
 
 
-def test_db_connect_args_carries_ssl_when_required(monkeypatch):
-    """AC 7: an ``ssl`` key naming ``DB_SSL_CA`` when it is true."""
-    ca = "/etc/ssl/certs/beery-ca.pem"
-    s = _isolated(monkeypatch, DB_REQUIRE_SSL=True, DB_SSL_CA=ca)
-    args = s.db_connect_args
-    assert isinstance(args, dict)
-    assert "ssl" in args
-    assert ca in str(args["ssl"])
+def test_db_connect_args_encrypt_without_verifying_when_no_ca(monkeypatch):
+    """AC 7: TLS with no ``DB_SSL_CA`` is encrypted but does not authenticate
+    the server."""
+    s = _isolated(monkeypatch, DB_REQUIRE_SSL=True)
+    ctx = s.db_connect_args["ssl"]
+    assert isinstance(ctx, ssl.SSLContext)
+    assert ctx.verify_mode == ssl.CERT_NONE
+    assert ctx.check_hostname is False
+
+
+# Every form DB_SSL_CA accepts: a path, the PEM text as Render stores it, and
+# the one-line ``\n``-escaped text a ``.env`` holds.
+_CA_FORMS = ["path", "pem", "pem-one-line"]
+
+
+def _ca_value(form, tmp_path) -> str:
+    if form == "path":
+        ca = tmp_path / "ca.pem"
+        ca.write_text(_TEST_CA_PEM)
+        return str(ca)
+    if form == "pem":
+        return _TEST_CA_PEM
+    if form == "pem-one-line":
+        return _TEST_CA_PEM.strip().replace("\n", "\\n")
+    return ""
+
+
+@pytest.mark.parametrize("form", _CA_FORMS)
+def test_db_connect_args_verify_against_the_ca(monkeypatch, tmp_path, form):
+    """AC 7: with ``DB_SSL_CA`` -- in any accepted form -- the server
+    certificate and hostname are verified against exactly that CA."""
+    s = _isolated(monkeypatch, DB_REQUIRE_SSL=True, DB_SSL_CA=_ca_value(form, tmp_path))
+    ctx = s.db_connect_args["ssl"]
+    assert isinstance(ctx, ssl.SSLContext)
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
+    assert ctx.check_hostname is True
+    assert ctx.cert_store_stats()["x509_ca"] == 1
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "/nonexistent/ca.pem",
+        "-----BEGIN CERTIFICATE-----\\nnot a certificate\\n-----END CERTIFICATE-----",
+    ],
+)
+def test_db_connect_args_fail_loudly_on_an_unloadable_ca(monkeypatch, bad):
+    """A wrong ``DB_SSL_CA`` is an error, not a silent fallback."""
+    s = _isolated(monkeypatch, DB_REQUIRE_SSL=True, DB_SSL_CA=bad)
+    with pytest.raises(ValueError, match="DB_SSL_CA"):
+        _ = s.db_connect_args
+
+
+@pytest.mark.parametrize("form", ["none", *_CA_FORMS])
+def test_pymysql_refuses_plaintext_with_these_connect_args(monkeypatch, tmp_path, form):
+    """PyMySQL sets ``CLIENT.SSL`` up front only in REQUIRED mode; in
+    PREFERRED mode it silently drops to plaintext if the server offers no TLS.
+    An empty ``ssl`` dict lands in PREFERRED mode, which is why the args carry
+    an ``SSLContext``."""
+    s = _isolated(monkeypatch, DB_REQUIRE_SSL=True, DB_SSL_CA=_ca_value(form, tmp_path))
+    conn = pymysql.connections.Connection(
+        host="db.example.com", defer_connect=True, **s.db_connect_args
+    )
+    assert conn.client_flag & CLIENT.SSL
+
+
+@pytest.mark.parametrize(
+    ("require", "ca", "level", "text"),
+    [
+        (False, "", logging.WARNING, "DB_REQUIRE_SSL is false"),
+        (True, "", logging.WARNING, "NOT verified"),
+        (True, _TEST_CA_PEM, logging.INFO, "verified against DB_SSL_CA"),
+    ],
+)
+def test_boot_log_says_how_the_db_link_is_protected(
+    monkeypatch, caplog, require, ca, level, text
+):
+    """The startup check states the TLS mode; it never aborts."""
+    monkeypatch.setattr(db_tls_check.settings, "DB_REQUIRE_SSL", require)
+    monkeypatch.setattr(db_tls_check.settings, "DB_SSL_CA", ca)
+    with caplog.at_level(logging.INFO, logger=db_tls_check.logger.name):
+        db_tls_check.check_db_tls()
+    [record] = [r for r in caplog.records if r.name == db_tls_check.logger.name]
+    assert record.levelno == level
+    assert text in record.getMessage()
 
 
 # --- AC 11 / FM 4 -----------------------------------------------------------
@@ -237,7 +336,7 @@ def test_transport_and_service_defaults(monkeypatch):
     assert s.DB_USER == "root"
     assert s.DB_PASSWORD == ""
     assert s.DB_DATABASE == "beery"
-    assert s.DB_REQUIRE_SSL is False
+    assert s.DB_REQUIRE_SSL is True
     assert s.DB_SSL_CA == ""
     assert s.REDIS_ENABLED is False
     assert s.REDIS_URL == ""

@@ -4,6 +4,7 @@ import logging
 import unicodedata
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..config import settings
@@ -48,26 +49,43 @@ class UserService:
         email = _sanitise(email, _EMAIL_MAX_LENGTH)
         photo_url = _sanitise(photo_url, _PHOTO_URL_MAX_LENGTH)
 
-        user = self.get_by_firebase_uid(db, firebase_uid)
-        if user is None:
-            user = User(
-                firebase_uid=firebase_uid,
-                display_name=display_name,
-                email=email,
-                photo_url=photo_url,
-            )
-            db.add(user)
-        else:
-            user.display_name = display_name
-            user.email = email
-            user.photo_url = photo_url
+        user = self._get_or_create(db, firebase_uid)
+        user.display_name = display_name
+        user.email = email
+        user.photo_url = photo_url
 
         db.commit()
         db.refresh(user)
         return user
 
-    def get_by_firebase_uid(self, db: Session, firebase_uid: str) -> User | None:
+    def get_by_firebase_uid(
+        self, db: Session, firebase_uid: str, *, for_update: bool = False
+    ) -> User | None:
         """The profile for a uid, or None when it has never been upserted."""
-        return db.execute(
-            select(User).where(User.firebase_uid == firebase_uid)
-        ).scalar_one_or_none()
+        query = select(User).where(User.firebase_uid == firebase_uid)
+        if for_update:
+            query = query.with_for_update()
+        return db.execute(query).scalar_one_or_none()
+
+    def _get_or_create(self, db: Session, firebase_uid: str) -> User:
+        """The row for a uid, inserting it if missing, safe against a concurrent insert.
+
+        Two requests for the same uid (a doubled `/users/upsert` at sign-in, or
+        an upsert racing a guest claim) can both miss the lookup and both
+        INSERT. The INSERT runs in a savepoint: the loser rolls back only that
+        savepoint, keeping the caller's transaction, and re-reads the winner's
+        row. The re-read is a locking read because MySQL's REPEATABLE READ
+        snapshot would otherwise still show no row.
+        """
+        user = self.get_by_firebase_uid(db, firebase_uid)
+        if user is not None:
+            return user
+        try:
+            with db.begin_nested():
+                user = User(firebase_uid=firebase_uid)
+                db.add(user)
+        except IntegrityError:
+            user = self.get_by_firebase_uid(db, firebase_uid, for_update=True)
+            if user is None:
+                raise
+        return user

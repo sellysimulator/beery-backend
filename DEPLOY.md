@@ -43,7 +43,9 @@ production, never at the Hosting origin.
 ```
 DEBUG=false
 CORS_ORIGINS=["https://beersim.web.app","http://localhost:5173"]
-DB_HOST= DB_PORT= DB_USER= DB_PASSWORD= DB_DATABASE= DB_REQUIRE_SSL=
+DB_HOST= DB_PORT= DB_USER= DB_PASSWORD= DB_DATABASE=
+DB_REQUIRE_SSL=true
+DB_SSL_CA=
 REDIS_ENABLED=false
 REDIS_URL=
 FIREBASE_SERVICE_ACCOUNT_JSON=
