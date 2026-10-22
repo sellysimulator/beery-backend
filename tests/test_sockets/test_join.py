@@ -413,3 +413,40 @@ async def test_rejoin_after_game_finished_resends_position_without_game_started(
         if event == "lobby_update"
     )
     assert your_states[0]["seq"] > lobby_seq
+
+
+async def test_rejoin_mid_game_resends_the_whole_history(
+    make_room, start_running_game, connect_identity, fake_socket_manager, state_svc
+):
+    """A per-round ``your_state`` carries no history: the client appends each
+    week's record from ``your_week_closed``. A reconnecting tab may have
+    missed some of those, so the ``your_state`` that ``join`` sends carries
+    every record so far."""
+    from app.sockets.handlers.play import submit_order
+
+    room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
+    game = await start_running_game(room)
+    for _ in range(2):
+        stored = await _room_after(state_svc, game["room_code"])
+        week = state_svc.load_engine(stored).week
+        for sid in game["sids_by_role"].values():
+            await submit_order(
+                sid, {"room_id": game["room_code"], "week": week, "order": 4}
+            )
+
+    fake_socket_manager.clear()
+    await connect_identity(
+        "sid-factory-reloaded", game["identities_by_role"]["FACTORY"]
+    )
+    await join("sid-factory-reloaded", {"room_id": game["room_code"]})
+
+    your_states = [
+        data
+        for event, data in fake_socket_manager.emits_for("sid-factory-reloaded")
+        if event == "your_state"
+    ]
+    assert len(your_states) == 1
+    assert [(r["role"], r["week"]) for r in your_states[0]["own_history"]] == [
+        ("FACTORY", 1),
+        ("FACTORY", 2),
+    ]

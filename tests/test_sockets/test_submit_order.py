@@ -455,3 +455,67 @@ async def test_resubmission_storm_does_not_exceed_the_cap_or_append_history(
     assert engine.pending_orders[Role.RETAILER] == 19  # the 20th accepted value (i=19)
     assert engine.week == week  # the week never closed from one role alone
     assert engine.history == []  # nothing was appended by the storm
+
+
+# --- the host's tracker ticks on every submission -------------------------- #
+
+
+def _host_states(fake_socket_manager, host_sid: str) -> list[dict]:
+    return [
+        data
+        for target, event, data in fake_socket_manager.sid_emits
+        if target == host_sid and event == "host_state"
+    ]
+
+
+async def test_a_submission_that_leaves_the_week_open_refreshes_the_host(
+    make_room, start_running_game, fake_socket_manager, state_svc
+):
+    """The host console reads every submitted mark from ``host_state``.
+    Without a fresh one after each submission, the host's tracker shows
+    nobody as decided until the whole week closes."""
+    room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
+    game = await start_running_game(room)
+    engine = await _current_engine(state_svc, game["room_code"])
+    fake_socket_manager.clear()
+
+    await submit_order(
+        game["sids_by_role"]["RETAILER"],
+        {"room_id": game["room_code"], "week": engine.week, "order": 4},
+    )
+
+    (host_state,) = _host_states(fake_socket_manager, game["host_sid"])
+    assert host_state["roles"]["RETAILER"]["has_submitted"] is True
+    assert host_state["roles"]["WHOLESALER"]["has_submitted"] is False
+    assert host_state["awaiting_roles"] == ["WHOLESALER", "DISTRIBUTOR", "FACTORY"]
+    order_seq = next(
+        data["seq"]
+        for _room, event, data in fake_socket_manager.room_emits
+        if event == "order_submitted"
+    )
+    assert host_state["seq"] > order_seq
+
+
+async def test_the_submission_that_closes_the_week_sends_the_host_one_state(
+    make_room, start_running_game, fake_socket_manager, state_svc
+):
+    """The close already sends the host a fresh state for the new week, so the
+    closing submission adds none of its own."""
+    room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
+    game = await start_running_game(room)
+    engine = await _current_engine(state_svc, game["room_code"])
+    week = engine.week
+    for role in ("RETAILER", "WHOLESALER", "DISTRIBUTOR"):
+        await submit_order(
+            game["sids_by_role"][role],
+            {"room_id": game["room_code"], "week": week, "order": 4},
+        )
+    fake_socket_manager.clear()
+
+    await submit_order(
+        game["sids_by_role"]["FACTORY"],
+        {"room_id": game["room_code"], "week": week, "order": 4},
+    )
+
+    (host_state,) = _host_states(fake_socket_manager, game["host_sid"])
+    assert host_state["week"] == week + 1

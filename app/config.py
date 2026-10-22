@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     # NOT declared here, because nothing would read it: `app/core` is pure and
     # must not import `app.config` (00-conventions.md §4), so the order,
     # week, delay, quantity, unit-value and player ceilings live on
-    # `core.config_models.Limits` / `DEFAULT_LIMITS` and arrive by injection,
+    # `core.limits.Limits` / `DEFAULT_LIMITS` and arrive by injection,
     # and the room TTL and lock timeout are module constants in
     # `services/state_service.py`. They were fields here until they were found
     # to be read nowhere: an operator setting `MAX_WEEKS_LIMIT` in `.env` got

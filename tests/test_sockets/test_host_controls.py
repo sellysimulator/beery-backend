@@ -252,9 +252,15 @@ async def test_substitute_bot_on_an_already_bot_role_is_a_noop(
 # --- AC 26 -------------------------------------------------------------------- #
 
 
+def _without_seq(room: dict) -> dict:
+    return {key: value for key, value in room.items() if key != "seq"}
+
+
 async def test_request_state_reemits_view_and_mutates_nothing(
     make_room, start_running_game, state_svc, fake_socket_manager
 ):
+    """Nothing but the event counter moves: the reply needs a number of its
+    own (see the next test)."""
     room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
     game = await start_running_game(room)
     before, _engine = await _current(state_svc, game["room_code"])
@@ -270,7 +276,7 @@ async def test_request_state_reemits_view_and_mutates_nothing(
     ]
 
     after, _engine2 = await _current(state_svc, game["room_code"])
-    assert after == before
+    assert _without_seq(after) == _without_seq(before)
 
     fake_socket_manager.clear()
     await request_state(game["host_sid"], {"room_id": game["room_code"]})
@@ -280,7 +286,37 @@ async def test_request_state_reemits_view_and_mutates_nothing(
         if target == game["host_sid"]
     ]
     after_host, _engine3 = await _current(state_svc, game["room_code"])
-    assert after_host == before
+    assert _without_seq(after_host) == _without_seq(before)
+
+
+@pytest.mark.parametrize("who", ["player", "host"])
+async def test_request_state_reply_carries_a_seq_higher_than_any_sent_before(
+    make_room, start_running_game, state_svc, fake_socket_manager, who
+):
+    """The client drops every event whose ``seq`` is not above the last one it
+    applied. A client that has already seen the room's latest event would
+    drop a reply that reused that number, and the recovery path would
+    silently recover nothing."""
+    room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
+    game = await start_running_game(room)
+    before, _engine = await _current(state_svc, game["room_code"])
+    sid = game["host_sid"] if who == "host" else game["sids_by_role"]["RETAILER"]
+    event_name = "host_state" if who == "host" else "your_state"
+    fake_socket_manager.clear()
+
+    await request_state(sid, {"room_id": game["room_code"]})
+    await request_state(sid, {"room_id": game["room_code"]})
+
+    replies = [
+        data
+        for target, event, data in fake_socket_manager.sid_emits
+        if target == sid and event == event_name
+    ]
+    assert len(replies) == 2
+    assert before["seq"] < replies[0]["seq"] < replies[1]["seq"]
+
+    after, _engine2 = await _current(state_svc, game["room_code"])
+    assert after["seq"] == replies[1]["seq"]
 
 
 # --- AC 28 / failure mode 14 -------------------------------------------------- #

@@ -123,6 +123,14 @@ play.
 `src/api/socketHandlers.ts`, deploy `Beery_Backend` and `Beery_Frontend` in
 the same window, backend first.**
 
+**The exception: a backend change that drops a field the live frontend reads
+ships frontend first.** Backend first would leave the old frontend reading a
+field that no longer arrives, so the new frontend has to tolerate the field's
+absence and be live before the backend stops sending it. Leaving
+`own_history` out of the per-round `your_state` (`12-socket-play.md §2`) is
+one such change: the old frontend stores `your_state` as it arrives, and its
+`OwnHistoryChart` throws on the missing list.
+
 ## Deploy checklist
 
 Run this before a class, every time.

@@ -26,7 +26,7 @@ import pytest
 import app.services.game_service as game_service_module
 from app.core.enums import Role
 from app.sockets.handlers.lobby import claim_role, join, join_waiting, start_game
-from app.sockets.handlers.play import end_game_early, submit_order
+from app.sockets.handlers.play import end_game_early, request_state, submit_order
 from tests.test_sockets.conftest import new_guest
 
 pytestmark = pytest.mark.asyncio
@@ -46,6 +46,66 @@ async def _close_the_open_week(game, state_svc, order: int = 4):
             game["sids_by_role"][role],
             {"room_id": game["room_code"], "week": week, "order": order},
         )
+
+
+# --- per-round state carries the new record, not the whole history -------- #
+
+
+def _sid_events(fake_socket_manager, sid: str, name: str) -> list[dict]:
+    return [
+        data
+        for target, event, data in fake_socket_manager.sid_emits
+        if target == sid and event == name
+    ]
+
+
+async def test_per_round_your_state_leaves_the_history_to_your_week_closed(
+    make_room, start_running_game, fake_socket_manager, state_svc
+):
+    """A role's history grows by one record a week, so resending all of it in
+    every ``your_state`` grows the traffic with the square of the game's
+    length. The week's one new record travels in ``your_week_closed`` and the
+    client appends it; the ``your_state`` after a submission and after a
+    close carries no history at all."""
+    room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
+    game = await start_running_game(room)
+    await _close_the_open_week(game, state_svc)
+    fake_socket_manager.clear()
+
+    await _close_the_open_week(game, state_svc)
+
+    for role, sid in game["sids_by_role"].items():
+        states = _sid_events(fake_socket_manager, sid, "your_state")
+        # One after the role's own submission, one after the close.
+        assert len(states) == 2, role
+        assert all("own_history" not in state for state in states), role
+        records = [
+            data["record"]
+            for data in _sid_events(fake_socket_manager, sid, "your_week_closed")
+        ]
+        assert [(r["role"], r["week"]) for r in records] == [(role, 2)]
+
+
+async def test_request_state_resends_the_whole_history(
+    make_room, start_running_game, fake_socket_manager, state_svc
+):
+    """The full history still goes out wherever a client may have missed a
+    record: on an explicit state request (and on reconnect, through
+    ``join``)."""
+    room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
+    game = await start_running_game(room)
+    await _close_the_open_week(game, state_svc)
+    await _close_the_open_week(game, state_svc)
+    sid = game["sids_by_role"]["WHOLESALER"]
+    fake_socket_manager.clear()
+
+    await request_state(sid, {"room_id": game["room_code"]})
+
+    (state,) = _sid_events(fake_socket_manager, sid, "your_state")
+    assert [(r["role"], r["week"]) for r in state["own_history"]] == [
+        ("WHOLESALER", 1),
+        ("WHOLESALER", 2),
+    ]
 
 
 # --- AC 10 / AC 11 -------------------------------------------------------- #
@@ -156,6 +216,39 @@ async def test_bots_play_automatically_when_a_window_opens(
 
     _stored, engine = await _current(state_svc, room_code)
     assert Role.FACTORY in engine.pending_orders
+
+
+async def test_the_host_sees_the_bots_decided_while_humans_still_decide(
+    make_room, connect_identity, fake_socket_manager, state_svc
+):
+    """Bots play the moment a week opens, after the host's state for that week
+    has gone out. The host gets a fresh one once they have played, or the
+    console shows the bot seats as undecided until the week closes."""
+    room = await make_room(
+        role_assignment_mode="PLAYER_CHOOSES", bot_fill_empty_roles=True
+    )
+    room_code = room["room_code"]
+    for role in ("RETAILER", "WHOLESALER"):
+        sid = f"sid-{role.lower()}"
+        await connect_identity(sid, new_guest())
+        await join(sid, {"room_id": room_code, "display_name": role.title()})
+        await claim_role(sid, {"room_id": room_code, "role": role})
+    await connect_identity("sid-host", new_guest())
+    await join_waiting(
+        "sid-host", {"room_id": room_code, "host_secret": room["host_secret"]}
+    )
+    fake_socket_manager.clear()
+
+    await start_game(
+        "sid-host", {"room_id": room_code, "host_secret": room["host_secret"]}
+    )
+
+    host_states = _sid_events(fake_socket_manager, "sid-host", "host_state")
+    latest = host_states[-1]
+    assert latest["roles"]["DISTRIBUTOR"]["has_submitted"] is True
+    assert latest["roles"]["FACTORY"]["has_submitted"] is True
+    assert latest["roles"]["RETAILER"]["has_submitted"] is False
+    assert latest["awaiting_roles"] == ["RETAILER", "WHOLESALER"]
 
 
 # --- AC 13 -------------------------------------------------------------- #

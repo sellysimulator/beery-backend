@@ -218,7 +218,9 @@ mount in the image, so a source change needs a rebuild.
   `roles_assigned`, `game_started`, `game_paused`, `game_resumed`, `your_state`, `host_state`,
   `order_submitted`, `your_week_closed`, `error`.
   Any change here must ship with `Beery_Frontend/src/api/socketHandlers.ts` in the same
-  window, backend first.
+  window, backend first, unless the backend stops sending a field the live frontend reads
+  (e.g. `own_history` leaving the per-round `your_state`): then frontend first, per
+  `DEPLOY.md`.
 - **Error handling.** REST: `HTTPException` with a **string** `detail`, never `str(e)`;
   log with `logger.exception` and return a generic message. Sockets: apply `@guarded()`
   *under* `@sio.event` — `guarded("error")` for play (`{message, code}`), `guarded("join_error")`
@@ -245,7 +247,8 @@ mount in the image, so a source change needs a rebuild.
   there is a self-import that raises `ImportError`.
 - **The §5 hard limits are not settings, on purpose.** `Settings` declares exactly one of
   them, `MAX_DISPLAY_NAME_LENGTH` (consumed by `display_name.py` and `user_service.py`).
-  The game ceilings live on `core.config_models.Limits` / `DEFAULT_LIMITS` and are
+  The game ceilings live on `core.limits.Limits` / `DEFAULT_LIMITS` (re-exported by
+  `core.config_models`) and are
   injected, because `app/core` may not import `app.config`; `ROOM_TTL_SECONDS` and
   `LOCK_TIMEOUT_SECONDS` are module constants in `services/state_service.py`. The other ten
   §5 names *were* `Settings` fields, were read by nothing, and were deleted on 2026-09-21

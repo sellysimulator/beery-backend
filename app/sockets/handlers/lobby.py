@@ -28,9 +28,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ...core.bot import bot_for
-from ...core.config_models import DEFAULT_LIMITS, ConfigValidationError, GameConfig
+from ...core.config_models import ConfigValidationError, GameConfig
 from ...core.enums import ROLE_ORDER, Role, RoleAssignmentMode, RoomState
 from ...core.game_engine import GameEngine
+from ...core.limits import DEFAULT_LIMITS
 from ...services.game_service import get_game_service
 from ...services.room_service import RoomService, merge_config_patch
 from ...services.state_service import get_state_service, next_free_alias

@@ -96,8 +96,18 @@ resolved once, at `connect`, from an optional Firebase token in the handshake `a
   `roles_assigned`, `game_started`, `game_paused`, `game_resumed`, `your_state`, `host_state`,
   `order_submitted`, `your_week_closed`, `error`.
 
+`your_state` carries the role's whole `own_history` only where a client may have missed a
+record: game start, `join` (a reconnect), `request_state`, a stale-week resend and the
+refresh after `resume_game`. The `your_state` after a submission or a week close leaves it
+out; the week's one new record travels in `your_week_closed` and the client appends it.
+Every `request_state` reply carries a fresh `seq`, above every number already sent. The host
+gets a fresh `host_state` after every submission (a person's, or a round of bot orders) that
+leaves the week open, so the console's "decided" marks tick as orders arrive; the close sends
+the one for the submission that completes the week.
+
 Every event name and payload here is a contract with `Beery_Frontend/src/api/socketHandlers.ts`.
-A change to either must ship with the other, backend first.
+A change to either must ship with the other, backend first, unless the backend stops sending a
+field the live frontend reads: then the frontend ships first (see `DEPLOY.md`).
 
 ### Not built here
 
@@ -269,7 +279,8 @@ app/
 │       └── games.py            /games/{code}/results, /games/{code}/export, /games/claim
 ├── core/                       pure domain logic — no I/O, no clock, no global RNG
 │   ├── enums.py                Role, RoomState, DemandKind, Distribution, …
-│   ├── config_models.py        GameConfig, Limits/DEFAULT_LIMITS; validation and clamping
+│   ├── config_models.py        GameConfig; validation and clamping
+│   ├── limits.py               Limits/DEFAULT_LIMITS, the §5 hard ceilings
 │   ├── presets.py              CLASSIC_MIT, FAST_GAME, CHAOS
 │   ├── demand.py               the customer demand generator
 │   ├── pipeline.py             the shipment and order delay pipelines

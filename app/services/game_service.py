@@ -108,6 +108,23 @@ def _sid_for_alias(room: dict, alias: str | None) -> str | None:
     return None
 
 
+def _host_refresh_after_submission(
+    room: dict, engine: GameEngine, state_svc: StateService
+) -> tuple[str, dict] | None:
+    """A fresh `host_state` for the host's submission tracker, or `None`.
+
+    The host console reads every "decided" mark from `host_state`, so without
+    this one the tracker shows nobody as decided until the week closes. It is
+    left out once every role is in: the close that follows sends the host a
+    state for the new week anyway. Called inside the lock, so the `seq` is
+    allocated with the others; the caller emits it after the lock.
+    """
+    host_sid = room.get("host_sid")
+    if engine.all_orders_in() or not (isinstance(host_sid, str) and host_sid):
+        return None
+    return host_sid, {"seq": state_svc.next_seq(room), **engine.host_view()}
+
+
 def _week_record_payload(record: WeekRecord) -> dict:
     """A JSON-safe `WeekRecord`, for the one sid entitled to see it."""
     payload = asdict(record)
@@ -227,6 +244,7 @@ class GameService:
         room_code_out = room_code
         order_submitted_payload: dict | None = None
         your_state_target: tuple[str, dict] | None = None
+        host_state_target: tuple[str, dict] | None = None
 
         async with state_svc.lock(room_code):
             room = await state_svc.get_room(room_code)
@@ -329,10 +347,16 @@ class GameService:
                 "display_name": participant.get("display_name"),
                 "is_bot": bool(participant.get("is_bot")),
             }
+            # Per-round: no history. Nothing was added to it by a submission,
+            # and the client already holds every closed week's record.
             your_state_target = (
                 sid,
-                {"seq": state_svc.next_seq(room), **engine.player_view(role)},
+                {
+                    "seq": state_svc.next_seq(room),
+                    **engine.player_view(role, with_history=False),
+                },
             )
+            host_state_target = _host_refresh_after_submission(room, engine, state_svc)
 
             await state_svc.save_room(room_code_out, room)
 
@@ -340,6 +364,9 @@ class GameService:
             await socket_manager.emit_to_room(
                 room_code_out, "order_submitted", order_submitted_payload
             )
+        if host_state_target is not None:
+            host_sid, host_payload = host_state_target
+            await socket_manager.emit_to_sid(host_sid, "host_state", host_payload)
         if your_state_target is not None:
             target_sid, payload = your_state_target
             await socket_manager.emit_to_sid(target_sid, "your_state", payload)
@@ -357,10 +384,12 @@ class GameService:
     async def _play_bot_round(self, room_code: str) -> bool:
         """One lock cycle: a decision from every bot role that has not yet
         submitted for the open week. Returns whether any bot played.
-        Emits `order_submitted` for each, after the lock is released."""
+        Emits `order_submitted` for each, after the lock is released, then a
+        fresh `host_state` while the week is still waiting on a human."""
         state_svc = get_state_service()
         room_code_out = room_code
         events: list[dict] = []
+        host_state_target: tuple[str, dict] | None = None
 
         async with state_svc.lock(room_code):
             room = await state_svc.get_room(room_code)
@@ -390,7 +419,7 @@ class GameService:
                 if bot is None:
                     bot = bot_for(role, config)
 
-                view = engine.player_view(role)
+                view = engine.player_view(role, with_history=False)
                 bot.observe(view["incoming_order"])
                 qty = bot.decide(
                     view["inventory"], view["backlog"], view["supply_line"]
@@ -412,10 +441,16 @@ class GameService:
             if changed:
                 state_svc.store_engine(room, engine)
                 state_svc.store_bots(room, bots)
+                host_state_target = _host_refresh_after_submission(
+                    room, engine, state_svc
+                )
                 await state_svc.save_room(room_code_out, room)
 
         for payload in events:
             await socket_manager.emit_to_room(room_code_out, "order_submitted", payload)
+        if host_state_target is not None:
+            host_sid, host_payload = host_state_target
+            await socket_manager.emit_to_sid(host_sid, "host_state", host_payload)
         return bool(events)
 
     async def _drive(self, room_code: str) -> None:
@@ -530,12 +565,14 @@ class GameService:
                     target_sid = _sid_for_alias(room, alias)
                     if target_sid is None:
                         continue
+                    # The closed week's record went out in `your_week_closed`
+                    # just above; this state leaves the history to it.
                     your_state_events.append(
                         (
                             target_sid,
                             {
                                 "seq": state_svc.next_seq(room),
-                                **engine.player_view(role),
+                                **engine.player_view(role, with_history=False),
                             },
                         )
                     )

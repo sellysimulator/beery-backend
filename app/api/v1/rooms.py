@@ -15,8 +15,9 @@ import logging
 
 from fastapi import APIRouter, Header, HTTPException, status
 
-from ...core.config_models import DEFAULT_LIMITS, ConfigValidationError, GameConfig
+from ...core.config_models import ConfigValidationError, GameConfig
 from ...core.enums import RoomState
+from ...core.limits import DEFAULT_LIMITS
 from ...core.presets import get_preset, preset_names
 from ...schemas.room import (
     ConfigResponse,

@@ -27,9 +27,10 @@ from enum import Enum
 from typing import Any
 
 from .agents import FactoryAgent, RoleAgent, agent_for
-from .config_models import DEFAULT_LIMITS, GameConfig
+from .config_models import GameConfig
 from .demand import generate_demand_series
 from .enums import ROLE_ORDER, Role
+from .limits import DEFAULT_LIMITS
 from .records import OrderCharge, ProductionOutcome, WeekSettlement
 
 __all__ = ["EngineStateError", "GameEngine", "GamePhase", "WeekRecord"]
@@ -510,11 +511,18 @@ class GameEngine:
     def _awaiting_roles(self) -> list[str]:
         return [role.value for role in ROLE_ORDER if role not in self.pending_orders]
 
-    def player_view(self, role: Role) -> dict:
+    def player_view(self, role: Role, *, with_history: bool = True) -> dict:
         """Everything a player of `role` is entitled to see, and nothing more.
 
         Redaction happens **here**, server-side, before anything reaches the
         socket layer (`00-conventions.md` §3).
+
+        `with_history=False` leaves `own_history` out. The per-round
+        `your_state` uses it: the week's one new record has already gone out
+        in `your_week_closed`, and resending every earlier week each round
+        grows the traffic with the square of the game's length. The full list
+        goes wherever a client may have missed a record -- game start, a
+        reconnect, a state request.
 
         `orders_in_flight` and `orders_in_flight_slots` are what this role has
         ordered and its **supplier** has not yet received — the supplier's order
@@ -557,11 +565,6 @@ class GameEngine:
             ),
             "has_submitted": target in self.pending_orders,
             "awaiting_roles": self._awaiting_roles(),
-            "own_history": [
-                _dataclass_payload(record)
-                for record in self.history
-                if record.role is target
-            ],
             # The ceiling the server actually enforces, never None: the client
             # cannot derive it, and `00-conventions.md` §4 forbids it trying.
             "max_order_quantity": self._order_ceiling(),
@@ -574,6 +577,13 @@ class GameEngine:
             "holding_cost_per_unit_week": role_config.holding_cost_per_unit_week,
             "backlog_cost_per_unit_week": role_config.backlog_cost_per_unit_week,
         }
+
+        if with_history:
+            view["own_history"] = [
+                _dataclass_payload(record)
+                for record in self.history
+                if record.role is target
+            ]
 
         if visibility.show_running_cost_to_players:
             view["accumulated_cost"] = agent.accumulated_cost

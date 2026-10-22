@@ -1136,6 +1136,24 @@ def test_default_limits_is_a_limits_instance_with_the_model_defaults() -> None:
     assert DEFAULT_LIMITS == Limits()
 
 
+def test_limits_live_in_a_small_module_of_their_own() -> None:
+    """A caller that needs one ceiling imports ``app.core.limits`` without
+    pulling in the whole config model; ``config_models`` re-exports the same
+    objects, so every existing import keeps working."""
+    from app.core import config_models, limits
+
+    assert limits.Limits is config_models.Limits
+    assert limits.DEFAULT_LIMITS is config_models.DEFAULT_LIMITS
+
+    imported = {
+        node.module if isinstance(node, ast.ImportFrom) else alias.name
+        for node in ast.walk(ast.parse(Path(limits.__file__).read_text("utf-8")))
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names
+    }
+    assert imported <= {"__future__", "pydantic"}, imported
+
+
 # ---------------------------------------------------------------------------
 # D6 / D14 -- the superseded parameters must not exist
 # ---------------------------------------------------------------------------
@@ -1521,12 +1539,33 @@ def test_omitted_role_fields_take_their_model_defaults() -> None:
     assert cfg.factory_config().production_capacity_per_week == 30
 
 
-@pytest.mark.parametrize("seed", [0, 1, 987_654_321, -17])
+@pytest.mark.parametrize("seed", [0, 1, 987_654_321, -17, 2**53 - 1, -(2**53 - 1)])
 def test_random_seed_is_carried_verbatim(seed: int) -> None:
     """``D11``: the host's seed is the game's seed. It is not a clamped knob."""
     cfg = build(base_payload(random_seed=seed))
     assert cfg.random_seed == seed
     assert GameConfig.from_payload(cfg.to_payload()).random_seed == seed
+
+
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [
+        (2**53, 2**53 - 1),
+        (2**70, 2**53 - 1),
+        (1e19, 2**53 - 1),
+        (-(2**64), -(2**53 - 1)),
+    ],
+)
+def test_random_seed_beyond_what_can_be_stored_is_clamped(
+    given: float, expected: int
+) -> None:
+    """Every host number has a ceiling. ``games.rng_seed`` is a ``BIGINT``, so
+    a seed past ``2**63`` would make the end-of-game write fail and lose the
+    stored results; ``2**53 - 1`` is also the largest integer the browser
+    holds exactly, so the host sees the seed the game really used."""
+    cfg = build(base_payload(random_seed=given))
+    assert cfg.random_seed == expected
+    assert DEFAULT_LIMITS.max_random_seed == 2**53 - 1
 
 
 @pytest.mark.parametrize("mode", ["HOST_ASSIGNS", "PLAYER_CHOOSES", "RANDOM"])
@@ -2037,7 +2076,27 @@ def test_seasonal_period_weeks_is_not_upper_clamped(period_weeks: int) -> None:
     assert cfg.demand.period_weeks == period_weeks
 
 
-@pytest.mark.parametrize("phase", [0.0, 1.5, -3.25, 1e6, -1e6])
+@pytest.mark.parametrize("period_weeks", [2**31, 3_000_000_000, 10**30])
+def test_seasonal_period_weeks_beyond_what_can_be_stored_is_clamped(
+    period_weeks: int,
+) -> None:
+    """A long period is harmless to the game, but ``demand_configs.period_weeks``
+    is an ``INT``: past ``2**31 - 1`` the end-of-game write fails and the
+    stored results are lost."""
+    cfg = build(
+        payload_with_demand(
+            kind="SEASONAL",
+            base=8,
+            amplitude=4,
+            period_weeks=period_weeks,
+            phase=0.0,
+        )
+    )
+    assert cfg.demand.period_weeks == 2**31 - 1
+    assert DEFAULT_LIMITS.max_period_weeks == 2**31 - 1
+
+
+@pytest.mark.parametrize("phase", [0.0, 1.5, -3.25, 2 * math.pi, -2 * math.pi])
 def test_seasonal_phase_is_not_clamped(phase: float) -> None:
     cfg = build(
         payload_with_demand(
@@ -2045,6 +2104,30 @@ def test_seasonal_phase_is_not_clamped(phase: float) -> None:
         )
     )
     assert cfg.demand.phase == phase
+
+
+@pytest.mark.parametrize("phase", [7.0, -7.0, 100.25, 1e6, -1e6, 1e12])
+def test_seasonal_phase_past_a_full_turn_is_folded_back_into_one(
+    phase: float,
+) -> None:
+    """``demand_configs.phase`` is ``NUMERIC(10, 4)``, so a phase of ``1e6`` or
+    more cannot be stored. ``sin`` repeats every ``2*pi``, so folding the
+    phase into ``(-2*pi, 2*pi)`` bounds it and leaves the week-by-week demand
+    unchanged."""
+    from app.core.demand import generate_demand_series
+
+    cfg = build(
+        payload_with_demand(
+            kind="SEASONAL", base=40, amplitude=30, period_weeks=12, phase=phase
+        )
+    )
+    assert abs(cfg.demand.phase) < 2 * math.pi
+    assert math.isclose(math.sin(cfg.demand.phase), math.sin(phase), abs_tol=1e-9)
+
+    unfolded = SeasonalDemand(base=40, amplitude=30, period_weeks=12, phase=phase)
+    assert generate_demand_series(cfg.demand, 36, 1) == generate_demand_series(
+        unfolded, 36, 1
+    )
 
 
 @pytest.mark.parametrize("field", ["mean", "stdev"])

@@ -326,36 +326,52 @@ async def end_game_early(sid: str, data: dict | None = None) -> None:
 @sio.event
 @guarded("error")
 async def request_state(sid: str, data: dict | None = None) -> None:
-    """``§3.7``. Purely a read: mutates nothing, acquires no lock."""
+    """``§3.7``. Changes no game state; the one write is the event counter.
+
+    The reply needs a ``seq`` of its own, above every number already sent.
+    The client drops any event whose ``seq`` is not above the last one it
+    applied, so a reply reusing the room's current number is dropped by
+    exactly the client that has seen the latest event, and the recovery path
+    recovers nothing. Minting that number is a read-modify-write, so it takes
+    the lock, and the reply goes out after the lock is released.
+    """
     data = _payload(data)
     room_id = _room_id_of(data)
     if room_id is None:
         return
 
     state_svc = get_state_service()
-    room = await state_svc.get_room(room_id)
-    if room is None:
-        return
+    reply: tuple[str, dict]
 
-    engine = state_svc.load_engine(room)
-    if engine is None:
-        return
+    async with state_svc.lock(room_id):
+        room = await state_svc.get_room(room_id)
+        if room is None:
+            return
 
-    if sid == room.get("host_sid"):
-        await socket_manager.emit_to_sid(
-            sid, "host_state", {"seq": room["seq"], **engine.host_view()}
-        )
-        return
+        engine = state_svc.load_engine(room)
+        if engine is None:
+            return
 
-    alias = room["sid_to_alias"].get(sid)
-    participant = room["participants"].get(alias) if alias else None
-    if participant is None or participant.get("role") is None:
-        return
+        if sid == room.get("host_sid"):
+            reply = (
+                "host_state",
+                {"seq": state_svc.next_seq(room), **engine.host_view()},
+            )
+        else:
+            alias = room["sid_to_alias"].get(sid)
+            participant = room["participants"].get(alias) if alias else None
+            if participant is None or participant.get("role") is None:
+                return
+            role = Role(participant["role"])
+            reply = (
+                "your_state",
+                {"seq": state_svc.next_seq(room), **engine.player_view(role)},
+            )
 
-    role = Role(participant["role"])
-    await socket_manager.emit_to_sid(
-        sid, "your_state", {"seq": room["seq"], **engine.player_view(role)}
-    )
+        await state_svc.save_room(room["room_code"], room)
+
+    event, payload = reply
+    await socket_manager.emit_to_sid(sid, event, payload)
 
 
 # --- disconnection -------------------------------------------------------------- #

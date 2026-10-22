@@ -52,8 +52,12 @@ def _round_half_up(value: float) -> int:
     `round()` is banker's rounding -- `round(2.5) == 2` but `round(3.5) == 4` --
     which makes SEASONAL and RAMP series subtly asymmetric and impossible to
     reason about in a test.
+
+    The `1e-9` guards an exact half against float noise: `0.29 * 50` is 14.5
+    on paper and `14.499999999999998` in binary, which a bare `floor` would
+    send down to 14.
     """
-    return math.floor(value + 0.5)
+    return math.floor(value + 0.5 + 1e-9)
 
 
 def _clamp(value: int, low: int, high: int) -> int:

@@ -642,6 +642,20 @@ def test_fm5_a_raw_of_exactly_10_5_rounds_to_11_not_10() -> None:
     assert order == 11
 
 
+def test_fm5_an_exact_half_lost_to_float_noise_still_rounds_up() -> None:
+    # 4 + 0.4 * (5 - 0.55 * 25) is exactly 0.5, but the float arithmetic
+    # gives 0.4999999999999991, which a bare floor(x + 0.5) sends to 0.
+    config = make_config(
+        role_kwargs={"initial_inventory": 10},
+        bot_kwargs={"alpha": 0.4, "beta": 0.55, "target_stock_multiplier": 0.5},
+    )
+    bot = bot_for(Role.RETAILER, config)
+    assert bot.memory.expected_demand == pytest.approx(4.0)
+    assert bot.target_stock == pytest.approx(5.0)
+
+    assert bot.decide(inventory=0, backlog=0, supply_line=25) == 1
+
+
 # --------------------------------------------------------------------------
 # Failure mode 6 -- shared memory between bots
 # --------------------------------------------------------------------------

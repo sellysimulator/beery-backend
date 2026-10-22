@@ -20,6 +20,7 @@ from typing import Annotated, Any, Literal, NoReturn
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .enums import DemandKind, Distribution, Role, RoleAssignmentMode
+from .limits import DEFAULT_LIMITS, Limits
 
 __all__ = [
     "DEFAULT_LIMITS",
@@ -55,22 +56,8 @@ class ConfigValidationError(ValueError):
         self.field = field
 
 
-class Limits(BaseModel):
-    """The hard ceilings from `00-decisions.md` §5, injected rather than imported,
-    so `app/core` stays free of `app.config`."""
-
-    model_config = ConfigDict(frozen=True)
-
-    max_order_quantity: int = 9_999
-    max_weeks: int = 104
-    min_weeks: int = 8
-    max_delay_weeks: int = 8
-    min_delay_weeks: int = 1
-    max_initial_quantity: int = 9_999
-    max_unit_value: float = 1_000_000.0
-
-
-DEFAULT_LIMITS: Limits = Limits()
+# `Limits` and `DEFAULT_LIMITS` are defined in `limits.py`. They are imported
+# above and stay in `__all__`, so every import of them from here still works.
 
 
 # --------------------------------------------------------------------------- #
@@ -502,6 +489,10 @@ class GameConfig(BaseModel):
 
         # An unusable seed falls back to None, never to 0: see `_optional_int`.
         random_seed = _optional_int(raw.get("random_seed"), "random_seed")
+        if random_seed is not None:
+            random_seed = max(
+                -limits.max_random_seed, min(limits.max_random_seed, random_seed)
+            )
 
         preset_raw = raw.get("preset_name")
         preset_name = preset_raw if isinstance(preset_raw, str) else None
@@ -800,15 +791,23 @@ def _clamped_demand(raw: Any, duration_weeks: int, limits: Limits) -> _AnyDemand
             raise ConfigValidationError(
                 "demand.period_weeks", "period_weeks must be at least 2."
             )
+        phase = _as_float(
+            fields.get("phase", _default_of(SeasonalDemand, "phase")),
+            _default_of(SeasonalDemand, "phase"),
+            "demand.phase",
+        )
+        if abs(phase) > 2 * math.pi:
+            # `sin` repeats every full turn, so folding the phase back into
+            # one leaves the demand as it was while keeping it inside the
+            # NUMERIC(10, 4) `demand_configs.phase` column. `atan2` does the
+            # fold through libm's exact reduction; `fmod` by a float 2*pi
+            # drifts for a large phase.
+            phase = math.atan2(math.sin(phase), math.cos(phase))
         return SeasonalDemand(
             base=_demand_int(fields, "base", SeasonalDemand, cap),
             amplitude=_demand_int(fields, "amplitude", SeasonalDemand, cap),
-            period_weeks=period_weeks,
-            phase=_as_float(
-                fields.get("phase", _default_of(SeasonalDemand, "phase")),
-                _default_of(SeasonalDemand, "phase"),
-                "demand.phase",
-            ),
+            period_weeks=min(period_weeks, limits.max_period_weeks),
+            phase=phase,
         )
 
     if kind is DemandKind.STOCHASTIC:

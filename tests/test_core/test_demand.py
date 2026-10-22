@@ -172,6 +172,17 @@ def test_half_up_rounding_on_an_exact_half() -> None:
     assert generate_demand_series(cfg, 6, 1) == [1, 1, 2, 2, 3, 3]
 
 
+def test_half_up_rounding_survives_float_noise_on_an_exact_half() -> None:
+    """An exact half that float arithmetic lands just below still rounds up.
+
+    ``0.29 * 50`` is 14.5 exactly, but in binary it comes out as
+    ``14.499999999999998``, and a bare ``floor(x + 0.5)`` turns that into 14.
+    """
+    cfg = RampDemand(initial_value=0, slope_per_week=0.29, start_week=1, cap=None)
+    assert 0.29 * 50 < 14.5
+    assert generate_demand_series(cfg, 50, 1)[-1] == 15
+
+
 def test_step_week_boundary_is_not_off_by_one() -> None:
     """FM 2: with ``step_week=5``, week 4 is old and week 5 is new."""
     cfg = StepDemand(initial_value=4, step_week=5, step_value=8)

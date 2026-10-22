@@ -28,8 +28,13 @@ __all__ = ["BotAgent", "BotMemory", "bot_for"]
 
 
 def _half_up_round(value: float) -> int:
-    """Half-up rounding: `floor(x + 0.5)`, never Python's round-half-to-even."""
-    return math.floor(value + 0.5)
+    """Half-up rounding: `floor(x + 0.5)`, never Python's round-half-to-even.
+
+    The `1e-9` keeps an exact half that float arithmetic lands just below
+    (`4 + 0.4 * (5 - 0.55 * 25)` comes out as `0.4999999999999991`) from
+    rounding down.
+    """
+    return math.floor(value + 0.5 + 1e-9)
 
 
 @dataclass

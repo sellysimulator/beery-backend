@@ -942,6 +942,27 @@ def test_ac25_orders_in_flight_equals_the_suppliers_pipeline_total() -> None:
 
 
 # --------------------------------------------------------------------------
+# §3.8 -- the per-round view leaves the history out
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("role", list(ROLE_ORDER))
+def test_player_view_without_history_is_the_full_view_minus_own_history(
+    role: Role,
+) -> None:
+    engine = GameEngine.start(get_preset("CLASSIC_MIT"), SEED)
+    for _ in range(3):
+        play_week(engine, {r: 4 for r in ROLE_ORDER})
+
+    full = engine.player_view(role)
+    per_round = engine.player_view(role, with_history=False)
+
+    assert [record["week"] for record in full["own_history"]] == [1, 2, 3]
+    assert "own_history" not in per_round
+    assert per_round == {k: v for k, v in full.items() if k != "own_history"}
+
+
+# --------------------------------------------------------------------------
 # §3.8 -- the rest of the player view's fixed keys
 # --------------------------------------------------------------------------
 

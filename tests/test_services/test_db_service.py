@@ -24,15 +24,17 @@ from __future__ import annotations
 import dataclasses
 import inspect
 import logging
+import math
 from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from app.core.config_models import StepDemand
+from app.core.config_models import GameConfig, StepDemand
 from app.core.enums import ROLE_ORDER, DemandKind, Role
 from app.core.game_engine import WeekRecord
+from app.core.limits import DEFAULT_LIMITS
 from app.core.stats import compute_stats
 from app.models.game import (
     DemandConfigRow,
@@ -852,3 +854,39 @@ def test_ac11_bot_participant_has_null_identity_columns(db):
     assert row.user_id is None
     assert row.guest_identity is None
     assert bool(row.is_bot) is True
+
+
+# ---------------------------------------------------------------------------
+# Every host number is bounded to what its column can hold
+# ---------------------------------------------------------------------------
+
+
+def test_host_numbers_past_their_column_ranges_still_persist(db):
+    """A ``random_seed`` past ``BIGINT``, a ``period_weeks`` past ``INT`` and a
+    ``phase`` past ``NUMERIC(10, 4)`` were accepted, played to the end, and
+    then failed this write with "Out of range value for column", losing the
+    stored results. ``from_host_input`` now bounds all three."""
+    config = GameConfig.from_host_input(
+        {
+            **make_config(duration_weeks=8).to_payload(),
+            "random_seed": 2**70,
+            "demand": {
+                "kind": "SEASONAL",
+                "base": 8,
+                "amplitude": 4,
+                "period_weeks": 3_000_000_000,
+                "phase": 1e7,
+            },
+        },
+        DEFAULT_LIMITS,
+    )
+    assert config.random_seed is not None
+    engine = run_full_game(config, seed=config.random_seed)
+    snapshot = build_snapshot(make_room_document(config, engine), config, engine)
+
+    game_id = DbService().persist_game(db, snapshot)
+
+    assert db.get(Game, game_id).rng_seed == DEFAULT_LIMITS.max_random_seed
+    row = db.query(DemandConfigRow).filter_by(game_id=game_id).one()
+    assert row.period_weeks == DEFAULT_LIMITS.max_period_weeks
+    assert abs(float(row.phase)) < 2 * math.pi
