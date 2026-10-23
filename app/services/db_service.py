@@ -36,7 +36,7 @@ from ..core.enums import ROLE_ORDER, Role
 from ..core.game_engine import GameEngine, WeekRecord
 from ..core.stats import GameStats, compute_stats
 from ..models.game import DemandConfigRow, Game, GameConfigRow
-from ..models.user import User
+from .user_service import UserService
 
 logger = logging.getLogger(__name__)
 
@@ -273,6 +273,9 @@ _INSERT_WEEKS = _insert_statement("weeks", _WEEK_COLUMNS)
 class DbService:
     """Writes a finished game and everything under it (`§2`, `§3`)."""
 
+    def __init__(self, user_service: UserService | None = None) -> None:
+        self._user_service = user_service or UserService()
+
     def persist_game(self, db: Session, snapshot: GameSnapshot) -> int:
         """Write a finished game and everything under it. Returns `games.id`.
 
@@ -338,15 +341,11 @@ class DbService:
     # --- one row each ---------------------------------------------------- #
 
     def _insert_game(self, db: Session, snapshot: GameSnapshot) -> int:
-        host_user_id: int | None = None
-        if snapshot.host_identity is not None:
-            host_user_id = db.execute(
-                select(User.id).where(User.firebase_uid == snapshot.host_identity)
-            ).scalar_one_or_none()
-
+        # Who hosted is recorded once, on the host's `participants` row
+        # (`_insert_participants`), so a guest claim that attributes that row
+        # attributes the hosting with it.
         game = Game(
             room_code=snapshot.room_code,
-            host_user_id=host_user_id,
             host_display_name=snapshot.host_display_name,
             rng_seed=snapshot.seed,
             duration_weeks=snapshot.config.duration_weeks,
@@ -496,17 +495,19 @@ class DbService:
     def _resolve_attribution(
         self, db: Session, participant: ParticipantSnapshot
     ) -> tuple[int | None, str | None]:
-        """`§3.6`. A bot is `(None, None)`. A Firebase uid with no `users` row
-        -- a signed-in user who never hit `/users/upsert` -- is stored exactly
-        as a guest would be: `user_id` `None` (failure mode 11)."""
+        """`§3.6`. A bot is `(None, None)`, a guest `(None, guest_identity)`.
+
+        A Firebase uid always resolves to a `users` row: one that has none yet
+        -- a signed-in user who never hit `/users/upsert` -- gets a bare row
+        inside this transaction (failure mode 11). Storing `user_id` NULL
+        instead would leave the row with neither identity, which no later
+        sign-in or claim can ever attribute."""
         if participant.is_bot or participant.identity is None:
             return None, None
         if participant.identity.startswith("guest_"):
             return None, participant.identity
-        user_id = db.execute(
-            select(User.id).where(User.firebase_uid == participant.identity)
-        ).scalar_one_or_none()
-        return user_id, None
+        user = self._user_service.get_or_create(db, participant.identity)
+        return user.id, None
 
     @staticmethod
     def _bullwhip_ratio(

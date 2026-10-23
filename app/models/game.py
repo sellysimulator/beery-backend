@@ -83,13 +83,8 @@ class Game(Base, TimestampMixin):
     )
     # Indexed but NOT unique: room codes are recycled once a room expires.
     room_code: Mapped[str] = mapped_column(String(8), nullable=False, index=True)
-    # Nullable: a guest may host (**D3**), and deleting an account must not
-    # destroy the record the other players are entitled to.
-    host_user_id: Mapped[int | None] = mapped_column(
-        Integer,
-        ForeignKey("users.id", ondelete="SET NULL", name="fk_games_host_user_id"),
-        nullable=True,
-    )
+    # Who hosted is the `HOST` participant row's `user_id` / `guest_identity`,
+    # not a column here: one record, so a guest claim attributes it too.
     host_display_name: Mapped[str] = mapped_column(String(24), nullable=False)
     rng_seed: Mapped[int] = mapped_column(BigInteger, nullable=False)
     duration_weeks: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -115,7 +110,6 @@ class Game(Base, TimestampMixin):
     # games in the same room starting in the same microsecond -- not a case
     # to design for -- is the only thing this could ever reject in error.
     __table_args__ = (
-        Index("ix_games_host_user_id", "host_user_id"),
         UniqueConstraint(
             "room_code", "started_at", name="uq_games_room_code_started_at"
         ),

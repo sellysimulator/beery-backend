@@ -49,7 +49,7 @@ class UserService:
         email = _sanitise(email, _EMAIL_MAX_LENGTH)
         photo_url = _sanitise(photo_url, _PHOTO_URL_MAX_LENGTH)
 
-        user = self._get_or_create(db, firebase_uid)
+        user = self.get_or_create(db, firebase_uid)
         user.display_name = display_name
         user.email = email
         user.photo_url = photo_url
@@ -67,12 +67,13 @@ class UserService:
             query = query.with_for_update()
         return db.execute(query).scalar_one_or_none()
 
-    def _get_or_create(self, db: Session, firebase_uid: str) -> User:
+    def get_or_create(self, db: Session, firebase_uid: str) -> User:
         """The row for a uid, inserting it if missing, safe against a concurrent insert.
 
-        Two requests for the same uid (a doubled `/users/upsert` at sign-in, or
-        an upsert racing a guest claim) can both miss the lookup and both
-        INSERT. The INSERT runs in a savepoint: the loser rolls back only that
+        Does not commit: the row joins the caller's transaction. Two requests
+        for the same uid (a doubled `/users/upsert` at sign-in, an upsert
+        racing a guest claim, or a sign-in racing the end-of-game write) can
+        both miss the lookup and both INSERT. The INSERT runs in a savepoint: the loser rolls back only that
         savepoint, keeping the caller's transaction, and re-reads the winner's
         row. The re-read is a locking read because MySQL's REPEATABLE READ
         snapshot would otherwise still show no row.

@@ -293,6 +293,10 @@ def _resolve_export_authority(
     live room, or the secret is absent or wrong -- the registered host's own
     bearer token. Neither credential is used to probe the other: a wrong
     secret and a missing bearer token both fall through to the same 403.
+
+    The registered host is the account on the game's `HOST` participant row,
+    the one record of who hosted: a guest host who later claims their results
+    is attributed there, and may then export with their own token.
     """
     if room is not None:
         stored = room.get("host_secret") or ""
@@ -300,7 +304,13 @@ def _resolve_export_authority(
         if stored and supplied and hmac.compare_digest(stored, supplied):
             return
 
-    if game.host_user_id is not None:
+    host_user_id = db.execute(
+        select(Participant.user_id).where(
+            Participant.game_id == game.id,
+            Participant.participant_type == "HOST",
+        )
+    ).scalar_one_or_none()
+    if host_user_id is not None:
         claims = get_optional_firebase_user(authorization=authorization_header)
         if claims is not None:
             uid = claims.get("uid")
@@ -308,7 +318,7 @@ def _resolve_export_authority(
                 user_id = db.execute(
                     select(User.id).where(User.firebase_uid == uid)
                 ).scalar_one_or_none()
-                if user_id is not None and user_id == game.host_user_id:
+                if user_id is not None and user_id == host_user_id:
                     return
 
     raise HTTPException(
