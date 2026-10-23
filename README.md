@@ -70,12 +70,15 @@ Every router under `app/api/v1/` is auto-discovered, so this table is the whole 
 | `GET` | `/api/v1/rooms/{code}/config` | host secret | The current config |
 | `GET` | `/api/v1/games/{code}/results` | none | The full results payload for the latest finished game in that room — a results URL is shareable |
 | `GET` | `/api/v1/games/{code}/export` | host secret *or* the host's Firebase identity | The complete week-by-week record, `?format=csv` (default) or `json` |
+| `GET` | `/api/v1/games/id/{public_id}/results` | none | The same results payload, by the game's permanent id |
+| `GET` | `/api/v1/games/id/{public_id}/export` | the host's Firebase identity | The export by permanent id; no host secret, since room codes are reissued |
 | `POST` | `/api/v1/games/claim` | Firebase | Attributes a guest's finished games to the signed-in caller |
 | `POST` | `/api/v1/users/upsert` | Firebase | Creates or refreshes the caller's profile. The uid comes from the token, never the body |
 | `GET` | `/api/v1/users/me` | Firebase | The caller's profile, or 404 if it was never upserted |
 | `GET` | `/api/v1/users/me/stats` | Firebase | Aggregate statistics; a caller with no history gets a zero-filled 200, not a 404 |
 | `GET` | `/api/v1/users/me/games` | Firebase | Match history, newest first, `?page` / `?page_size` (clamped to 1–100) |
 | `GET` | `/api/v1/users/me/games/{game_id}` | Firebase | One of the caller's own games in full; 404 — never 403 — if they did not play in it |
+| `GET` | `/api/v1/users/me/hosted-games/{public_id}` | Firebase | 204 if the caller hosted that game, else 404; hosted games are never in the match history |
 
 In `/health/deep`, `status` is `"ok"` only when every backing service in use is reachable;
 otherwise `"degraded"`. With `REDIS_ENABLED=false` the unused Redis is not probed and is not
@@ -274,9 +277,9 @@ app/
 │       ├── __init__.py         all_routers(): every module's `router`, in module-name order
 │       ├── health.py           /health, /health/deep
 │       ├── users.py            /users/upsert, /users/me
-│       ├── user_games.py       /users/me/stats, /users/me/games[/{id}]
+│       ├── user_games.py       /users/me/stats, /users/me/games[/{id}], /users/me/hosted-games/{public_id}
 │       ├── rooms.py            /rooms/create, /rooms/presets, /rooms/{code}/status|config
-│       └── games.py            /games/{code}/results, /games/{code}/export, /games/claim
+│       └── games.py            /games/{code}|id/{public_id} results and export, /games/claim
 ├── core/                       pure domain logic — no I/O, no clock, no global RNG
 │   ├── enums.py                Role, RoomState, DemandKind, Distribution, …
 │   ├── config_models.py        GameConfig; validation and clamping

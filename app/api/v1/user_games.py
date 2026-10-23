@@ -276,8 +276,10 @@ def check_my_hosted_game(
     claims: Annotated[dict, Depends(get_current_firebase_user)],
 ) -> Response:
     """204 when the caller hosted this game: their account is on its `HOST`
-    participant row, directly or through a guest claim (`§3.8`). The results
-    page asks this before it offers the caller the export by id.
+    participant row, directly or through a guest claim (`14 §3.8`). The results
+    page asks this before it offers the caller the export by id (`15 §9`).
+    Hosted games are never part of the match history above: it counts only
+    rows with a `role`, and the host's row has none.
 
     404 -- never 403 -- when they did not, identical to an unknown id, so this
     route is never a game-existence oracle.

@@ -424,7 +424,7 @@ def export_game_by_public_id(
     authorization: str = Header(default=""),
 ) -> Response:
     """The same export, addressed by the game's permanent `public_id`, for
-    the registered host's own bearer token only (`§3.2a`).
+    the registered host's own bearer token only (`15 §9`).
 
     No `X-Host-Secret`: a room code is reissued once its room expires, so a
     live room under this game's code may be another game's, and its secret
