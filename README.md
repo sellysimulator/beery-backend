@@ -323,7 +323,7 @@ app/
         ├── lobby.py            joining, seating, config, start_game
         └── play.py             orders, pause/resume, bots, ending a game
 
-alembic/                        env.py reads settings.db_url; versions 0001 and 0002 (head)
+alembic/                        env.py reads settings.db_url; versions 0001 to 0004 (head)
 tests/
 ├── conftest.py                 FakeRedis, firebase_tokens, FakeSocketManager, the env pinning
 ├── test_skeleton/              the app, config, packaging and assembly

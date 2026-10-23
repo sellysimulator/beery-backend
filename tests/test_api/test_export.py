@@ -275,7 +275,17 @@ def _persist_manual_game_with_substitution(
     config = make_config(duration_weeks=duration_weeks)
     stats = compute_stats(history, demand_series, duration_weeks)
 
-    participants = [
+    # The host's row, as `build_snapshot` always writes it: export finds the
+    # registered host there.
+    host = ParticipantSnapshot(
+        alias="HOST",
+        display_name="Host",
+        role=None,
+        participant_type="HOST",
+        is_bot=False,
+        identity=host_uid,
+    )
+    participants = [host] + [
         ParticipantSnapshot(
             alias=f"P{index + 1}",
             display_name=f"{role.value.title()}Seat",
@@ -490,6 +500,71 @@ def test_ac16_after_room_expired_bearer_host_succeeds_others_get_403(
         EXPORT_URL(game["room_code"], "csv"), headers=other_headers
     )
     assert other_response.status_code == 403
+
+
+def test_a_guest_host_who_claims_their_results_may_export_with_their_token(
+    api_client, session_factory, firebase_tokens, fake_redis
+):
+    """The host is recorded once, on the `HOST` participant row, so the guest
+    claim that attributes that row also makes its account the host: before
+    the claim the token is refused, after it the export succeeds."""
+    guest = "guest_export-host-0000-0000-0000-000000000037"
+    game = persist_full_game(
+        session_factory,
+        seed=37,
+        host_identity=guest,
+        started_at=datetime(2026, 5, 18, 8, 0, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 5, 18, 10, 0, tzinfo=timezone.utc),
+    )
+    # No live Redis room is written for this room_code: "expired".
+    headers = bearer_for(
+        firebase_tokens, firebase_uid="uid-former-guest-host", token="tok-claim-37"
+    )
+    url = EXPORT_URL(game["room_code"], "csv")
+
+    assert api_client.get(url, headers=headers).status_code == 403
+
+    claim = api_client.post(
+        "/api/v1/games/claim", json={"guest_identity": guest}, headers=headers
+    )
+    assert claim.status_code == 200
+    assert claim.json()["claimed"] == 1
+
+    assert api_client.get(url, headers=headers).status_code == 200
+
+
+def test_export_by_public_id_is_for_the_host_token_only(
+    api_client, session_factory, firebase_tokens, fake_redis
+):
+    """`GET /games/id/{public_id}/export` names the game exactly, so a
+    recycled room code cannot hand over a different game, and it takes the
+    host's bearer token only: a live room's secret does not open it."""
+    game = _persist_export_game(session_factory, firebase_tokens, seed=38)
+    public_id = api_client.get(f"/api/v1/games/{game['room_code']}/results").json()[
+        "public_id"
+    ]
+    url = f"/api/v1/games/id/{public_id}/export"
+
+    own = api_client.get(url, params={"format": "csv"}, headers=game["headers"])
+    assert own.status_code == 200
+    assert (
+        own.text
+        == api_client.get(
+            EXPORT_URL(game["room_code"], "csv"), headers=game["headers"]
+        ).text
+    )
+
+    other_headers = bearer_for(
+        firebase_tokens, firebase_uid="uid-not-the-host", token="tok-other-992"
+    )
+    assert api_client.get(url, headers=other_headers).status_code == 403
+    assert api_client.get(url).status_code == 403
+    assert (
+        api_client.get(
+            "/api/v1/games/id/" + "0" * 32 + "/export", headers=game["headers"]
+        ).status_code
+        == 403
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -45,6 +45,7 @@ from app.models.game import (
     RoleConfigRow,
     Week,
 )
+from app.models.user import User
 from app.services.db_service import (
     DbService,
     GameSnapshot,
@@ -767,26 +768,35 @@ def test_ac9_demand_configs_step_only_columns(db):
         assert getattr(row, column) is None, column
 
 
-def test_ac10_guest_hosted_game_persists_with_null_host_user_id(db):
+def _host_row(db, game_id: int) -> Participant:
+    return (
+        db.query(Participant).filter_by(game_id=game_id, participant_type="HOST").one()
+    )
+
+
+def test_ac10_guest_hosted_game_persists_with_a_guest_host_row(db):
+    guest = "guest_00000000-0000-0000-0000-000000000061"
     config = make_config(duration_weeks=6)
     engine = run_full_game(config, seed=61)
     room = make_room_document(
         config,
         engine,
-        host_identity=None,
+        host_identity=guest,
         host_display_name="Guest Host",
     )
     snapshot = build_snapshot(room, config, engine)
     game_id = DbService().persist_game(db, snapshot)
 
     game = db.get(Game, game_id)
-    assert game.host_user_id is None
     assert game.host_display_name == "Guest Host"
+    host = _host_row(db, game_id)
+    assert host.user_id is None
+    assert host.guest_identity == guest
 
 
 def test_registered_host_resolves_to_the_matching_users_row(db):
     """The positive case AC 10 needs a contrast against: a bug that always
-    nulls `host_user_id` would pass AC 10 alone but fails here."""
+    nulls the host row's `user_id` would pass AC 10 alone but fails here."""
     firebase_uid = "uid-registered-host"
     user_id = insert_user(
         db.connection(), firebase_uid=firebase_uid, display_name="Prof"
@@ -804,8 +814,9 @@ def test_registered_host_resolves_to_the_matching_users_row(db):
     snapshot = build_snapshot(room, config, engine)
     game_id = DbService().persist_game(db, snapshot)
 
-    game = db.get(Game, game_id)
-    assert game.host_user_id == user_id
+    host = _host_row(db, game_id)
+    assert host.user_id == user_id
+    assert host.guest_identity is None
 
 
 # ---------------------------------------------------------------------------
@@ -813,10 +824,11 @@ def test_registered_host_resolves_to_the_matching_users_row(db):
 # ---------------------------------------------------------------------------
 
 
-def test_fm11_unregistered_firebase_uid_persists_with_null_user_id(db):
+def test_fm11_unregistered_firebase_uid_gets_a_users_row(db):
     """A Firebase uid with no `users` row (a signed-in user who never called
-    `/users/upsert`) must not raise a foreign-key error; it persists exactly
-    like a guest-shaped attribution (§3.6)."""
+    `/users/upsert`) must not raise a foreign-key error, and must not be left
+    with neither identity: the write creates a bare `users` row for it, so
+    the result is attributed and shows on that account (§3.6)."""
     config = make_config(duration_weeks=6)
     engine = run_full_game(config, seed=59)
     participants = {
@@ -834,10 +846,13 @@ def test_fm11_unregistered_firebase_uid_persists_with_null_user_id(db):
 
     game_id = DbService().persist_game(db, snapshot)  # must not raise
 
-    game = db.get(Game, game_id)
-    assert game.host_user_id is None
+    users = {u.firebase_uid: u for u in db.query(User).all()}
+    host = _host_row(db, game_id)
+    assert host.user_id == users["uid-never-registered-host"].id
     player_row = db.query(Participant).filter_by(game_id=game_id, alias="P1").one()
-    assert player_row.user_id is None
+    assert player_row.user_id == users["uid-never-registered"].id
+    assert player_row.guest_identity is None
+    assert users["uid-never-registered"].display_name is None
 
 
 def test_ac11_bot_participant_has_null_identity_columns(db):

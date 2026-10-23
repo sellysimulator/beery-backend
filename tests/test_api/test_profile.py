@@ -48,12 +48,10 @@ def _persist_game_for_player(
 ):
     """Persist a finished game with ``identity`` playing ``role``.
 
-    A non-guest ``identity`` must already have a ``users`` row *before* the
-    game is persisted, or ``DbService._resolve_attribution`` cannot find it
-    and the row is stored with ``user_id`` NULL (indistinguishable from an
-    unregistered uid, failure mode 11 of ``14-end-of-game-persistence.md``)
-    -- which would make every "my games" query below correctly find
-    nothing, for the wrong reason.
+    A non-guest ``identity`` is registered first, with ``role.value`` as its
+    display name, so the profile reads a known name rather than the bare
+    ``users`` row the end-of-game write would otherwise create for it
+    (failure mode 11 of ``14-end-of-game-persistence.md``).
     """
     if identity is not None and not identity.startswith("guest_"):
         register_user(session_factory, firebase_uid=identity, display_name=role.value)
@@ -262,3 +260,44 @@ def test_fm6_match_history_issues_a_bounded_number_of_statements(
         f"expected at most 3 statements for 25 games, ran {log.total}: "
         f"{[r.statement for r in log.records]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /users/me/hosted-games/{public_id} (§3.8)
+# ---------------------------------------------------------------------------
+
+
+def HOSTED_URL(public_id: str) -> str:
+    return f"/api/v1/users/me/hosted-games/{public_id}"
+
+
+def test_hosted_game_check_is_204_for_the_host_and_404_for_anyone_else(
+    api_client, session_factory, firebase_tokens
+):
+    register_user(session_factory, firebase_uid="uid-hosted-check-host")
+    game = persist_full_game(
+        session_factory, seed=81, host_identity="uid-hosted-check-host"
+    )
+    public_id = api_client.get(f"/api/v1/games/{game['room_code']}/results").json()[
+        "public_id"
+    ]
+    host = bearer_for(
+        firebase_tokens, firebase_uid="uid-hosted-check-host", token="tok-hosted-81"
+    )
+    other = bearer_for(
+        firebase_tokens, firebase_uid="uid-hosted-check-other", token="tok-other-81"
+    )
+
+    assert api_client.get(HOSTED_URL(public_id), headers=host).status_code == 204
+    not_host = api_client.get(HOSTED_URL(public_id), headers=other)
+    unknown = api_client.get(HOSTED_URL("0" * 32), headers=host)
+    # The same 404 for "not yours" and "no such game": never an oracle.
+    assert not_host.status_code == 404
+    assert unknown.status_code == 404
+    assert not_host.json() == unknown.json()
+
+
+def test_hosted_game_check_without_a_token_is_401(api_client):
+    response = api_client.get(HOSTED_URL("0" * 32))
+    assert response.status_code == 401
+    assert isinstance(response.json()["detail"], str)

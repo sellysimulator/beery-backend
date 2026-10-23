@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -267,3 +267,43 @@ def get_my_game(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=_INTERNAL_ERROR_DETAIL,
         ) from None
+
+
+@router.get("/me/hosted-games/{public_id}", status_code=status.HTTP_204_NO_CONTENT)
+def check_my_hosted_game(
+    public_id: str,
+    db: Annotated[Session, Depends(get_db)],
+    claims: Annotated[dict, Depends(get_current_firebase_user)],
+) -> Response:
+    """204 when the caller hosted this game: their account is on its `HOST`
+    participant row, directly or through a guest claim (`§3.8`). The results
+    page asks this before it offers the caller the export by id.
+
+    404 -- never 403 -- when they did not, identical to an unknown id, so this
+    route is never a game-existence oracle.
+    """
+    try:
+        user_id = _resolve_user_id(db, claims["uid"])
+        hosted = user_id is not None and (
+            db.execute(
+                select(Participant.id)
+                .join(Game, Game.id == Participant.game_id)
+                .where(
+                    Game.public_id == public_id,
+                    Participant.participant_type == "HOST",
+                    Participant.user_id == user_id,
+                )
+            ).scalar_one_or_none()
+            is not None
+        )
+    except Exception:
+        logger.exception("Failed to check the caller's hosted game.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=_INTERNAL_ERROR_DETAIL,
+        ) from None
+    if not hosted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_GAME_NOT_FOUND_DETAIL
+        )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

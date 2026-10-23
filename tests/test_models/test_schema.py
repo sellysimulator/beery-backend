@@ -284,7 +284,15 @@ def test_deleting_a_user_keeps_the_games_they_played(db: Connection) -> None:
     user_id = insert_user(db)
     game_ids = []
     for _ in range(3):
-        game_id = insert_game(db, host_user_id=user_id)
+        game_id = insert_game(db)
+        insert_row(
+            db,
+            "participants",
+            game_id=game_id,
+            alias="HOST",
+            participant_type="HOST",
+            user_id=user_id,
+        )
         insert_row(db, "participants", game_id=game_id, alias="P1", user_id=user_id)
         for role in Role:
             insert_row(db, "weeks", game_id=game_id, week=1, role=role.value)
@@ -293,16 +301,12 @@ def test_deleting_a_user_keeps_the_games_they_played(db: Connection) -> None:
     db.execute(text("DELETE FROM users WHERE id = :id"), {"id": user_id})
 
     for game_id in game_ids:
-        host = db.execute(
-            text("SELECT host_user_id FROM games WHERE id = :id"), {"id": game_id}
-        ).scalar_one()
-        assert host is None
         assert _count(db, "weeks", game_id) == 4
-        owner = db.execute(
+        owners = db.execute(
             text("SELECT user_id FROM participants WHERE game_id = :id"),
             {"id": game_id},
-        ).scalar_one()
-        assert owner is None
+        ).scalars()
+        assert list(owners) == [None, None]
 
 
 def _count(db: Connection, table: str, game_id: int) -> int:
@@ -316,14 +320,29 @@ def _count(db: Connection, table: str, game_id: int) -> int:
 # --- criteria 14 and 15 ----------------------------------------------------
 
 
-def test_a_guest_hosted_game_inserts_with_a_null_host(db: Connection) -> None:
-    """AC 14 and **D3** -- hosting is a capability, not an account."""
-    assert columns(db, "games")["host_user_id"]["IS_NULLABLE"] == "YES"
-    game_id = insert_game(db, host_user_id=None, host_display_name="Guest host")
-    stored = db.execute(
-        text("SELECT host_user_id FROM games WHERE id = :id"), {"id": game_id}
-    ).scalar_one()
-    assert stored is None
+def test_a_guest_hosted_game_inserts_with_no_account(db: Connection) -> None:
+    """AC 14 and **D3** -- hosting is a capability, not an account. Who
+    hosted lives only on the ``HOST`` participant row, so ``games`` names no
+    account at all."""
+    assert "host_user_id" not in columns(db, "games")
+    game_id = insert_game(db, host_display_name="Guest host")
+    insert_row(
+        db,
+        "participants",
+        game_id=game_id,
+        alias="HOST",
+        participant_type="HOST",
+        guest_identity="guest_00000000-0000-0000-0000-000000000014",
+    )
+    host = db.execute(
+        text(
+            "SELECT user_id, guest_identity FROM participants "
+            "WHERE game_id = :id AND participant_type = 'HOST'"
+        ),
+        {"id": game_id},
+    ).one()
+    assert host.user_id is None
+    assert host.guest_identity is not None
 
 
 def test_participants_accepts_a_guest_and_a_bot(db: Connection) -> None:

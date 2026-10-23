@@ -219,3 +219,64 @@ def _operations(script: str, function: str) -> list[str]:
         for line in body.group(1).splitlines()
         if line.strip().startswith("op.")
     ]
+
+
+# --- 0004: the host is recorded on its participant row only ---------------
+
+
+def test_0004_moves_the_host_onto_its_row_and_the_downgrade_restores_it(
+    blank_database: str, alembic: AlembicRunner
+) -> None:
+    """A game stored before 0004 whose `HOST` row carries no identity keeps
+    its registered host: the upgrade copies `games.host_user_id` onto the row
+    before dropping the column, and the downgrade reads the column back."""
+    alembic(blank_database, "upgrade", "0003")
+    engine = create_engine(blank_database, future=True)
+    try:
+        with engine.begin() as connection:
+            user_id = connection.execute(
+                text("INSERT INTO users (firebase_uid) VALUES ('uid-0004-host')")
+            ).lastrowid
+            game_id = connection.execute(
+                text(
+                    "INSERT INTO games (room_code, host_user_id, host_display_name,"
+                    " rng_seed, duration_weeks, weeks_played, started_at,"
+                    " finished_at, chain_total_cost, public_id)"
+                    " VALUES ('R0004', :user_id, 'Prof', 1, 8, 8,"
+                    " '2026-01-01 08:00:00', '2026-01-01 10:00:00', 0, 'p0004')"
+                ),
+                {"user_id": user_id},
+            ).lastrowid
+            connection.execute(
+                text(
+                    "INSERT INTO participants"
+                    " (game_id, alias, display_name, participant_type)"
+                    " VALUES (:game_id, 'HOST', 'Prof', 'HOST')"
+                ),
+                {"game_id": game_id},
+            )
+
+        alembic(blank_database, "upgrade", "head")
+        with engine.connect() as connection:
+            host = connection.execute(
+                text("SELECT user_id FROM participants WHERE game_id = :id"),
+                {"id": game_id},
+            ).scalar_one()
+            games_columns = connection.execute(
+                text(
+                    "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'games'"
+                )
+            ).scalars()
+            assert "host_user_id" not in set(games_columns)
+        assert host == user_id
+
+        alembic(blank_database, "downgrade", "0003")
+        with engine.connect() as connection:
+            restored = connection.execute(
+                text("SELECT host_user_id FROM games WHERE id = :id"),
+                {"id": game_id},
+            ).scalar_one()
+        assert restored == user_id
+    finally:
+        engine.dispose()

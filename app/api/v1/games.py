@@ -413,10 +413,57 @@ async def export_game(
             detail=_INTERNAL_ERROR_DETAIL,
         ) from None
 
-    filename = f"beery-{room_code}-{game.finished_at:%Y%m%d}.csv"
+    return _export_response(game, format, results, weeks)
+
+
+@router.get("/id/{public_id}/export")
+def export_game_by_public_id(
+    public_id: str,
+    db: Annotated[Session, Depends(get_db)],
+    format: Literal["csv", "json"] = "csv",
+    authorization: str = Header(default=""),
+) -> Response:
+    """The same export, addressed by the game's permanent `public_id`, for
+    the registered host's own bearer token only (`§3.2a`).
+
+    No `X-Host-Secret`: a room code is reissued once its room expires, so a
+    live room under this game's code may be another game's, and its secret
+    must not open this one.
+    """
+    try:
+        game = find_game_by_public_id(db, public_id)
+        if game is None:
+            # 403, not 404, for the same reason as `export_game`.
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail=_EXPORT_FORBIDDEN_DETAIL
+            )
+
+        _resolve_export_authority(db, None, game, "", authorization)
+
+        results = build_results_response(db, game)
+        weeks = build_week_export_rows(db, game)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to export game %s.", public_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=_INTERNAL_ERROR_DETAIL,
+        ) from None
+
+    return _export_response(game, format, results, weeks)
+
+
+def _export_response(
+    game: Game,
+    format: Literal["csv", "json"],
+    results: ResultsResponse,
+    weeks: list[dict],
+) -> Response:
     if format == "json":
         return JSONResponse(content=_export_service.to_json(results, weeks))
 
+    filename = f"beery-{game.room_code}-{game.finished_at:%Y%m%d}.csv"
     csv_text = _export_service.to_csv(weeks)
     return Response(
         content=csv_text,

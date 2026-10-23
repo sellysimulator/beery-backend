@@ -93,7 +93,7 @@ app/
     manager.py       AsyncServer `sio` + `socket_manager` (sid → room/alias/identity)
     errors.py        `@guarded(...)` decorator
     handlers/        auto-discovered: connection.py, lobby.py, play.py
-alembic/             env.py reads the URL from settings; versions/0001, 0002
+alembic/             env.py reads the URL from settings; versions/0001 … 0004
 tests/               test_skeleton, test_auth, test_core, test_services, test_api,
                      test_sockets, test_models (dbschema), test_deploy
 ```
@@ -118,7 +118,7 @@ do not edit it to register one.
 | DB connection | `settings.db_url` → `mysql+pymysql://...`, credentials percent-encoded with `quote(..., safe="")`. Engine in `app/db/session.py`: `pool_pre_ping`, `pool_recycle=3600`, `pool_size=10`, `max_overflow=20`, and a `connect` listener forcing `SET time_zone='+00:00'`. |
 | Auth | Firebase Admin only. `app/core/firebase.py::init_firebase()` returns `None` (never raises) when unconfigured. `app/api/deps.py::verify_firebase_id_token` is the **one** verifier, shared by REST and the socket handshake. No JWTs are minted here. |
 | CORS | `app/main.py` sets `allow_credentials=True`, so `Settings` **rejects `"*"` in `CORS_ORIGINS` at load**. `sockets/manager.py` passes the same list to `cors_allowed_origins`. |
-| Alembic | `alembic.ini` has **no `sqlalchemy.url`** — `alembic/env.py` reads `settings.db_url` and imports `app.models` so `Base.metadata` is populated. Head is `0002`. |
+| Alembic | `alembic.ini` has **no `sqlalchemy.url`** — `alembic/env.py` reads `settings.db_url` and imports `app.models` so `Base.metadata` is populated. Head is `0004`. |
 | Deployment | `render.yaml`: one Docker web service, `healthCheckPath: /api/v1/health`, `preDeployCommand: alembic upgrade head`, `REDIS_ENABLED=false`. MySQL is **not** declared there — provisioned externally and wired in via env. Redis is **optional** and likewise not declared; with the flag off the deployment has no Redis at all, which is only valid at exactly one instance. |
 | Docker | `python:3.11-slim`, plain uvicorn (no gunicorn), `--http h11 --proxy-headers`, `CMD` binds `${PORT:-8080}`. `.dockerignore` excludes `.env`, `tests/`, `venv/`, `.git/`. |
 | CI | `.github/workflows/ci.yml`, runs at repo root (this repo IS `Beery_Backend`; no `working-directory`). jobs: `test` (ruff + black + mypy app/core + pytest `-m "not dbschema"` at ≥80% + `app/core` at ≥95% + docker build), `dbschema` (Testcontainers MySQL, fails if nothing passed). No deploy job: Render auto-deploys `main` after checks pass (`autoDeployTrigger: checksPass`). |
