@@ -138,7 +138,7 @@ cp .env.example .env
 ./venv/bin/uvicorn app.main:application --reload          # local iteration
 
 # tests
-./venv/bin/python -m pytest -m "not dbschema"             # 1557 passed, 1 skipped (~37s)
+./venv/bin/python -m pytest -m "not dbschema"             # 1652 passed, 1 skipped (~37s; verified 2026-11-02)
 ./venv/bin/python -m pytest tests/test_core               # one area
 ./venv/bin/python -m pytest -m dbschema                   # needs a Docker daemon (mysql:8.4)
 BEERY_DOCKER_BUILD_TEST=1 ./venv/bin/python -m pytest -k docker   # the opt-in image build
@@ -221,6 +221,13 @@ mount in the image, so a source change needs a rebuild.
   window, backend first, unless the backend stops sending a field the live frontend reads
   (e.g. `own_history` leaving the per-round `your_state`): then frontend first, per
   `DEPLOY.md`.
+- **`host_view()` carries `order_history`** (2026-11-02, `../CHARTS-PLAN.md` BE-4,
+  `07 §3.9`): `{role.value: [order per CLOSED week]}` in `ROLE_ORDER`, every key present and
+  `[]` before the first close, **derived** from `history` (not in `to_payload`). It is every
+  order quantity of the game so far, so `host_state` must stay `emit_to_sid` to the host. It
+  is on `12 §3.4`'s list of keys no room broadcast may carry, and `test_redaction.py` checks
+  it. The frontend reads it as optional, so a frontend deployed ahead of this backend renders
+  as before, but the intended order is still backend first.
 - **Error handling.** REST: `HTTPException` with a **string** `detail`, never `str(e)`;
   log with `logger.exception` and return a generic message. Sockets: apply `@guarded()`
   *under* `@sio.event` — `guarded("error")` for play (`{message, code}`), `guarded("join_error")`
