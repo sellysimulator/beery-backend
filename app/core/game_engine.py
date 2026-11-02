@@ -635,6 +635,11 @@ class GameEngine:
         is `0` for the three non-Factory roles rather than `null`, so the host's
         four role cards are one shape. `demand_series` is the full series,
         future weeks included, which is why this view is never broadcast.
+        `order_history` maps each role to the `order` of every closed week, in
+        week order (`[]` before the first week closes). It is derived from
+        `history`, never stored: the open week adds nothing until it closes, a
+        forced week carries the `0` the engine recorded, and a bot week the
+        bot's recorded order.
         """
         roles: dict = {}
         for role in ROLE_ORDER:
@@ -654,6 +659,10 @@ class GameEngine:
                 "has_submitted": role in self.pending_orders,
                 "is_bot": agent.is_bot,
             }
+        order_history: dict[str, list[int]] = {
+            role.value: [r.order for r in self.history if r.role is role]
+            for role in ROLE_ORDER
+        }
         return {
             "week": self.week,
             "duration_weeks": self.config.duration_weeks,
@@ -665,6 +674,7 @@ class GameEngine:
                 self.agents[role].accumulated_cost for role in ROLE_ORDER
             ),
             "roles": roles,
+            "order_history": order_history,
         }
 
     # --- persistence -------------------------------------------------------- #

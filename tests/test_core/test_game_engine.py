@@ -1170,6 +1170,7 @@ def test_host_view_keys_and_unredacted_series() -> None:
         "awaiting_roles",
         "chain_total_cost",
         "roles",
+        "order_history",
     }
     assert view["week"] == 1
     assert view["duration_weeks"] == 36
