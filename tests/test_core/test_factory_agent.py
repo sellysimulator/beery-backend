@@ -237,55 +237,14 @@ def test_a_long_overload_conserves_every_requested_unit() -> None:
 
 
 # --------------------------------------------------------------------------
-# §3.6 -- a negative qty cancels against the queue
+# §3.6 -- there are no negative orders (amended 2026-11-02)
 # --------------------------------------------------------------------------
 
 
-def test_a_cancellation_draws_against_the_production_queue() -> None:
-    config = make_config(
-        production_capacity_per_week=10,
-        production_delay_weeks=2,
-        initial_pipeline_quantity=0,
-    )
-    factory = agent_for(Role.FACTORY, config)
-    factory.advance()
-    factory.receive_order(0)
-    factory.start_production(14)
-    assert factory.production_queue == 4
-
-    factory.advance()
-    factory.receive_order(0)
-    outcome = factory.start_production(-3)
-
-    assert outcome.requested == 1
-    assert outcome.started == 1
-    assert outcome.queued == 0
-    assert factory.production_queue == 0
-    # the week proceeds normally: the started unit entered the pipeline
-    assert len(factory.shipments) == factory.shipments.length
-    assert factory.supply_line() == 10 + 1
-
-
-def test_a_cancellation_that_exactly_empties_the_queue_is_legal() -> None:
-    config = make_config(
-        production_capacity_per_week=10,
-        production_delay_weeks=2,
-        initial_pipeline_quantity=0,
-    )
-    factory = agent_for(Role.FACTORY, config)
-    factory.start_production(14)
-    assert factory.production_queue == 4
-
-    outcome = factory.start_production(-4)
-    assert outcome.requested == 0
-    assert outcome.started == 0
-    assert outcome.queued == 0
-    assert factory.production_queue == 0
-
-
-def test_a_cancellation_larger_than_the_queue_raises_and_changes_nothing() -> None:
-    """§3.6: `requested` may not go negative, and the failed call must not
-    leave a negative queue behind for a caller that catches the error."""
+def test_a_negative_production_request_raises_and_changes_nothing() -> None:
+    """The cancellation option (`allow_negative_orders`) was removed: a
+    negative quantity is refused before anything is mutated, with or without
+    a queue to draw against, and the agent is still usable afterwards."""
     config = make_config(
         production_capacity_per_week=10,
         production_delay_weeks=2,
@@ -296,25 +255,18 @@ def test_a_cancellation_larger_than_the_queue_raises_and_changes_nothing() -> No
 
     with pytest.raises(ValueError):
         factory.start_production(-10)
-
     assert factory.production_queue == 0
-    assert not factory.production_queue < 0
     assert factory.supply_line() == supply_line_before
     assert len(factory.shipments) == factory.shipments.length
 
-    # and with a queue that is merely too small
     factory.start_production(14)
     assert factory.production_queue == 4
     with pytest.raises(ValueError):
-        factory.start_production(-10)
+        factory.start_production(-3)
     assert factory.production_queue == 4
-    assert not factory.production_queue < 0
 
-    # the agent is still usable afterwards
     outcome = factory.start_production(0)
     assert outcome.requested == 4
-    assert outcome.started == 4
-    assert factory.production_queue == 0
 
 
 def test_a_cancellation_is_rejected_under_unlimited_capacity_too() -> None:

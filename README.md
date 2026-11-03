@@ -65,6 +65,7 @@ Every router under `app/api/v1/` is auto-discovered, so this table is the whole 
 | `GET` | `/api/v1/health/deep` | none | `{status, database, redis, state_backend}`, always HTTP 200 |
 | `POST` | `/api/v1/rooms/create` | none (D3) | A new room: `room_code`, the `host_secret` (returned exactly once), `state`, `config` |
 | `GET` | `/api/v1/rooms/presets` | none | The three presets with their full configs, for the host UI |
+| `GET` | `/api/v1/rooms/limits` | none | Every range the host form checks (`core.limits.Limits`); the frontend keeps no copy |
 | `GET` | `/api/v1/rooms/{code}/status` | none | Is this room joinable? Always HTTP 200 — a 404 would be a room-code oracle |
 | `PUT` | `/api/v1/rooms/{code}/config` | host secret | Applies a config patch while the room is still configurable |
 | `GET` | `/api/v1/rooms/{code}/config` | host secret | The current config |
@@ -101,7 +102,9 @@ resolved once, at `connect`, from an optional Firebase token in the handshake `a
 
 `your_state` carries the role's whole `own_history` only where a client may have missed a
 record: game start, `join` (a reconnect), `request_state`, a stale-week resend and the
-refresh after `resume_game`. The `your_state` after a submission or a week close leaves it
+refresh after `resume_game` (which then plays any bot seat still owing the open week its
+order, so a bot swapped in while paused does not freeze the week). The `your_state` after a
+submission or a week close leaves it
 out; the week's one new record travels in `your_week_closed` and the client appends it.
 Every `request_state` reply carries a fresh `seq`, above every number already sent. The host
 gets a fresh `host_state` after every submission (a person's, or a round of bot orders) that
@@ -121,7 +124,7 @@ stages. Check that file and `00-decisions.md` §3 before "adding" one.
 ## Tests
 
 ```bash
-./venv/bin/python -m pytest -m "not dbschema"   # 1557 passed, 1 skipped, 124 deselected
+./venv/bin/python -m pytest -m "not dbschema"   # 1754 passed, 1 skipped, 136 deselected
 ./venv/bin/python -m pytest tests/test_core     # one area
 ```
 
@@ -278,11 +281,11 @@ app/
 │       ├── health.py           /health, /health/deep
 │       ├── users.py            /users/upsert, /users/me
 │       ├── user_games.py       /users/me/stats, /users/me/games[/{id}], /users/me/hosted-games/{public_id}
-│       ├── rooms.py            /rooms/create, /rooms/presets, /rooms/{code}/status|config
+│       ├── rooms.py            /rooms/create, /rooms/presets, /rooms/limits, /rooms/{code}/status|config
 │       └── games.py            /games/{code}|id/{public_id} results and export, /games/claim
 ├── core/                       pure domain logic — no I/O, no clock, no global RNG
 │   ├── enums.py                Role, RoomState, DemandKind, Distribution, …
-│   ├── config_models.py        GameConfig; validation and clamping
+│   ├── config_models.py        GameConfig; validation (out of range is refused, never clamped)
 │   ├── limits.py               Limits/DEFAULT_LIMITS, the §5 hard ceilings
 │   ├── presets.py              CLASSIC_MIT, FAST_GAME, CHAOS
 │   ├── demand.py               the customer demand generator
@@ -326,7 +329,7 @@ app/
         ├── lobby.py            joining, seating, config, start_game
         └── play.py             orders, pause/resume, bots, ending a game
 
-alembic/                        env.py reads settings.db_url; versions 0001 to 0004 (head)
+alembic/                        env.py reads settings.db_url; versions 0001 to 0005 (head)
 tests/
 ├── conftest.py                 FakeRedis, firebase_tokens, FakeSocketManager, the env pinning
 ├── test_skeleton/              the app, config, packaging and assembly

@@ -204,7 +204,7 @@ def test_ac7_reused_room_code_returns_the_more_recent_game(
     persist_full_game(
         session_factory,
         room_code=room_code,
-        duration_weeks=6,
+        duration_weeks=8,
         seed=5,
         started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         finished_at=datetime(2026, 1, 1, 2, tzinfo=timezone.utc),
@@ -230,7 +230,7 @@ def test_ac7_reused_room_code_returns_the_more_recent_game(
 
 
 def test_ac8_results_require_no_authentication(api_client, session_factory, fake_redis):
-    game = persist_full_game(session_factory, duration_weeks=6, seed=7)
+    game = persist_full_game(session_factory, duration_weeks=8, seed=7)
 
     response = api_client.get(RESULTS_URL(game["room_code"]))
 
@@ -250,7 +250,7 @@ def test_ac9_fm3_payload_carries_no_identity_secret_or_config_keys(
     shape) would leak ``identity``, ``guest_identity`` or a cost/delay
     column; this recursive key scan catches that regardless of nesting
     depth (``00-conventions.md §5`` -- recursive assertions only)."""
-    game = persist_full_game(session_factory, duration_weeks=6, seed=8)
+    game = persist_full_game(session_factory, duration_weeks=8, seed=8)
 
     payload = api_client.get(RESULTS_URL(game["room_code"])).json()
 
@@ -294,7 +294,7 @@ def test_fm1_no_registered_uid_or_guest_string_anywhere_in_results(
     }
     game = persist_full_game(
         session_factory,
-        duration_weeks=6,
+        duration_weeks=8,
         seed=9,
         host_identity=registered_uid,
         participants=participants,
@@ -353,7 +353,7 @@ def test_fm7_orders_index_zero_is_week_one_per_role(
 def test_fm8_total_cost_is_a_json_number(api_client, session_factory, fake_redis):
     """Parsed straight off the wire, not through a Pydantic model that would
     coerce a ``Decimal``-as-string back into a float and hide the bug."""
-    game = persist_full_game(session_factory, duration_weeks=6, seed=11)
+    game = persist_full_game(session_factory, duration_weeks=8, seed=11)
 
     response = api_client.get(RESULTS_URL(game["room_code"]))
     raw = json.loads(response.text)
@@ -452,7 +452,7 @@ async def test_fm12_unfinished_game_in_redis_is_404_not_a_partial_payload(
 def test_public_id_results_match_room_code_results(
     api_client, session_factory, fake_redis
 ):
-    game = persist_full_game(session_factory, duration_weeks=6, seed=21)
+    game = persist_full_game(session_factory, duration_weeks=8, seed=21)
 
     by_code = api_client.get(RESULTS_URL(game["room_code"])).json()
     public_id = by_code["public_id"]
@@ -506,7 +506,7 @@ def test_unknown_public_id_is_404_with_string_detail(api_client, fake_redis):
 def test_public_id_results_require_no_authentication_and_leak_nothing(
     api_client, session_factory, fake_redis
 ):
-    game = persist_full_game(session_factory, duration_weeks=6, seed=24)
+    game = persist_full_game(session_factory, duration_weeks=8, seed=24)
     public_id = api_client.get(RESULTS_URL(game["room_code"])).json()["public_id"]
 
     response = api_client.get(RESULTS_BY_ID_URL(public_id))

@@ -70,7 +70,17 @@ def compute_stats(
     not be counted, or its absent orders would distort the bullwhip ratio.
 
     `total_cost` reads the final `cumulative_cost` rather than re-summing
-    `week_cost`, so a discrepancy between the two is detectable.
+    `total_week_cost`, so a discrepancy between the two is detectable.
+
+    Because `cumulative_cost` comes from the records, an abandoned week
+    (`end_early`) adds nothing here -- and the engine rolls that week's charge
+    back out of its live totals too, so the two agree (`07 §3.5`).
+
+    `fill_rate` is `sum(shipped) / sum(obligation)`, where each week's
+    obligation includes the backlog carried into it (D12). People read it as
+    "Shipped vs waiting": a backlog that waits several weeks is counted again
+    every week, so it lowers the figure even if every unit is shipped in the
+    end. The field name stays `fill_rate`.
     """
     demand_variance = population_variance(demand_series[:weeks_played])
 

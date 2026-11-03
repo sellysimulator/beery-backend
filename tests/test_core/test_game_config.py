@@ -214,7 +214,6 @@ def hand_built_config() -> GameConfig:
             show_running_cost_to_players=False,
             show_leaderboard_during_game=True,
             max_order_quantity=500,
-            allow_negative_orders=True,
         ),
         bot=BotConfig(theta=0.9, alpha=0.1, beta=0.75, target_stock_multiplier=5.5),
     )
@@ -337,25 +336,34 @@ def test_worked_example_classic_mit_accessors() -> None:
     assert Role.FACTORY.upstream is None
 
 
-def test_worked_example_duration_weeks_clamped_up_and_down() -> None:
-    assert build(base_payload(duration_weeks=500)).duration_weeks == 104
-    assert build(base_payload(duration_weeks=2)).duration_weeks == 8
+def test_worked_example_duration_weeks_out_of_range_is_refused() -> None:
+    """Amended 2026-11-02: a host who types 500 weeks is told the range, not
+    handed a 104-week game they did not ask for."""
+    err = assert_rejected(base_payload(duration_weeks=500), field="duration_weeks")
+    assert "between 8 and 104" in str(err)
+    assert_rejected(base_payload(duration_weeks=2), field="duration_weeks")
 
 
-def test_worked_example_shipping_delay_zero_becomes_one() -> None:
-    cfg = build(payload_for_all_roles(shipping_delay_weeks=0))
-    for role in ROLE_ORDER:
-        assert cfg.role_config(role).shipping_delay_weeks == 1
+def test_worked_example_shipping_delay_zero_is_refused() -> None:
+    err = assert_rejected(
+        payload_for_all_roles(shipping_delay_weeks=0),
+        field="roles.RETAILER.shipping_delay_weeks",
+    )
+    assert "between 1 and 8" in str(err)
 
 
-def test_worked_example_huge_holding_cost_clamped() -> None:
-    cfg = build(payload_for_role("RETAILER", holding_cost_per_unit_week=1e12))
-    assert cfg.role_config(Role.RETAILER).holding_cost_per_unit_week == 1_000_000.0
+def test_worked_example_huge_holding_cost_is_refused() -> None:
+    assert_rejected(
+        payload_for_role("RETAILER", holding_cost_per_unit_week=1e12),
+        field="roles.RETAILER.holding_cost_per_unit_week",
+    )
 
 
-def test_worked_example_negative_initial_inventory_becomes_zero() -> None:
-    cfg = build(payload_for_role("RETAILER", initial_inventory=-7))
-    assert cfg.role_config(Role.RETAILER).initial_inventory == 0
+def test_worked_example_negative_initial_inventory_is_refused() -> None:
+    assert_rejected(
+        payload_for_role("RETAILER", initial_inventory=-7),
+        field="roles.RETAILER.initial_inventory",
+    )
 
 
 def test_worked_example_short_custom_series_rejected_with_field() -> None:
@@ -428,7 +436,7 @@ def test_assigning_to_a_game_config_field_raises() -> None:
         (RoleConfig(), "initial_inventory", 99),
         (FactoryConfig(), "production_delay_weeks", 9),
         (BotConfig(), "theta", 0.9),
-        (VisibilityConfig(), "allow_negative_orders", True),
+        (VisibilityConfig(), "show_leaderboard_during_game", True),
         (ConstantDemand(), "value", 11),
         (StepDemand(), "step_week", 9),
         (RampDemand(), "start_week", 9),
@@ -702,32 +710,85 @@ def _accepted(payload: dict) -> GameConfig:
         )
 
 
-def test_out_of_range_numbers_are_repaired_not_rejected() -> None:
-    _accepted(base_payload(duration_weeks=10_000))
-    _accepted(base_payload(duration_weeks=-5))
-    _accepted(payload_for_all_roles(shipping_delay_weeks=0))
-    _accepted(payload_for_all_roles(information_delay_weeks=99))
-    _accepted(payload_for_role("FACTORY", production_delay_weeks=0))
-    _accepted(payload_for_role("RETAILER", initial_inventory=-1))
-    _accepted(payload_for_role("RETAILER", initial_backlog=50_000))
-    _accepted(payload_for_role("RETAILER", initial_pipeline_quantity=-3))
-    _accepted(payload_for_role("RETAILER", initial_order_in_pipeline=99_999))
-    _accepted(payload_for_role("RETAILER", holding_cost_per_unit_week=-2.0))
-    _accepted(payload_for_role("RETAILER", backlog_cost_per_unit_week=1e30))
-    _accepted(payload_for_role("RETAILER", starting_capital=-10.0))
-    _accepted(payload_with_visibility(max_order_quantity=-5))
-    _accepted(payload_for_role("FACTORY", production_capacity_per_week=0))
+@pytest.mark.parametrize(
+    ("payload", "field"),
+    [
+        (base_payload(duration_weeks=10_000), "duration_weeks"),
+        (base_payload(duration_weeks=-5), "duration_weeks"),
+        (
+            payload_for_all_roles(shipping_delay_weeks=0),
+            "roles.RETAILER.shipping_delay_weeks",
+        ),
+        (
+            payload_for_all_roles(information_delay_weeks=99),
+            "roles.RETAILER.information_delay_weeks",
+        ),
+        (
+            payload_for_role("FACTORY", production_delay_weeks=0),
+            "roles.FACTORY.production_delay_weeks",
+        ),
+        (
+            payload_for_role("RETAILER", initial_inventory=-1),
+            "roles.RETAILER.initial_inventory",
+        ),
+        (
+            payload_for_role("RETAILER", initial_backlog=50_000),
+            "roles.RETAILER.initial_backlog",
+        ),
+        (
+            payload_for_role("RETAILER", initial_pipeline_quantity=-3),
+            "roles.RETAILER.initial_pipeline_quantity",
+        ),
+        (
+            payload_for_role("RETAILER", initial_order_in_pipeline=99_999),
+            "roles.RETAILER.initial_order_in_pipeline",
+        ),
+        (
+            payload_for_role("RETAILER", holding_cost_per_unit_week=-2.0),
+            "roles.RETAILER.holding_cost_per_unit_week",
+        ),
+        (
+            payload_for_role("RETAILER", backlog_cost_per_unit_week=1e30),
+            "roles.RETAILER.backlog_cost_per_unit_week",
+        ),
+        (
+            payload_for_role("RETAILER", starting_capital=-10.0),
+            "roles.RETAILER.starting_capital",
+        ),
+        (
+            payload_with_visibility(max_order_quantity=-5),
+            "visibility.max_order_quantity",
+        ),
+    ],
+)
+def test_out_of_range_numbers_are_refused_not_repaired(
+    payload: dict, field: str
+) -> None:
+    """Amended 2026-11-02 (the clamp-to-refuse change): every number outside
+    its range is refused, naming the field and the range."""
+    err = assert_rejected(payload, field=field)
+    assert "must be between" in str(err)
 
 
-def test_bot_parameters_out_of_range_are_clamped_not_rejected() -> None:
+def test_a_cap_of_zero_means_unlimited() -> None:
+    """The one documented meaning of 0: no per-game cap."""
+    cfg = _accepted(payload_for_role("FACTORY", production_capacity_per_week=0))
+    assert cfg.factory_config().production_capacity_per_week is None
+
+
+@pytest.mark.parametrize(
+    ("field", "given"),
+    [
+        ("theta", 5.0),
+        ("alpha", -1.0),
+        ("beta", 99.0),
+        ("target_stock_multiplier", -3.0),
+    ],
+)
+def test_bot_parameters_out_of_range_are_refused(field: str, given: float) -> None:
     payload = base_payload()
-    payload["bot"] = {
-        "theta": 5.0,
-        "alpha": -1.0,
-        "beta": 99.0,
-        "target_stock_multiplier": -3.0,
-    }
-    _accepted(payload)
+    payload["bot"][field] = given
+    assert_rejected(payload, field=f"bot.{field}")
 
 
 def test_boundary_values_on_the_rejection_rules_are_accepted() -> None:
@@ -777,47 +838,60 @@ def test_boundary_values_on_the_rejection_rules_are_accepted() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("given", "expected"),
-    [
-        (500, 104),
-        (10_000, 104),
-        (105, 104),
-        (104, 104),
-        (8, 8),
-        (7, 8),
-        (2, 8),
-        (0, 8),
-        (-9, 8),
-    ],
-)
-def test_clamp_duration_weeks(given: int, expected: int) -> None:
+@pytest.mark.parametrize("given", [500, 10_000, 105, 7, 2, 0, -9])
+def test_duration_weeks_out_of_range_is_refused(given: int) -> None:
     """Failure mode 2: an uncapped week count is an unbounded-work lever."""
-    assert build(base_payload(duration_weeks=given)).duration_weeks == expected
+    err = assert_rejected(base_payload(duration_weeks=given), field="duration_weeks")
+    assert "between 8 and 104" in str(err)
 
 
-@pytest.mark.parametrize(
-    ("given", "expected"), [(0, 1), (-4, 1), (1, 1), (8, 8), (9, 8), (1000, 8)]
-)
-def test_clamp_shipping_delay_weeks(given: int, expected: int) -> None:
+@pytest.mark.parametrize("given", [8, 36, 104])
+def test_duration_weeks_in_range_is_kept(given: int) -> None:
+    assert build(base_payload(duration_weeks=given)).duration_weeks == given
+
+
+@pytest.mark.parametrize("given", [0, -4, 9, 1000])
+def test_shipping_delay_weeks_out_of_range_is_refused(given: int) -> None:
     """Failure mode 3: a zero delay collapses the pipeline."""
+    assert_rejected(
+        payload_for_all_roles(shipping_delay_weeks=given),
+        field="roles.RETAILER.shipping_delay_weeks",
+    )
+
+
+@pytest.mark.parametrize("given", [1, 8])
+def test_shipping_delay_weeks_at_its_bounds_is_kept(given: int) -> None:
     cfg = build(payload_for_all_roles(shipping_delay_weeks=given))
     for role in ROLE_ORDER:
-        assert cfg.role_config(role).shipping_delay_weeks == expected
+        assert cfg.role_config(role).shipping_delay_weeks == given
 
 
-@pytest.mark.parametrize(("given", "expected"), [(0, 1), (-4, 1), (8, 8), (12, 8)])
-def test_clamp_information_delay_weeks(given: int, expected: int) -> None:
-    cfg = build(payload_for_all_roles(information_delay_weeks=given))
+@pytest.mark.parametrize("given", [0, -4, 12])
+def test_information_delay_weeks_out_of_range_is_refused(given: int) -> None:
+    assert_rejected(
+        payload_for_all_roles(information_delay_weeks=given),
+        field="roles.RETAILER.information_delay_weeks",
+    )
+
+
+def test_information_delay_weeks_at_its_ceiling_is_kept() -> None:
+    cfg = build(payload_for_all_roles(information_delay_weeks=8))
     for role in ROLE_ORDER:
-        assert cfg.order_delay_weeks(role) == expected
+        assert cfg.order_delay_weeks(role) == 8
 
 
-@pytest.mark.parametrize(("given", "expected"), [(0, 1), (-2, 1), (8, 8), (40, 8)])
-def test_clamp_production_delay_weeks(given: int, expected: int) -> None:
-    cfg = build(payload_for_role("FACTORY", production_delay_weeks=given))
-    assert cfg.factory_config().production_delay_weeks == expected
-    assert cfg.inbound_delay_weeks(Role.FACTORY) == expected
+@pytest.mark.parametrize("given", [0, -2, 40])
+def test_production_delay_weeks_out_of_range_is_refused(given: int) -> None:
+    assert_rejected(
+        payload_for_role("FACTORY", production_delay_weeks=given),
+        field="roles.FACTORY.production_delay_weeks",
+    )
+
+
+def test_production_delay_weeks_at_its_ceiling_is_kept() -> None:
+    cfg = build(payload_for_role("FACTORY", production_delay_weeks=8))
+    assert cfg.factory_config().production_delay_weeks == 8
+    assert cfg.inbound_delay_weeks(Role.FACTORY) == 8
 
 
 @pytest.mark.parametrize(
@@ -829,13 +903,28 @@ def test_clamp_production_delay_weeks(given: int, expected: int) -> None:
         "initial_order_in_pipeline",
     ],
 )
+@pytest.mark.parametrize("given", [-1, -9_999, 10_000, 1_000_000])
+def test_initial_quantities_out_of_range_are_refused(field: str, given: int) -> None:
+    err = assert_rejected(
+        payload_for_role("WHOLESALER", **{field: given}),
+        field=f"roles.WHOLESALER.{field}",
+    )
+    assert "between 0 and 9999" in str(err)
+
+
 @pytest.mark.parametrize(
-    ("given", "expected"),
-    [(-1, 0), (-9_999, 0), (10_000, 9_999), (1_000_000, 9_999), (12, 12)],
+    "field",
+    [
+        "initial_inventory",
+        "initial_backlog",
+        "initial_pipeline_quantity",
+        "initial_order_in_pipeline",
+    ],
 )
-def test_clamp_initial_quantities(field: str, given: int, expected: int) -> None:
+@pytest.mark.parametrize("given", [0, 12, 9_999])
+def test_initial_quantities_in_range_are_kept(field: str, given: int) -> None:
     cfg = build(payload_for_role("WHOLESALER", **{field: given}))
-    assert getattr(cfg.role_config(Role.WHOLESALER), field) == expected
+    assert getattr(cfg.role_config(Role.WHOLESALER), field) == given
 
 
 @pytest.mark.parametrize(
@@ -847,40 +936,60 @@ def test_clamp_initial_quantities(field: str, given: int, expected: int) -> None
         "unit_purchase_cost",
     ],
 )
+@pytest.mark.parametrize("given", [-1.0, 1e12, 1_000_001.0])
+def test_costs_out_of_range_are_refused(field: str, given: float) -> None:
+    assert_rejected(
+        payload_for_role("DISTRIBUTOR", **{field: given}),
+        field=f"roles.DISTRIBUTOR.{field}",
+    )
+
+
 @pytest.mark.parametrize(
-    ("given", "expected"),
+    "field",
     [
-        (-1.0, 0.0),
-        (1e12, 1_000_000.0),
-        (1_000_001.0, 1_000_000.0),
-        (1_000_000.0, 1_000_000.0),
-        (0.5, 0.5),
+        "holding_cost_per_unit_week",
+        "backlog_cost_per_unit_week",
+        "fixed_order_cost",
+        "unit_purchase_cost",
     ],
 )
-def test_clamp_costs(field: str, given: float, expected: float) -> None:
+@pytest.mark.parametrize("given", [0.0, 0.5, 1_000_000.0])
+def test_costs_in_range_are_kept(field: str, given: float) -> None:
     cfg = build(payload_for_role("DISTRIBUTOR", **{field: given}))
-    assert getattr(cfg.role_config(Role.DISTRIBUTOR), field) == expected
+    assert getattr(cfg.role_config(Role.DISTRIBUTOR), field) == given
 
 
-@pytest.mark.parametrize(
-    ("given", "expected"),
-    [(-50.0, 0.0), (0.0, 0.0), (1e12, 1_000_000.0), (2_500.0, 2_500.0)],
-)
-def test_clamp_starting_capital(given: float, expected: float) -> None:
-    """``§3.4``: clamped to ``[0, max_unit_value]``."""
+@pytest.mark.parametrize("given", [-50.0, 1e12])
+def test_starting_capital_out_of_range_is_refused(given: float) -> None:
+    """``§3.4``: ``[0, max_unit_value]``, refused outside it."""
+    assert_rejected(
+        payload_for_role("RETAILER", starting_capital=given),
+        field="roles.RETAILER.starting_capital",
+    )
+
+
+@pytest.mark.parametrize("given", [0.0, 2_500.0])
+def test_starting_capital_in_range_is_kept(given: float) -> None:
     cfg = build(payload_for_role("RETAILER", starting_capital=given))
-    assert cfg.role_config(Role.RETAILER).starting_capital == expected
+    assert cfg.role_config(Role.RETAILER).starting_capital == given
 
 
-@pytest.mark.parametrize(
-    ("given", "expected"), [(50_000, 9_999), (10_000, 9_999), (9_999, 9_999), (25, 25)]
-)
-def test_clamp_max_order_quantity_upper_bound(given: int, expected: int) -> None:
+@pytest.mark.parametrize("given", [50_000, 10_000])
+def test_max_order_quantity_above_the_ceiling_is_refused(given: int) -> None:
+    err = assert_rejected(
+        payload_with_visibility(max_order_quantity=given),
+        field="visibility.max_order_quantity",
+    )
+    assert "or 0 for unlimited" in str(err)
+
+
+@pytest.mark.parametrize("given", [9_999, 25, 1])
+def test_max_order_quantity_in_range_is_kept(given: int) -> None:
     cfg = build(payload_with_visibility(max_order_quantity=given))
-    assert cfg.visibility.max_order_quantity == expected
+    assert cfg.visibility.max_order_quantity == given
 
 
-def test_clamping_uses_the_injected_limits_not_a_hardcoded_table() -> None:
+def test_range_checks_use_the_injected_limits_not_a_hardcoded_table() -> None:
     """``Limits`` exists so ``app/core`` stays free of ``app.config``."""
     tight = Limits(
         max_order_quantity=50,
@@ -891,23 +1000,35 @@ def test_clamping_uses_the_injected_limits_not_a_hardcoded_table() -> None:
         max_initial_quantity=15,
         max_unit_value=9.0,
     )
-    payload = payload_for_all_roles(
-        shipping_delay_weeks=8,
-        initial_inventory=500,
-        holding_cost_per_unit_week=100.0,
-    )
-    payload["duration_weeks"] = 104
-    payload["visibility"]["max_order_quantity"] = 9_999
-    cfg = GameConfig.from_host_input(payload, tight)
 
+    def refused(payload: dict, field: str) -> None:
+        with pytest.raises(ConfigValidationError) as excinfo:
+            GameConfig.from_host_input(payload, tight)
+        assert excinfo.value.field == field
+
+    refused(base_payload(duration_weeks=104), "duration_weeks")
+    refused(base_payload(duration_weeks=8), "duration_weeks")
+    too_slow = payload_for_all_roles(shipping_delay_weeks=8)
+    too_slow["duration_weeks"] = 20
+    refused(too_slow, "roles.RETAILER.shipping_delay_weeks")
+
+    ok = payload_for_all_roles(
+        shipping_delay_weeks=3,
+        information_delay_weeks=3,
+        initial_inventory=15,
+        initial_pipeline_quantity=4,
+        initial_order_in_pipeline=4,
+        holding_cost_per_unit_week=9.0,
+    )
+    ok["roles"]["FACTORY"]["production_delay_weeks"] = 2
+    ok["duration_weeks"] = 20
+    ok["visibility"]["max_order_quantity"] = 50
+    cfg = GameConfig.from_host_input(ok, tight)
     assert cfg.duration_weeks == 20
     assert cfg.role_config(Role.RETAILER).shipping_delay_weeks == 3
     assert cfg.role_config(Role.RETAILER).initial_inventory == 15
     assert cfg.role_config(Role.RETAILER).holding_cost_per_unit_week == 9.0
     assert cfg.visibility.max_order_quantity == 50
-
-    payload = base_payload(duration_weeks=8)
-    assert GameConfig.from_host_input(payload, tight).duration_weeks == 10
 
 
 # ---------------------------------------------------------------------------
@@ -915,16 +1036,31 @@ def test_clamping_uses_the_injected_limits_not_a_hardcoded_table() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("given", [-5, 0, -1, -9_999])
-def test_nonsensical_max_order_quantity_becomes_none(given: int) -> None:
-    cfg = build(payload_with_visibility(max_order_quantity=given))
+def test_a_max_order_quantity_of_zero_means_unlimited() -> None:
+    """``0`` is the one documented "no cap" value; the form says so."""
+    cfg = build(payload_with_visibility(max_order_quantity=0))
     assert cfg.visibility.max_order_quantity is None
 
 
-@pytest.mark.parametrize("given", [-5, 0, -1, -9_999])
-def test_nonsensical_production_capacity_becomes_none(given: int) -> None:
-    cfg = build(payload_for_role("FACTORY", production_capacity_per_week=given))
+@pytest.mark.parametrize("given", [-5, -1, -9_999])
+def test_a_negative_max_order_quantity_is_refused(given: int) -> None:
+    assert_rejected(
+        payload_with_visibility(max_order_quantity=given),
+        field="visibility.max_order_quantity",
+    )
+
+
+def test_a_production_capacity_of_zero_means_unlimited() -> None:
+    cfg = build(payload_for_role("FACTORY", production_capacity_per_week=0))
     assert cfg.factory_config().production_capacity_per_week is None
+
+
+@pytest.mark.parametrize("given", [-5, -1, -9_999])
+def test_a_negative_production_capacity_is_refused(given: int) -> None:
+    assert_rejected(
+        payload_for_role("FACTORY", production_capacity_per_week=given),
+        field="roles.FACTORY.production_capacity_per_week",
+    )
 
 
 def test_a_sensible_optional_override_is_kept() -> None:
@@ -1037,12 +1173,12 @@ def test_custom_series_one_short_raises_exact_length_and_longer_pass() -> None:
     assert build(payload).demand.values == [4] * (weeks + 10)
 
 
-def test_custom_series_length_is_measured_against_the_clamped_duration() -> None:
-    """``duration_weeks`` below ``min_weeks`` is clamped up to 8 first, so a
-    6-entry series is short for the game that will actually be played."""
+def test_a_duration_below_the_minimum_is_refused_before_the_custom_series() -> None:
+    """``duration_weeks`` leads the evaluation order, so a game of 6 weeks is
+    refused for its length, not for its 6-entry series."""
     payload = base_payload(duration_weeks=6)
     payload["demand"] = {"kind": "CUSTOM", "values": [4] * 6}
-    assert_rejected(payload, field="demand.values")
+    assert_rejected(payload, field="duration_weeks")
 
 
 # ---------------------------------------------------------------------------
@@ -1078,41 +1214,57 @@ def test_game_config_carries_the_bot_defaults() -> None:
 
 
 @pytest.mark.parametrize("field", ["theta", "alpha", "beta"])
-@pytest.mark.parametrize(
-    ("given", "expected"),
-    [(-0.5, 0.0), (0.0, 0.0), (1.0, 1.0), (1.5, 1.0), (99.0, 1.0), (0.4, 0.4)],
-)
-def test_bot_weights_clamp_to_zero_one(
-    field: str, given: float, expected: float
-) -> None:
+@pytest.mark.parametrize("given", [-0.5, 1.5, 99.0])
+def test_bot_weights_outside_zero_one_are_refused(field: str, given: float) -> None:
     payload = base_payload()
     payload["bot"][field] = given
-    cfg = build(payload)
-    assert getattr(cfg.bot, field) == expected
+    err = assert_rejected(payload, field=f"bot.{field}")
+    assert "between 0 and 1" in str(err)
 
 
-@pytest.mark.parametrize(
-    ("given", "expected"),
-    [(-1.0, 0.0), (0.0, 0.0), (10.0, 10.0), (10.5, 10.0), (1e6, 10.0), (4.5, 4.5)],
-)
-def test_target_stock_multiplier_clamps_to_zero_ten(
-    given: float, expected: float
-) -> None:
+@pytest.mark.parametrize("field", ["theta", "alpha", "beta"])
+@pytest.mark.parametrize("given", [0.0, 0.4, 1.0])
+def test_bot_weights_inside_zero_one_are_kept(field: str, given: float) -> None:
+    payload = base_payload()
+    payload["bot"][field] = given
+    assert getattr(build(payload).bot, field) == given
+
+
+@pytest.mark.parametrize("given", [-1.0, 10.5, 1e6])
+def test_target_stock_multiplier_outside_zero_ten_is_refused(given: float) -> None:
     payload = base_payload()
     payload["bot"]["target_stock_multiplier"] = given
-    assert build(payload).bot.target_stock_multiplier == expected
+    assert_rejected(payload, field="bot.target_stock_multiplier")
+
+
+@pytest.mark.parametrize("given", [0.0, 4.5, 10.0])
+def test_target_stock_multiplier_inside_zero_ten_is_kept(given: float) -> None:
+    payload = base_payload()
+    payload["bot"]["target_stock_multiplier"] = given
+    assert build(payload).bot.target_stock_multiplier == given
 
 
 # ---------------------------------------------------------------------------
-# §3.6 allow_negative_orders -- this section only carries the flag
+# §3.6 allow_negative_orders -- removed 2026-11-02; a legacy key still loads
 # ---------------------------------------------------------------------------
 
 
-def test_allow_negative_orders_defaults_false_and_is_carried() -> None:
-    assert VisibilityConfig().allow_negative_orders is False
-    cfg = build(payload_with_visibility(allow_negative_orders=True))
-    assert cfg.visibility.allow_negative_orders is True
-    assert GameConfig.from_payload(cfg.to_payload()).visibility.allow_negative_orders
+def test_allow_negative_orders_is_gone_and_a_legacy_key_is_ignored() -> None:
+    """Removed 2026-11-02: orders have a floor of 0. A stored config that still
+    carries the key -- a room in flight, a saved patch, an old export -- must
+    keep loading, through either door, and the key is simply dropped."""
+    assert "allow_negative_orders" not in VisibilityConfig.model_fields
+    assert "allow_negative_orders" not in VisibilityConfig().model_dump()
+
+    for flag in (True, False):
+        cfg = build(payload_with_visibility(allow_negative_orders=flag))
+        assert "allow_negative_orders" not in cfg.to_payload()["visibility"]
+
+        stored = get_preset("CLASSIC_MIT").to_payload()
+        stored["visibility"]["allow_negative_orders"] = flag
+        reloaded = GameConfig.from_payload(stored)
+        assert reloaded == get_preset("CLASSIC_MIT")
+        assert "allow_negative_orders" not in reloaded.to_payload()["visibility"]
 
 
 # ---------------------------------------------------------------------------
@@ -1151,7 +1303,7 @@ def test_limits_live_in_a_small_module_of_their_own() -> None:
         if isinstance(node, (ast.Import, ast.ImportFrom))
         for alias in node.names
     }
-    assert imported <= {"__future__", "pydantic"}, imported
+    assert imported <= {"__future__", "math", "pydantic"}, imported
 
 
 # ---------------------------------------------------------------------------
@@ -1409,85 +1561,48 @@ def test_reject_8_non_finite_in_any_demand_float_field(
 # ---------------------------------------------------------------------------
 
 
-def test_each_role_is_clamped_independently() -> None:
+def test_each_role_is_checked_independently() -> None:
+    """A role the host did not break is accepted beside one they did, and the
+    refusal names the broken role's own path."""
     payload = base_payload()
-    payload["roles"]["RETAILER"].update(
-        initial_inventory=-10, shipping_delay_weeks=0, holding_cost_per_unit_week=-1.0
-    )
-    payload["roles"]["WHOLESALER"].update(
-        initial_inventory=50_000,
-        shipping_delay_weeks=99,
-        backlog_cost_per_unit_week=1e12,
-    )
-    payload["roles"]["DISTRIBUTOR"].update(
-        initial_backlog=-3, information_delay_weeks=0, fixed_order_cost=-4.0
-    )
-    payload["roles"]["FACTORY"].update(
-        initial_pipeline_quantity=99_999,
-        information_delay_weeks=42,
-        production_delay_weeks=0,
-        unit_purchase_cost=1e30,
-        starting_capital=-1.0,
-    )
+    payload["roles"]["DISTRIBUTOR"].update(fixed_order_cost=-4.0)
+    assert_rejected(payload, field="roles.DISTRIBUTOR.fixed_order_cost")
 
+    payload = base_payload()
+    payload["roles"]["FACTORY"].update(information_delay_weeks=42)
+    assert_rejected(payload, field="roles.FACTORY.information_delay_weeks")
+
+    payload = base_payload()
+    payload["roles"]["WHOLESALER"].update(initial_inventory=30)
     cfg = build(payload)
-
-    retailer = cfg.role_config(Role.RETAILER)
-    assert retailer.initial_inventory == 0
-    assert retailer.shipping_delay_weeks == 1
-    assert retailer.holding_cost_per_unit_week == 0.0
-
-    wholesaler = cfg.role_config(Role.WHOLESALER)
-    assert wholesaler.initial_inventory == 9_999
-    assert wholesaler.shipping_delay_weeks == 8
-    assert wholesaler.backlog_cost_per_unit_week == 1_000_000.0
-
-    distributor = cfg.role_config(Role.DISTRIBUTOR)
-    assert distributor.initial_backlog == 0
-    assert distributor.information_delay_weeks == 1
-    assert distributor.fixed_order_cost == 0.0
-
-    factory = cfg.factory_config()
-    assert factory.initial_pipeline_quantity == 9_999
-    assert factory.information_delay_weeks == 8
-    assert factory.production_delay_weeks == 1
-    assert factory.unit_purchase_cost == 1_000_000.0
-    assert factory.starting_capital == 0.0
-
-    # Roles the host did not break are untouched.
-    assert cfg.role_config(Role.RETAILER).initial_backlog == 0
-    assert cfg.role_config(Role.WHOLESALER).holding_cost_per_unit_week == 0.50
+    assert cfg.role_config(Role.WHOLESALER).initial_inventory == 30
+    assert cfg.role_config(Role.RETAILER).initial_inventory == 12
 
 
 @pytest.mark.parametrize("role_name", list(ROLE_NAMES))
-def test_clamping_covers_every_numeric_field_of_every_role(role_name: str) -> None:
-    payload = payload_for_role(
-        role_name,
-        initial_inventory=-1,
-        initial_backlog=-1,
-        initial_pipeline_quantity=-1,
-        initial_order_in_pipeline=-1,
-        shipping_delay_weeks=0,
-        information_delay_weeks=0,
-        holding_cost_per_unit_week=-1.0,
-        backlog_cost_per_unit_week=-1.0,
-        fixed_order_cost=-1.0,
-        unit_purchase_cost=-1.0,
-        starting_capital=-1.0,
+@pytest.mark.parametrize(
+    ("field", "given"),
+    [
+        ("initial_inventory", -1),
+        ("initial_backlog", -1),
+        ("initial_pipeline_quantity", -1),
+        ("initial_order_in_pipeline", -1),
+        ("shipping_delay_weeks", 0),
+        ("information_delay_weeks", 0),
+        ("holding_cost_per_unit_week", -1.0),
+        ("backlog_cost_per_unit_week", -1.0),
+        ("fixed_order_cost", -1.0),
+        ("unit_purchase_cost", -1.0),
+        ("starting_capital", -1.0),
+    ],
+)
+def test_the_range_check_covers_every_numeric_field_of_every_role(
+    role_name: str, field: str, given: float
+) -> None:
+    assert_rejected(
+        payload_for_role(role_name, **{field: given}),
+        field=f"roles.{role_name}.{field}",
     )
-    rc = build(payload).role_config(Role(role_name))
-
-    assert rc.initial_inventory == 0
-    assert rc.initial_backlog == 0
-    assert rc.initial_pipeline_quantity == 0
-    assert rc.initial_order_in_pipeline == 0
-    assert rc.shipping_delay_weeks == 1
-    assert rc.information_delay_weeks == 1
-    assert rc.holding_cost_per_unit_week == 0.0
-    assert rc.backlog_cost_per_unit_week == 0.0
-    assert rc.fixed_order_cost == 0.0
-    assert rc.unit_purchase_cost == 0.0
-    assert rc.starting_capital == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -1547,25 +1662,19 @@ def test_random_seed_is_carried_verbatim(seed: int) -> None:
     assert GameConfig.from_payload(cfg.to_payload()).random_seed == seed
 
 
-@pytest.mark.parametrize(
-    ("given", "expected"),
-    [
-        (2**53, 2**53 - 1),
-        (2**70, 2**53 - 1),
-        (1e19, 2**53 - 1),
-        (-(2**64), -(2**53 - 1)),
-    ],
-)
-def test_random_seed_beyond_what_can_be_stored_is_clamped(
-    given: float, expected: int
-) -> None:
+@pytest.mark.parametrize("given", [2**53, 2**70, 1e19, -(2**64)])
+def test_random_seed_beyond_what_can_be_stored_is_refused(given: float) -> None:
     """Every host number has a ceiling. ``games.rng_seed`` is a ``BIGINT``, so
     a seed past ``2**63`` would make the end-of-game write fail and lose the
     stored results; ``2**53 - 1`` is also the largest integer the browser
     holds exactly, so the host sees the seed the game really used."""
-    cfg = build(base_payload(random_seed=given))
-    assert cfg.random_seed == expected
+    assert_rejected(base_payload(random_seed=given), field="random_seed")
     assert DEFAULT_LIMITS.max_random_seed == 2**53 - 1
+
+
+@pytest.mark.parametrize("given", [2**53 - 1, -(2**53 - 1)])
+def test_random_seed_at_its_bounds_is_kept(given: int) -> None:
+    assert build(base_payload(random_seed=given)).random_seed == given
 
 
 @pytest.mark.parametrize("mode", ["HOST_ASSIGNS", "PLAYER_CHOOSES", "RANDOM"])
@@ -1906,27 +2015,28 @@ def test_currency_symbol_is_reported_before_demand() -> None:
     assert_rejected(payload, field="currency_symbol")
 
 
-def test_duration_weeks_is_clamped_before_the_demand_rules_are_applied() -> None:
+def test_duration_weeks_is_checked_before_the_demand_rules_are_applied() -> None:
     """``duration_weeks`` leads the order because rules 1, 3 and 4 are all
-    measured against it.
-
-    A host who asks for 500 weeks gets 104, so a 104-entry ``CUSTOM`` series is
-    long enough.  Measured against the *raw* 500 it would be 396 short, so this
-    is the case that tells the two orderings apart.
+    measured against it: a 500-week game is refused for its length, before a
+    ``CUSTOM`` series could be measured against a length it will never have.
     """
     payload = base_payload(duration_weeks=500)
+    payload["demand"] = {"kind": "CUSTOM", "values": [4] * 104}
+    assert_rejected(payload, field="duration_weeks")
+
+    payload = base_payload(duration_weeks=104)
     payload["demand"] = {"kind": "CUSTOM", "values": [4] * 104}
     cfg = build(payload)
     assert cfg.duration_weeks == 104
     assert len(cfg.demand.values) == 104
 
-    # One short of the clamped duration still raises.
-    payload = base_payload(duration_weeks=500)
+    # One short of the duration still raises.
+    payload = base_payload(duration_weeks=104)
     payload["demand"] = {"kind": "CUSTOM", "values": [4] * 103}
     assert_rejected(payload, field="demand.values")
 
 
-def test_duration_weeks_is_clamped_before_the_step_week_rule() -> None:
+def test_duration_weeks_is_checked_before_the_step_week_rule() -> None:
     payload = base_payload(duration_weeks=500)
     payload["demand"] = {
         "kind": "STEP",
@@ -1934,6 +2044,9 @@ def test_duration_weeks_is_clamped_before_the_step_week_rule() -> None:
         "step_week": 200,
         "step_value": 8,
     }
+    assert_rejected(payload, field="duration_weeks")
+
+    payload["duration_weeks"] = 104
     assert_rejected(payload, field="demand.step_week")
 
 
@@ -1948,92 +2061,97 @@ def test_a_valid_payload_is_unaffected_by_the_ordering() -> None:
 MAX_Q = DEFAULT_LIMITS.max_order_quantity
 
 
-@pytest.mark.parametrize(
-    ("given", "expected"),
-    [
-        (-5, 0),
-        (-1, 0),
-        (0, 0),
-        (50_000, MAX_Q),
-        (MAX_Q + 1, MAX_Q),
-        (MAX_Q, MAX_Q),
-        (7, 7),
-    ],
-)
-def test_clamp_constant_demand_value(given: int, expected: int) -> None:
+@pytest.mark.parametrize("given", [-5, -1, 50_000, MAX_Q + 1])
+def test_constant_demand_value_out_of_range_is_refused(given: int) -> None:
+    assert_rejected(
+        payload_with_demand(kind="CONSTANT", value=given), field="demand.value"
+    )
+
+
+@pytest.mark.parametrize("given", [0, 7, MAX_Q])
+def test_constant_demand_value_in_range_is_kept(given: int) -> None:
     cfg = build(payload_with_demand(kind="CONSTANT", value=given))
-    assert cfg.demand.value == expected
+    assert cfg.demand.value == given
 
 
 @pytest.mark.parametrize("field", ["initial_value", "step_value"])
-@pytest.mark.parametrize(("given", "expected"), [(-5, 0), (50_000, MAX_Q), (6, 6)])
-def test_clamp_step_demand_magnitudes(field: str, given: int, expected: int) -> None:
+@pytest.mark.parametrize(("given", "refused"), [(-5, True), (50_000, True), (6, False)])
+def test_step_demand_magnitudes_are_range_checked(
+    field: str, given: int, refused: bool
+) -> None:
     demand = {"kind": "STEP", "initial_value": 4, "step_week": 5, "step_value": 8}
     demand[field] = given
-    cfg = build(payload_with_demand(**demand))
-    assert getattr(cfg.demand, field) == expected
+    if refused:
+        assert_rejected(payload_with_demand(**demand), field=f"demand.{field}")
+    else:
+        assert getattr(build(payload_with_demand(**demand)).demand, field) == given
 
 
-@pytest.mark.parametrize(("given", "expected"), [(-5, 0), (50_000, MAX_Q), (9, 9)])
-def test_clamp_ramp_initial_value(given: int, expected: int) -> None:
-    cfg = build(
-        payload_with_demand(
-            kind="RAMP",
-            initial_value=given,
-            slope_per_week=1.0,
-            start_week=5,
-            cap=None,
-        )
+@pytest.mark.parametrize(("given", "refused"), [(-5, True), (50_000, True), (9, False)])
+def test_ramp_initial_value_is_range_checked(given: int, refused: bool) -> None:
+    payload = payload_with_demand(
+        kind="RAMP",
+        initial_value=given,
+        slope_per_week=1.0,
+        start_week=5,
+        cap=None,
     )
-    assert cfg.demand.initial_value == expected
+    if refused:
+        assert_rejected(payload, field="demand.initial_value")
+    else:
+        assert build(payload).demand.initial_value == given
 
 
 @pytest.mark.parametrize(
-    ("given", "expected"),
+    ("given", "refused"),
     [
-        (-1e9, -float(MAX_Q)),
-        (-float(MAX_Q) - 1, -float(MAX_Q)),
-        (1e9, float(MAX_Q)),
-        (-2.5, -2.5),
-        (2.5, 2.5),
+        (-1e9, True),
+        (-float(MAX_Q) - 1, True),
+        (1e9, True),
+        (-float(MAX_Q), False),
+        (-2.5, False),
+        (2.5, False),
     ],
 )
-def test_clamp_ramp_slope_to_plus_or_minus_max_order_quantity(
-    given: float, expected: float
+def test_ramp_slope_is_range_checked_to_plus_or_minus_max_order_quantity(
+    given: float, refused: bool
 ) -> None:
-    """``§3.1``: ``slope_per_week`` clamps to ``±max_order_quantity`` -- a
+    """``§3.1``: ``slope_per_week`` lies in ``±max_order_quantity`` -- a
     negative slope is a legitimate declining-demand scenario, so it is not
     floored at 0 the way a magnitude is."""
-    cfg = build(
-        payload_with_demand(
-            kind="RAMP",
-            initial_value=4,
-            slope_per_week=given,
-            start_week=5,
-            cap=None,
-        )
+    payload = payload_with_demand(
+        kind="RAMP",
+        initial_value=4,
+        slope_per_week=given,
+        start_week=5,
+        cap=None,
     )
-    assert cfg.demand.slope_per_week == expected
+    if refused:
+        assert_rejected(payload, field="demand.slope_per_week")
+    else:
+        assert build(payload).demand.slope_per_week == given
 
 
 @pytest.mark.parametrize(
-    ("given", "expected"), [(-5, 0), (0, 0), (50_000, MAX_Q), (15, 15)]
+    ("given", "refused"), [(-5, True), (50_000, True), (0, False), (15, False)]
 )
-def test_ramp_cap_is_clamped_not_reduced_to_none(given: int, expected: int) -> None:
-    """``§3.1``: ``cap`` is clamped, **not** reduced to ``None`` -- ``cap = 0``
+def test_ramp_cap_is_range_checked_not_reduced_to_none(
+    given: int, refused: bool
+) -> None:
+    """``§3.1``: ``cap`` is checked, **not** reduced to ``None`` -- ``cap = 0``
     is a coherent if dull scenario, not a wedged game, so it is not one of the
-    two optional overrides that collapse to ``None``."""
-    cfg = build(
-        payload_with_demand(
-            kind="RAMP",
-            initial_value=4,
-            slope_per_week=1.0,
-            start_week=5,
-            cap=given,
-        )
+    two optional overrides where 0 means "unlimited"."""
+    payload = payload_with_demand(
+        kind="RAMP",
+        initial_value=4,
+        slope_per_week=1.0,
+        start_week=5,
+        cap=given,
     )
-    assert cfg.demand.cap == expected
-    assert cfg.demand.cap is not None
+    if refused:
+        assert_rejected(payload, field="demand.cap")
+    else:
+        assert build(payload).demand.cap == given
 
 
 def test_an_absent_ramp_cap_stays_none() -> None:
@@ -2046,8 +2164,12 @@ def test_an_absent_ramp_cap_stays_none() -> None:
 
 
 @pytest.mark.parametrize("field", ["base", "amplitude"])
-@pytest.mark.parametrize(("given", "expected"), [(-5, 0), (50_000, MAX_Q), (11, 11)])
-def test_clamp_seasonal_magnitudes(field: str, given: int, expected: int) -> None:
+@pytest.mark.parametrize(
+    ("given", "refused"), [(-5, True), (50_000, True), (11, False)]
+)
+def test_seasonal_magnitudes_are_range_checked(
+    field: str, given: int, refused: bool
+) -> None:
     demand = {
         "kind": "SEASONAL",
         "base": 8,
@@ -2056,14 +2178,16 @@ def test_clamp_seasonal_magnitudes(field: str, given: int, expected: int) -> Non
         "phase": 0.0,
     }
     demand[field] = given
-    cfg = build(payload_with_demand(**demand))
-    assert getattr(cfg.demand, field) == expected
+    if refused:
+        assert_rejected(payload_with_demand(**demand), field=f"demand.{field}")
+    else:
+        assert getattr(build(payload_with_demand(**demand)).demand, field) == given
 
 
-@pytest.mark.parametrize("period_weeks", [2, 12, 104, 5_000, 1_000_000])
-def test_seasonal_period_weeks_is_not_upper_clamped(period_weeks: int) -> None:
-    """``§3.1``: "``period_weeks`` and ``phase`` are not upper-clamped; a long
-    period is harmless."""
+@pytest.mark.parametrize("period_weeks", [2, 12, 104])
+def test_seasonal_period_weeks_up_to_the_longest_game_is_kept(
+    period_weeks: int,
+) -> None:
     cfg = build(
         payload_with_demand(
             kind="SEASONAL",
@@ -2076,24 +2200,26 @@ def test_seasonal_period_weeks_is_not_upper_clamped(period_weeks: int) -> None:
     assert cfg.demand.period_weeks == period_weeks
 
 
-@pytest.mark.parametrize("period_weeks", [2**31, 3_000_000_000, 10**30])
-def test_seasonal_period_weeks_beyond_what_can_be_stored_is_clamped(
+@pytest.mark.parametrize("period_weeks", [105, 5_000, 2**31, 10**30])
+def test_seasonal_period_weeks_past_the_longest_game_is_refused(
     period_weeks: int,
 ) -> None:
-    """A long period is harmless to the game, but ``demand_configs.period_weeks``
-    is an ``INT``: past ``2**31 - 1`` the end-of-game write fails and the
-    stored results are lost."""
-    cfg = build(
+    """Amended 2026-11-02: the bound is 104 (``max_period_weeks``), the longest
+    game -- a longer period is already flat over any game -- and the host form
+    reads the same number. It was the ``INT`` column's ``2**31 - 1``, silently
+    clamped, while the form allowed 104."""
+    err = assert_rejected(
         payload_with_demand(
             kind="SEASONAL",
             base=8,
             amplitude=4,
             period_weeks=period_weeks,
             phase=0.0,
-        )
+        ),
+        field="demand.period_weeks",
     )
-    assert cfg.demand.period_weeks == 2**31 - 1
-    assert DEFAULT_LIMITS.max_period_weeks == 2**31 - 1
+    assert "between 2 and 104" in str(err)
+    assert DEFAULT_LIMITS.max_period_weeks == 104
 
 
 @pytest.mark.parametrize("phase", [0.0, 1.5, -3.25, 2 * math.pi, -2 * math.pi])
@@ -2107,36 +2233,39 @@ def test_seasonal_phase_is_not_clamped(phase: float) -> None:
 
 
 @pytest.mark.parametrize("phase", [7.0, -7.0, 100.25, 1e6, -1e6, 1e12])
-def test_seasonal_phase_past_a_full_turn_is_folded_back_into_one(
-    phase: float,
-) -> None:
-    """``demand_configs.phase`` is ``NUMERIC(10, 4)``, so a phase of ``1e6`` or
-    more cannot be stored. ``sin`` repeats every ``2*pi``, so folding the
-    phase into ``(-2*pi, 2*pi)`` bounds it and leaves the week-by-week demand
-    unchanged."""
-    from app.core.demand import generate_demand_series
+def test_seasonal_phase_past_a_full_turn_is_refused(phase: float) -> None:
+    """``sin`` repeats every ``2*pi``, so a phase past one full turn adds
+    nothing a host could want; it is refused, and the host form checks the
+    same ``max_phase``. (It used to be folded silently into one turn.)"""
+    assert_rejected(
+        payload_with_demand(
+            kind="SEASONAL", base=40, amplitude=30, period_weeks=12, phase=phase
+        ),
+        field="demand.phase",
+    )
 
+
+@pytest.mark.parametrize("phase", [0.0, 3.0, -3.0, 2 * math.pi, -2 * math.pi])
+def test_seasonal_phase_within_a_full_turn_is_kept(phase: float) -> None:
     cfg = build(
         payload_with_demand(
             kind="SEASONAL", base=40, amplitude=30, period_weeks=12, phase=phase
         )
     )
-    assert abs(cfg.demand.phase) < 2 * math.pi
-    assert math.isclose(math.sin(cfg.demand.phase), math.sin(phase), abs_tol=1e-9)
-
-    unfolded = SeasonalDemand(base=40, amplitude=30, period_weeks=12, phase=phase)
-    assert generate_demand_series(cfg.demand, 36, 1) == generate_demand_series(
-        unfolded, 36, 1
-    )
+    assert cfg.demand.phase == phase
 
 
 @pytest.mark.parametrize("field", ["mean", "stdev"])
 @pytest.mark.parametrize(
-    ("given", "expected"), [(-5.0, 0.0), (1e9, float(MAX_Q)), (6.5, 6.5)]
+    ("given", "refused"),
+    [(-5.0, True), (1e9, True), (1e6, True), (float(MAX_Q) + 1, True), (6.5, False)],
 )
-def test_clamp_stochastic_float_magnitudes(
-    field: str, given: float, expected: float
+def test_stochastic_float_magnitudes_are_range_checked(
+    field: str, given: float, refused: bool
 ) -> None:
+    """Amended 2026-11-02: ``mean`` and ``stdev`` were clamped to 9999 while the
+    form allowed a million. Both are refused outside ``[0, max_order_quantity]``
+    now, and the form reads the same ceiling."""
     demand = {
         "kind": "STOCHASTIC",
         "distribution": "NORMAL",
@@ -2146,32 +2275,44 @@ def test_clamp_stochastic_float_magnitudes(
         "max": 20,
     }
     demand[field] = given
-    cfg = build(payload_with_demand(**demand))
-    assert getattr(cfg.demand, field) == expected
+    if refused:
+        assert_rejected(payload_with_demand(**demand), field=f"demand.{field}")
+    else:
+        assert getattr(build(payload_with_demand(**demand)).demand, field) == given
 
 
 @pytest.mark.parametrize(
-    ("given", "expected"),
+    ("given", "field"),
     [
-        ((-5, 17), (0, 17)),
-        ((3, -5), (0, 3)),
-        ((50_000, 9_999), (9_999, 9_999)),
-        ((3, 50_000), (3, 9_999)),
-        ((-5, -50), (0, 0)),
-        ((50_000, 100_000), (9_999, 9_999)),
-        ((3, 17), (3, 17)),
+        ((-5, 17), "demand.min"),
+        ((3, -5), "demand.max"),
+        ((50_000, 9_999), "demand.min"),
+        ((3, 50_000), "demand.max"),
     ],
 )
-def test_clamp_stochastic_bounds(
+def test_stochastic_bounds_out_of_range_are_refused(
+    given: tuple[int, int], field: str
+) -> None:
+    """Both bounds lie in ``[0, max_order_quantity]``, refused outside it."""
+    assert_rejected(
+        payload_with_demand(
+            kind="STOCHASTIC",
+            distribution="NORMAL",
+            mean=8.0,
+            stdev=2.0,
+            min=given[0],
+            max=given[1],
+        ),
+        field=field,
+    )
+
+
+@pytest.mark.parametrize(
+    ("given", "expected"), [((3, 17), (3, 17)), ((17, 3), (3, 17)), ((0, 0), (0, 0))]
+)
+def test_stochastic_bounds_in_range_are_kept_and_an_inverted_pair_swapped(
     given: tuple[int, int], expected: tuple[int, int]
 ) -> None:
-    """Both bounds clamp to ``[0, max_order_quantity]``.
-
-    Asserted as a *pair*, because clamping and the ``§3.1`` swap compose: a
-    bound that clamps past its partner inverts the range, and the swap then
-    reorders it.  Asserting one bound in isolation would be asserting an
-    intermediate value that no caller ever sees.
-    """
     cfg = build(
         payload_with_demand(
             kind="STOCHASTIC",
@@ -2183,13 +2324,12 @@ def test_clamp_stochastic_bounds(
         )
     )
     assert (cfg.demand.min, cfg.demand.max) == expected
-    assert 0 <= cfg.demand.min <= cfg.demand.max <= MAX_Q
 
 
-def test_clamping_a_stochastic_bound_never_leaves_it_inverted() -> None:
-    """Clamp and swap have to compose: whichever runs first, the bounds that
-    come out must still be safe for ``random.randint``."""
-    for low, high in ((50_000, 5), (-5, -50), (20, -3), (99_999, 0)):
+def test_an_accepted_stochastic_range_is_never_inverted() -> None:
+    """The swap is what keeps ``random.randint`` safe for every range that is
+    accepted at all."""
+    for low, high in ((9_999, 5), (20, 3), (MAX_Q, 0)):
         cfg = build(
             payload_with_demand(
                 kind="STOCHASTIC",
@@ -2204,17 +2344,22 @@ def test_clamping_a_stochastic_bound_never_leaves_it_inverted() -> None:
         random.Random(7).randint(cfg.demand.min, cfg.demand.max)
 
 
-@pytest.mark.parametrize(
-    ("given", "expected"), [(50_000, MAX_Q), (MAX_Q + 1, MAX_Q), (0, 0), (4, 4)]
-)
-def test_clamp_custom_demand_entries(given: int, expected: int) -> None:
+@pytest.mark.parametrize("given", [50_000, MAX_Q + 1])
+def test_custom_demand_entries_above_the_ceiling_are_refused(given: int) -> None:
     payload = base_payload(duration_weeks=8)
     values = [4] * 8
     values[3] = given
     payload["demand"] = {"kind": "CUSTOM", "values": values}
-    cfg = build(payload)
-    assert cfg.demand.values[3] == expected
-    assert all(0 <= v <= MAX_Q for v in cfg.demand.values)
+    assert_rejected(payload, field="demand.values")
+
+
+@pytest.mark.parametrize("given", [0, 4, MAX_Q])
+def test_custom_demand_entries_in_range_are_kept(given: int) -> None:
+    payload = base_payload(duration_weeks=8)
+    values = [4] * 8
+    values[3] = given
+    payload["demand"] = {"kind": "CUSTOM", "values": values}
+    assert build(payload).demand.values[3] == given
 
 
 def test_custom_rules_are_evaluated_before_clamping() -> None:
@@ -2239,18 +2384,27 @@ def test_custom_rules_are_evaluated_before_clamping() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("given", "expected"),
-    [(50_000, MAX_Q), (MAX_Q + 1, MAX_Q), (MAX_Q, MAX_Q), (20, 20), (1, 1)],
-)
-def test_clamp_production_capacity_upper_bound(given: int, expected: int) -> None:
+@pytest.mark.parametrize("given", [50_000, MAX_Q + 1])
+def test_production_capacity_above_the_ceiling_is_refused(given: int) -> None:
+    assert_rejected(
+        payload_for_role("FACTORY", production_capacity_per_week=given),
+        field="roles.FACTORY.production_capacity_per_week",
+    )
+
+
+@pytest.mark.parametrize("given", [MAX_Q, 20, 1])
+def test_production_capacity_in_range_is_kept(given: int) -> None:
     cfg = build(payload_for_role("FACTORY", production_capacity_per_week=given))
-    assert cfg.factory_config().production_capacity_per_week == expected
+    assert cfg.factory_config().production_capacity_per_week == given
 
 
 def test_production_capacity_upper_bound_follows_the_injected_limits() -> None:
     tight = Limits(max_order_quantity=50)
     payload = payload_for_role("FACTORY", production_capacity_per_week=9_999)
+    with pytest.raises(ConfigValidationError) as excinfo:
+        GameConfig.from_host_input(payload, tight)
+    assert excinfo.value.field == "roles.FACTORY.production_capacity_per_week"
+    payload = payload_for_role("FACTORY", production_capacity_per_week=50)
     cfg = GameConfig.from_host_input(payload, tight)
     assert cfg.factory_config().production_capacity_per_week == 50
 
@@ -2258,6 +2412,10 @@ def test_production_capacity_upper_bound_follows_the_injected_limits() -> None:
 def test_demand_magnitudes_follow_the_injected_limits() -> None:
     tight = Limits(max_order_quantity=50)
     payload = payload_with_demand(kind="CONSTANT", value=9_999)
+    with pytest.raises(ConfigValidationError) as excinfo:
+        GameConfig.from_host_input(payload, tight)
+    assert excinfo.value.field == "demand.value"
+    payload = payload_with_demand(kind="CONSTANT", value=50)
     assert GameConfig.from_host_input(payload, tight).demand.value == 50
 
 
@@ -2310,8 +2468,6 @@ def test_worked_example_coercion_of_duration_weeks() -> None:
         (" 40 ", 40),
         ("104", 104),
         ("8", 8),
-        ("500", 104),  # coerced, then clamped
-        ("2", 8),  # coerced, then clamped
         (40.0, 40),
         (40.7, 40),
         ("banana", 36),
@@ -2322,10 +2478,15 @@ def test_worked_example_coercion_of_duration_weeks() -> None:
         (object(), 36),
     ],
 )
-def test_9b_a_mistyped_duration_weeks_is_coerced_or_defaulted_then_clamped(
+def test_9b_a_mistyped_duration_weeks_is_coerced_or_defaulted(
     given: Any, expected: int
 ) -> None:
     assert build(base_payload(duration_weeks=given)).duration_weeks == expected
+
+
+@pytest.mark.parametrize("given", ["500", "2"])
+def test_9b_a_numeric_string_out_of_range_is_coerced_then_refused(given: str) -> None:
+    assert_rejected(base_payload(duration_weeks=given), field="duration_weeks")
 
 
 @pytest.mark.parametrize(
@@ -2335,14 +2496,10 @@ def test_9b_a_mistyped_duration_weeks_is_coerced_or_defaulted_then_clamped(
         ("initial_inventory", 20.0, 20),
         ("initial_inventory", True, 1),  # a bool reads as a number
         ("initial_inventory", False, 0),
-        ("initial_inventory", "-3", 0),  # coerced, then clamped
-        ("initial_inventory", "50000", 9_999),
         ("initial_inventory", "twelve", 12),  # declared default
         ("shipping_delay_weeks", "3", 3),
-        ("shipping_delay_weeks", "0", 1),  # coerced, then clamped
         ("shipping_delay_weeks", "soon", 2),
         ("holding_cost_per_unit_week", "1.25", 1.25),
-        ("holding_cost_per_unit_week", "-1", 0.0),
         ("holding_cost_per_unit_week", 2, 2.0),
         ("holding_cost_per_unit_week", "free", 0.50),
         ("starting_capital", "250.5", 250.5),
@@ -2354,6 +2511,23 @@ def test_9b_mistyped_role_scalars_are_coerced_or_defaulted(
 ) -> None:
     cfg = build(payload_for_role("RETAILER", **{field: given}))
     assert getattr(cfg.role_config(Role.RETAILER), field) == expected
+
+
+@pytest.mark.parametrize(
+    ("field", "given"),
+    [
+        ("initial_inventory", "-3"),
+        ("initial_inventory", "50000"),
+        ("shipping_delay_weeks", "0"),
+        ("holding_cost_per_unit_week", "-1"),
+    ],
+)
+def test_9b_a_mistyped_role_scalar_out_of_range_is_coerced_then_refused(
+    field: str, given: Any
+) -> None:
+    assert_rejected(
+        payload_for_role("RETAILER", **{field: given}), field=f"roles.RETAILER.{field}"
+    )
 
 
 @pytest.mark.parametrize(
@@ -2418,11 +2592,13 @@ def test_9b_mistyped_demand_scalars_are_coerced_or_defaulted(
 
 
 @pytest.mark.parametrize(
-    ("given", "expected"), [("50", 50), (50.0, 50), ("-5", None), ("lots", None)]
+    ("given", "expected"), [("50", 50), (50.0, 50), ("0", None), ("lots", None)]
 )
-def test_9b_mistyped_optional_overrides_are_coerced_then_repaired(
+def test_9b_mistyped_optional_overrides_are_coerced(
     given: Any, expected: int | None
 ) -> None:
+    """A numeric string reads as its number, ``"0"`` as "unlimited", and a
+    genuinely unusable value as absent (``None``)."""
     assert (
         build(
             payload_with_visibility(max_order_quantity=given)
@@ -2433,10 +2609,15 @@ def test_9b_mistyped_optional_overrides_are_coerced_then_repaired(
     assert cfg.factory_config().production_capacity_per_week == expected
 
 
-@pytest.mark.parametrize(
-    ("given", "expected"), [("0.4", 0.4), (1, 1.0), ("2", 1.0), ("hot", 0.25)]
-)
-def test_9b_mistyped_bot_scalars_are_coerced_then_clamped(
+def test_9b_a_negative_numeric_string_override_is_refused() -> None:
+    assert_rejected(
+        payload_with_visibility(max_order_quantity="-5"),
+        field="visibility.max_order_quantity",
+    )
+
+
+@pytest.mark.parametrize(("given", "expected"), [("0.4", 0.4), (1, 1.0), ("hot", 0.25)])
+def test_9b_mistyped_bot_scalars_are_coerced_or_defaulted(
     given: Any, expected: float
 ) -> None:
     payload = base_payload()
@@ -2444,9 +2625,17 @@ def test_9b_mistyped_bot_scalars_are_coerced_then_clamped(
     assert build(payload).bot.theta == expected
 
 
-def test_9b_coercion_never_raises_for_any_scalar_field() -> None:
-    """``§4``: "an unusable value ... never raises, because none of the nine
-    rejections covers a mistyped scalar".
+def test_9b_a_numeric_string_bot_scalar_out_of_range_is_refused() -> None:
+    payload = base_payload()
+    payload["bot"]["theta"] = "2"
+    assert_rejected(payload, field="bot.theta")
+
+
+def test_9b_coercion_never_raises_for_an_unusable_scalar() -> None:
+    """``§4``: "an unusable value ... never raises" -- it falls back to the
+    declared default. A *usable* number outside its range is a different case
+    and is refused (amended 2026-11-02), so this sweep holds only values that
+    cannot be read as a number at all.
 
     ``currency_symbol`` is deliberately not in this sweep: it is the one scalar
     with a rejection rule of its own, and a garbage value that coerces to a
@@ -2454,7 +2643,7 @@ def test_9b_coercion_never_raises_for_any_scalar_field() -> None:
     non-string inputs are covered by
     ``test_9b_a_mistyped_currency_symbol_falls_back_to_the_default``.
     """
-    garbage = ["banana", "", [1, 2], {}, None, object(), True, -1, 10**9]
+    garbage = ["banana", "", [1, 2], {}, None, object()]
     for value in garbage:
         for key in ("duration_weeks", "random_seed", "preset_name"):
             assert isinstance(build(base_payload(**{key: value})), GameConfig)
@@ -2674,9 +2863,10 @@ def test_the_negative_frontier_is_exactly_zero() -> None:
     assert_rejected_custom([-0.0001] + [4] * 7, field="demand.values")
 
 
-def test_a_numeric_string_entry_is_still_clamped() -> None:
-    cfg = build_custom(["50000"] + [4] * 7)
-    assert cfg.demand.values[0] == MAX_Q
+def test_a_numeric_string_entry_above_the_ceiling_is_refused() -> None:
+    payload = base_payload(duration_weeks=8)
+    payload["demand"] = {"kind": "CUSTOM", "values": ["50000"] + [4] * 7}
+    assert_rejected(payload, field="demand.values")
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])

@@ -14,7 +14,12 @@ measures.
 - A **host** creates a room (6-char code), configures everything, assigns roles, runs the
   session, and sees all four seats. The host does not play and pays no costs.
 - **Players** join by code/link, signed in with Google (Firebase) or as a guest.
-- Empty or abandoned roles are filled by a **bot** (Sterman anchor-and-adjust).
+- Bots (Sterman anchor-and-adjust) play a seat in exactly two cases: an **empty** seat at
+  start when the host turned on `bot_fill_empty_roles`, and a seat the host explicitly
+  **swaps** to a bot ("Swap in a bot", `substitute_bot`). A player who drops is never replaced
+  automatically — the room pauses (D7) and the host decides. A swapped seat keeps its player's
+  identity, so the finished game still counts for them (`14 §3.6`); a bot swapped in while
+  paused plays the moment the host resumes.
 - Games are 8–104 weeks (default 36), with three presets: `CLASSIC_MIT`, `FAST_GAME`,
   `CHAOS`.
 
@@ -93,7 +98,7 @@ app/
     manager.py       AsyncServer `sio` + `socket_manager` (sid → room/alias/identity)
     errors.py        `@guarded(...)` decorator
     handlers/        auto-discovered: connection.py, lobby.py, play.py
-alembic/             env.py reads the URL from settings; versions/0001 … 0004
+alembic/             env.py reads the URL from settings; versions/0001 … 0005
 tests/               test_skeleton, test_auth, test_core, test_services, test_api,
                      test_sockets, test_models (dbschema), test_deploy
 ```
@@ -118,7 +123,7 @@ do not edit it to register one.
 | DB connection | `settings.db_url` → `mysql+pymysql://...`, credentials percent-encoded with `quote(..., safe="")`. Engine in `app/db/session.py`: `pool_pre_ping`, `pool_recycle=3600`, `pool_size=10`, `max_overflow=20`, and a `connect` listener forcing `SET time_zone='+00:00'`. |
 | Auth | Firebase Admin only. `app/core/firebase.py::init_firebase()` returns `None` (never raises) when unconfigured. `app/api/deps.py::verify_firebase_id_token` is the **one** verifier, shared by REST and the socket handshake. No JWTs are minted here. |
 | CORS | `app/main.py` sets `allow_credentials=True`, so `Settings` **rejects `"*"` in `CORS_ORIGINS` at load**. `sockets/manager.py` passes the same list to `cors_allowed_origins`. |
-| Alembic | `alembic.ini` has **no `sqlalchemy.url`** — `alembic/env.py` reads `settings.db_url` and imports `app.models` so `Base.metadata` is populated. Head is `0004`. |
+| Alembic | `alembic.ini` has **no `sqlalchemy.url`** — `alembic/env.py` reads `settings.db_url` and imports `app.models` so `Base.metadata` is populated. Head is `0005` (2026-11-02: `weeks.week_cost` renamed `total_week_cost`, `game_configs.allow_negative_orders` dropped). |
 | Deployment | `render.yaml`: one Docker web service, `healthCheckPath: /api/v1/health`, `preDeployCommand: alembic upgrade head`, `REDIS_ENABLED=false`. MySQL is **not** declared there — provisioned externally and wired in via env. Redis is **optional** and likewise not declared; with the flag off the deployment has no Redis at all, which is only valid at exactly one instance. |
 | Docker | `python:3.11-slim`, plain uvicorn (no gunicorn), `--http h11 --proxy-headers`, `CMD` binds `${PORT:-8080}`. `.dockerignore` excludes `.env`, `tests/`, `venv/`, `.git/`. |
 | CI | `.github/workflows/ci.yml`, runs at repo root (this repo IS `Beery_Backend`; no `working-directory`). jobs: `test` (ruff + black + mypy app/core + pytest `-m "not dbschema"` at ≥80% + `app/core` at ≥95% + docker build), `dbschema` (Testcontainers MySQL, fails if nothing passed). No deploy job: Render auto-deploys `main` after checks pass (`autoDeployTrigger: checksPass`). |
@@ -138,7 +143,7 @@ cp .env.example .env
 ./venv/bin/uvicorn app.main:application --reload          # local iteration
 
 # tests
-./venv/bin/python -m pytest -m "not dbschema"             # 1652 passed, 1 skipped (~37s; verified 2026-11-02)
+./venv/bin/python -m pytest -m "not dbschema"             # 1754 passed, 1 skipped (~35s; verified 2026-11-02)
 ./venv/bin/python -m pytest tests/test_core               # one area
 ./venv/bin/python -m pytest -m dbschema                   # needs a Docker daemon (mysql:8.4)
 BEERY_DOCKER_BUILD_TEST=1 ./venv/bin/python -m pytest -k docker   # the opt-in image build
@@ -207,7 +212,8 @@ mount in the image, so a source change needs a rebuild.
   is a *different* function for stored profile fields and must not be reused for display names.
 - **API/socket contract with the frontend.** REST: `/api/v1/health`, `/health/deep`,
   `/users/upsert`, `/users/me`, `/users/me/stats`, `/users/me/games`,
-  `/users/me/games/{game_id}`, `/rooms/create`, `/rooms/presets`, `/rooms/{code}/status`,
+  `/users/me/games/{game_id}`, `/rooms/create`, `/rooms/presets`, `/rooms/limits`,
+  `/rooms/{code}/status`,
   `GET|PUT /rooms/{code}/config`, `/games/{code}/results`, `/games/{code}/export`,
   `POST /games/claim`.
   Socket in: `connect`, `disconnect`, `join_waiting`, `join`, `leave`, `config_update`,
@@ -252,6 +258,19 @@ mount in the image, so a source change needs a rebuild.
   `len(participants) + 1` — that reissues a live participant's alias after a `leave`.
 - **`app/db/base.py` must read `from ..models.base import Base`.** `from .base import Base`
   there is a self-import that raises `ImportError`.
+- **Every range lives once, on `core.limits.Limits`, and is refused, never clamped**
+  (2026-11-02). `GameConfig.from_host_input` raises `ConfigValidationError` naming the field
+  and the range for any number outside it; `GameEngine.submit_order` raises
+  `OrderOutOfRangeError` for an order outside `order_bounds()` (sent as `INVALID_ORDER`). The
+  host form reads the ranges from `GET /rooms/limits` and the order form from `your_state`
+  (`min_order_quantity`, `max_order_quantity`) — the frontend keeps no copy, so add a bound to
+  `Limits`, never to a form. The only repairs left: a cap of 0 means unlimited, an inverted
+  stochastic range is swapped. There are no negative orders (`allow_negative_orders` was
+  removed; a stored config still carrying the key loads and ignores it).
+- **No screen shows a single "week cost".** `WeekRecord.total_week_cost` (and the
+  `weeks.total_week_cost` column, the export's `total_week_cost`) is holding + backlog + order
+  cost; `player_view` sends `week_holding_backlog_cost` and `week_order_cost` (`null` until the
+  week closes). `end_early()` rolls the abandoned week's cost back out of every live total.
 - **The §5 hard limits are not settings, on purpose.** `Settings` declares exactly one of
   them, `MAX_DISPLAY_NAME_LENGTH` (consumed by `display_name.py` and `user_service.py`).
   The game ceilings live on `core.limits.Limits` / `DEFAULT_LIMITS` (re-exported by

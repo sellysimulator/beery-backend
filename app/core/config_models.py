@@ -42,11 +42,14 @@ __all__ = [
 
 
 class ConfigValidationError(ValueError):
-    """Raised by `from_host_input` for a violation that cannot be repaired.
+    """Raised by `from_host_input` for a value it refuses.
 
     Carries the dotted path of the offending field and a human-readable message.
-    Only the nine violations listed in `03-game-config.md` §3.1 are rejected;
-    everything else out of range is clamped, swapped or dropped to `None`.
+    Every number outside its range is refused with one of these, naming the
+    range, and is never silently clamped (`03-game-config.md` §3.1, amended
+    2026-11-02). The only repairs left are the ones that change nothing a host
+    chose: an inverted stochastic range is swapped, and a cap of `0` reads as
+    "unlimited".
     """
 
     field: str
@@ -62,8 +65,8 @@ class ConfigValidationError(ValueError):
 
 # --------------------------------------------------------------------------- #
 # Coercion helpers.  Every host-supplied number funnels through these, so a
-# non-finite float is caught once (§3.1 rule 8) and a nonsensical value is
-# repaired rather than allowed to poison the simulation.
+# non-finite float is caught once (§3.1 rule 8) and a value outside its range
+# is refused, naming the range, rather than allowed to poison the simulation.
 # --------------------------------------------------------------------------- #
 
 # Sentinel default meaning "this value could not be read as a number at all".
@@ -123,31 +126,66 @@ def _optional_int(value: Any, path: str) -> int | None:
     return int(number)
 
 
-def _clamp_int(value: Any, low: int, high: int, default: int, path: str) -> int:
-    """Clamp a host-supplied integer to `[low, high]`."""
-    return max(low, min(high, _as_int(value, default, path)))
+def _show(number: float) -> str:
+    """A bound or a value as a host would write it: `104`, `0.5`, `1000000`."""
+    if float(number).is_integer():
+        return str(int(number))
+    return f"{number:g}"
 
 
-def _clamp_float(
+def _out_of_range(path: str, low: float, high: float, value: float) -> NoReturn:
+    """Refuse `value`, naming the field and the range it must lie in."""
+    name = path.rsplit(".", 1)[-1]
+    raise ConfigValidationError(
+        path,
+        f"{name} must be between {_show(low)} and {_show(high)}, "
+        f"not {_show(value)}.",
+    )
+
+
+def _bounded_int(value: Any, low: int, high: int, default: int, path: str) -> int:
+    """A host-supplied integer in `[low, high]`, or `ConfigValidationError`.
+
+    Never clamped: a host who typed 500 weeks is told the range, not handed a
+    104-week game they did not ask for (`03-game-config.md` §3.1).
+    """
+    number = _as_int(value, default, path)
+    if not low <= number <= high:
+        _out_of_range(path, low, high, number)
+    return number
+
+
+def _bounded_float(
     value: Any, low: float, high: float, default: float, path: str
 ) -> float:
-    """Clamp a host-supplied float to `[low, high]`."""
-    return max(low, min(high, _as_float(value, default, path)))
+    """A host-supplied float in `[low, high]`, or `ConfigValidationError`."""
+    number = _as_float(value, default, path)
+    if not low <= number <= high:
+        _out_of_range(path, low, high, number)
+    return number
 
 
 def _optional_cap(value: Any, high: int, path: str) -> int | None:
-    """Repair an optional `int | None` override.
+    """Read an optional `int | None` cap, where `0` means "unlimited".
 
-    `None` means "no per-game override". A value of `<= 0` is a mistake, not a
-    cap of one unit per week, so it becomes `None` and the global limit applies
-    (`03-game-config.md` §3.1). Anything larger than `high` is clamped down.
+    `None` and `0` both mean "no per-game cap": the global ceiling applies
+    (`03-game-config.md` §3.1). That is the one documented meaning of `0`, and
+    the host form says so beside the field, because a cap of zero units would
+    wedge the game outright. A negative value, or one above `high`, is refused.
     """
     if value is None:
         return None
     number = _as_int(value, 0, path)
-    if number <= 0:
+    if number == 0:
         return None
-    return min(number, high)
+    if not 1 <= number <= high:
+        name = path.rsplit(".", 1)[-1]
+        raise ConfigValidationError(
+            path,
+            f"{name} must be between 1 and {high}, or 0 for unlimited, "
+            f"not {number}.",
+        )
+    return number
 
 
 def _as_bool(value: Any, default: bool) -> bool:
@@ -222,6 +260,15 @@ class BotConfig(BaseModel):
     target_stock_multiplier: float = 3.0  # S* = initial_inventory * this, 0.0 .. 10.0
 
 
+# Keys a stored config may still carry from an earlier build, read and thrown
+# away. `allow_negative_orders` was removed on 2026-11-02: orders have a floor
+# of 0, and the option never worked (a negative order raised inside the
+# pipeline and froze the week). A room in flight in Redis, a host's saved
+# patch and an old export may all still hold it, and every one of them must
+# keep loading (`03-game-config.md` §2).
+LEGACY_VISIBILITY_KEYS: frozenset[str] = frozenset({"allow_negative_orders"})
+
+
 class VisibilityConfig(BaseModel):
     """Visibility and difficulty levers (`beer-game-spec.md` §6.5)."""
 
@@ -233,8 +280,26 @@ class VisibilityConfig(BaseModel):
     show_supply_line_prominently: bool = True
     show_running_cost_to_players: bool = True
     show_leaderboard_during_game: bool = False
+    # `None` (sent as `0` or blank by the host form) means "no per-game cap";
+    # the global `Limits.max_order_quantity` still applies.
     max_order_quantity: int | None = None
-    allow_negative_orders: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_legacy_keys(cls, data: Any) -> Any:
+        """Accept and ignore `LEGACY_VISIBILITY_KEYS`.
+
+        Pydantic ignores unknown keys by default already; this says so out
+        loud, so a later `extra="forbid"` cannot silently start refusing every
+        room and export written before the key was removed.
+        """
+        if isinstance(data, Mapping) and not isinstance(data, BaseModel):
+            return {
+                key: value
+                for key, value in data.items()
+                if key not in LEGACY_VISIBILITY_KEYS
+            }
+        return data
 
 
 class ConstantDemand(BaseModel):
@@ -454,9 +519,10 @@ class GameConfig(BaseModel):
     def from_host_input(cls, payload: dict, limits: Limits) -> GameConfig:
         """Build a config from untrusted host input.
 
-        Values outside their range are clamped to the nearest bound, an inverted
-        stochastic range is swapped, and a nonsensical optional override becomes
-        `None`. Only the nine violations of `03-game-config.md` §3.1 raise.
+        A value outside its range raises `ConfigValidationError` naming the
+        field and the range; nothing is clamped (`03-game-config.md` §3.1).
+        An inverted stochastic range is swapped, a cap of `0` means
+        "unlimited", and a key from `LEGACY_VISIBILITY_KEYS` is ignored.
         """
         # A whole GameConfig goes through to_payload: a plain model_dump would
         # serialise the Factory by its declared type and drop its extra fields.
@@ -468,7 +534,7 @@ class GameConfig(BaseModel):
         if raw is None:
             raise ConfigValidationError("config", "The config payload must be a dict.")
 
-        duration_weeks = _clamp_int(
+        duration_weeks = _bounded_int(
             raw.get("duration_weeks", _default_of(cls, "duration_weeks")),
             limits.min_weeks,
             limits.max_weeks,
@@ -481,17 +547,21 @@ class GameConfig(BaseModel):
         )
         if not isinstance(currency_symbol, str):
             currency_symbol = str(_default_of(cls, "currency_symbol"))
-        if len(currency_symbol) > 4:
+        if len(currency_symbol) > limits.max_currency_symbol_length:
             raise ConfigValidationError(
                 "currency_symbol",
-                "currency_symbol must be at most 4 characters.",
+                f"currency_symbol must be at most "
+                f"{limits.max_currency_symbol_length} characters.",
             )
 
         # An unusable seed falls back to None, never to 0: see `_optional_int`.
         random_seed = _optional_int(raw.get("random_seed"), "random_seed")
-        if random_seed is not None:
-            random_seed = max(
-                -limits.max_random_seed, min(limits.max_random_seed, random_seed)
+        if random_seed is not None and abs(random_seed) > limits.max_random_seed:
+            _out_of_range(
+                "random_seed",
+                -limits.max_random_seed,
+                limits.max_random_seed,
+                random_seed,
             )
 
         preset_raw = raw.get("preset_name")
@@ -522,10 +592,10 @@ class GameConfig(BaseModel):
             currency_symbol=currency_symbol,
             role_assignment_mode=mode,
             preset_name=preset_name,
-            roles=_clamped_roles(raw.get("roles"), limits),
-            demand=_clamped_demand(raw.get("demand"), duration_weeks, limits),
-            visibility=_clamped_visibility(raw.get("visibility"), limits),
-            bot=_clamped_bot(raw.get("bot")),
+            roles=_checked_roles(raw.get("roles"), limits),
+            demand=_checked_demand(raw.get("demand"), duration_weeks, limits),
+            visibility=_checked_visibility(raw.get("visibility"), limits),
+            bot=_checked_bot(raw.get("bot"), limits),
         )
 
     def to_payload(self) -> dict:
@@ -553,7 +623,7 @@ class GameConfig(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
-# Clamping of the nested sections
+# Range checks of the nested sections
 # --------------------------------------------------------------------------- #
 
 _ROLE_QUANTITY_FIELDS = (
@@ -572,15 +642,15 @@ _ROLE_COST_FIELDS = (
 )
 
 
-def _clamped_role(
+def _checked_role(
     raw: Mapping[str, Any], role: Role, limits: Limits
 ) -> RoleConfig | FactoryConfig:
-    """Clamp one role's numbers into range."""
+    """One role's numbers, each refused when out of range."""
     path = f"roles.{role.value}"
     model: type[RoleConfig] = FactoryConfig if role is Role.FACTORY else RoleConfig
     fields: dict[str, Any] = {}
     for name in _ROLE_QUANTITY_FIELDS:
-        fields[name] = _clamp_int(
+        fields[name] = _bounded_int(
             raw.get(name, _default_of(model, name)),
             0,
             limits.max_initial_quantity,
@@ -588,7 +658,7 @@ def _clamped_role(
             f"{path}.{name}",
         )
     for name in _ROLE_DELAY_FIELDS:
-        fields[name] = _clamp_int(
+        fields[name] = _bounded_int(
             raw.get(name, _default_of(model, name)),
             limits.min_delay_weeks,
             limits.max_delay_weeks,
@@ -596,7 +666,7 @@ def _clamped_role(
             f"{path}.{name}",
         )
     for name in _ROLE_COST_FIELDS:
-        fields[name] = _clamp_float(
+        fields[name] = _bounded_float(
             raw.get(name, _default_of(model, name)),
             0.0,
             limits.max_unit_value,
@@ -605,7 +675,7 @@ def _clamped_role(
         )
     if role is not Role.FACTORY:
         return RoleConfig(**fields)
-    fields["production_delay_weeks"] = _clamp_int(
+    fields["production_delay_weeks"] = _bounded_int(
         raw.get(
             "production_delay_weeks",
             _default_of(FactoryConfig, "production_delay_weeks"),
@@ -623,8 +693,8 @@ def _clamped_role(
     return FactoryConfig(**fields)
 
 
-def _clamped_roles(raw: Any, limits: Limits) -> dict[Role, RoleConfig]:
-    """Clamp all four roles, rejecting a missing one or an untyped Factory."""
+def _checked_roles(raw: Any, limits: Limits) -> dict[Role, RoleConfig]:
+    """Check all four roles, rejecting a missing one or an untyped Factory."""
     if not isinstance(raw, Mapping):
         raise ConfigValidationError("roles", "roles must hold all four roles.")
     supplied: dict[Role, Any] = {}
@@ -651,12 +721,12 @@ def _clamped_roles(raw: Any, limits: Limits) -> dict[Role, RoleConfig]:
             raise ConfigValidationError(
                 f"roles.{role.value}", f"roles[{role.value}] must be a dict."
             )
-        roles[role] = _clamped_role(fields, role, limits)
+        roles[role] = _checked_role(fields, role, limits)
     return roles
 
 
-def _clamped_visibility(raw: Any, limits: Limits) -> VisibilityConfig:
-    """Clamp the visibility levers; a nonsensical order cap becomes `None`."""
+def _checked_visibility(raw: Any, limits: Limits) -> VisibilityConfig:
+    """The visibility levers. A legacy key is ignored; a cap of 0 is "none"."""
     fields = _mapping(raw) or {}
     values: dict[str, Any] = {
         name: _as_bool(
@@ -670,7 +740,6 @@ def _clamped_visibility(raw: Any, limits: Limits) -> VisibilityConfig:
             "show_supply_line_prominently",
             "show_running_cost_to_players",
             "show_leaderboard_during_game",
-            "allow_negative_orders",
         )
     }
     values["max_order_quantity"] = _optional_cap(
@@ -681,25 +750,25 @@ def _clamped_visibility(raw: Any, limits: Limits) -> VisibilityConfig:
     return VisibilityConfig(**values)
 
 
-def _clamped_bot(raw: Any) -> BotConfig:
-    """Clamp the Sterman parameters; `BotConfig` is never rejected (§3.5)."""
+def _checked_bot(raw: Any, limits: Limits) -> BotConfig:
+    """The Sterman parameters, each refused when out of range (§3.5)."""
     fields = _mapping(raw) or {}
     values = {
-        name: _clamp_float(
+        name: _bounded_float(
             fields.get(name, _default_of(BotConfig, name)),
             0.0,
-            1.0,
+            limits.max_bot_weight,
             _default_of(BotConfig, name),
             f"bot.{name}",
         )
         for name in ("theta", "alpha", "beta")
     }
-    values["target_stock_multiplier"] = _clamp_float(
+    values["target_stock_multiplier"] = _bounded_float(
         fields.get(
             "target_stock_multiplier", _default_of(BotConfig, "target_stock_multiplier")
         ),
         0.0,
-        10.0,
+        limits.max_target_stock_multiplier,
         _default_of(BotConfig, "target_stock_multiplier"),
         "bot.target_stock_multiplier",
     )
@@ -709,8 +778,8 @@ def _clamped_bot(raw: Any) -> BotConfig:
 def _demand_int(
     raw: Mapping[str, Any], name: str, model: type[BaseModel], high: int
 ) -> int:
-    """Clamp one non-negative demand quantity."""
-    return _clamp_int(
+    """One non-negative demand quantity, refused outside `[0, high]`."""
+    return _bounded_int(
         raw.get(name, _default_of(model, name)),
         0,
         high,
@@ -719,9 +788,9 @@ def _demand_int(
     )
 
 
-def _clamped_demand(raw: Any, duration_weeks: int, limits: Limits) -> _AnyDemand:
-    """Build the demand generator, clamping magnitudes and swapping an inverted
-    stochastic range. Rules 1 to 5 of §3.1 are rejected here."""
+def _checked_demand(raw: Any, duration_weeks: int, limits: Limits) -> _AnyDemand:
+    """Build the demand generator, refusing any value outside its range and
+    swapping an inverted stochastic range (`03-game-config.md` §3.1)."""
     fields = _mapping(raw)
     if fields is None:
         raise ConfigValidationError("demand", "demand must be a dict naming a kind.")
@@ -742,10 +811,11 @@ def _clamped_demand(raw: Any, duration_weeks: int, limits: Limits) -> _AnyDemand
             _default_of(StepDemand, "step_week"),
             "demand.step_week",
         )
-        if not 2 <= step_week <= duration_weeks:
+        if not limits.min_step_week <= step_week <= duration_weeks:
             raise ConfigValidationError(
                 "demand.step_week",
-                f"step_week must be between 2 and {duration_weeks}.",
+                f"step_week must be between {limits.min_step_week} and "
+                f"{duration_weeks}.",
             )
         return StepDemand(
             initial_value=_demand_int(fields, "initial_value", StepDemand, cap),
@@ -766,7 +836,7 @@ def _clamped_demand(raw: Any, duration_weeks: int, limits: Limits) -> _AnyDemand
             )
         return RampDemand(
             initial_value=_demand_int(fields, "initial_value", RampDemand, cap),
-            slope_per_week=_clamp_float(
+            slope_per_week=_bounded_float(
                 fields.get("slope_per_week", _default_of(RampDemand, "slope_per_week")),
                 -float(cap),
                 float(cap),
@@ -777,7 +847,7 @@ def _clamped_demand(raw: Any, duration_weeks: int, limits: Limits) -> _AnyDemand
             cap=(
                 None
                 if fields.get("cap") is None
-                else _clamp_int(fields.get("cap"), 0, cap, cap, "demand.cap")
+                else _bounded_int(fields.get("cap"), 0, cap, cap, "demand.cap")
             ),
         )
 
@@ -787,26 +857,32 @@ def _clamped_demand(raw: Any, duration_weeks: int, limits: Limits) -> _AnyDemand
             _default_of(SeasonalDemand, "period_weeks"),
             "demand.period_weeks",
         )
-        if period_weeks < 2:
+        if period_weeks < limits.min_period_weeks:
             raise ConfigValidationError(
-                "demand.period_weeks", "period_weeks must be at least 2."
+                "demand.period_weeks",
+                f"period_weeks must be at least {limits.min_period_weeks}.",
             )
-        phase = _as_float(
+        if period_weeks > limits.max_period_weeks:
+            _out_of_range(
+                "demand.period_weeks",
+                limits.min_period_weeks,
+                limits.max_period_weeks,
+                period_weeks,
+            )
+        # One full turn either way. `sin` repeats every turn, so a wider phase
+        # adds nothing a host could want, and refusing it keeps the stored
+        # value inside the NUMERIC(10, 4) `demand_configs.phase` column.
+        phase = _bounded_float(
             fields.get("phase", _default_of(SeasonalDemand, "phase")),
+            -limits.max_phase,
+            limits.max_phase,
             _default_of(SeasonalDemand, "phase"),
             "demand.phase",
         )
-        if abs(phase) > 2 * math.pi:
-            # `sin` repeats every full turn, so folding the phase back into
-            # one leaves the demand as it was while keeping it inside the
-            # NUMERIC(10, 4) `demand_configs.phase` column. `atan2` does the
-            # fold through libm's exact reduction; `fmod` by a float 2*pi
-            # drifts for a large phase.
-            phase = math.atan2(math.sin(phase), math.cos(phase))
         return SeasonalDemand(
             base=_demand_int(fields, "base", SeasonalDemand, cap),
             amplitude=_demand_int(fields, "amplitude", SeasonalDemand, cap),
-            period_weeks=min(period_weeks, limits.max_period_weeks),
+            period_weeks=period_weeks,
             phase=phase,
         )
 
@@ -828,14 +904,14 @@ def _clamped_demand(raw: Any, duration_weeks: int, limits: Limits) -> _AnyDemand
             low, high = high, low
         return StochasticDemand(
             distribution=distribution,
-            mean=_clamp_float(
+            mean=_bounded_float(
                 fields.get("mean", _default_of(StochasticDemand, "mean")),
                 0.0,
                 float(cap),
                 _default_of(StochasticDemand, "mean"),
                 "demand.mean",
             ),
-            stdev=_clamp_float(
+            stdev=_bounded_float(
                 fields.get("stdev", _default_of(StochasticDemand, "stdev")),
                 0.0,
                 float(cap),
@@ -872,10 +948,15 @@ def _clamped_demand(raw: Any, duration_weeks: int, limits: Limits) -> _AnyDemand
                 "demand.values",
                 f"CUSTOM demand values must not be negative, got {item!r}.",
             )
+        if number > cap:
+            raise ConfigValidationError(
+                "demand.values",
+                f"CUSTOM demand values must be at most {cap}, got {item!r}.",
+            )
         values.append(int(number))
     if len(values) < duration_weeks:
         raise ConfigValidationError(
             "demand.values",
             f"CUSTOM demand needs at least {duration_weeks} values, got {len(values)}.",
         )
-    return CustomDemand(values=[min(value, cap) for value in values])
+    return CustomDemand(values=values)

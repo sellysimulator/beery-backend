@@ -33,7 +33,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.config_models import GameConfig, StepDemand
 from app.core.enums import ROLE_ORDER, DemandKind, Role
-from app.core.game_engine import WeekRecord
+from app.core.game_engine import GameEngine, WeekRecord
 from app.core.limits import DEFAULT_LIMITS
 from app.core.stats import compute_stats
 from app.models.game import (
@@ -43,6 +43,7 @@ from app.models.game import (
     GameConfigRow,
     Participant,
     RoleConfigRow,
+    UserStats,
     Week,
 )
 from app.models.user import User
@@ -148,7 +149,7 @@ def test_ac2_weeks_round_trip_to_equal_week_records(db):
         "backlog_cost",
         "fixed_order_cost",
         "purchase_cost",
-        "week_cost",
+        "total_week_cost",
         "cumulative_cost",
     )
     for record in engine.history:
@@ -312,6 +313,82 @@ def test_ac5a_bullwhip_null_for_bot_and_host_even_with_a_defined_ratio(db):
     assert host_rows[0].role is None
 
 
+def test_ac5c_a_seat_swapped_to_a_bot_keeps_its_player(db):
+    """2026-11-02: a player the host swaps out at week 30 of 36 keeps the game.
+
+    ``substitute_bot`` sets the seat's ``is_bot`` and leaves its ``identity``,
+    and attribution follows the identity: the registered player keeps
+    ``user_id`` (so the game stays in ``/users/me/games`` and counts in
+    ``user_stats``), the guest keeps ``guest_identity`` (so a claim still
+    finds it), both keep a bullwhip ratio, and ``is_bot`` and the per-week
+    ``was_bot`` still say which weeks the bot played. A seat that was a bot
+    from the start (bot fill) has no identity and stays anonymous."""
+    from app.services.stats_service import StatsService
+
+    config = make_config(
+        duration_weeks=36,
+        demand=StepDemand(initial_value=4, step_week=5, step_value=12),
+    )
+    engine = GameEngine.start(config, 23)
+    engine.set_bot(Role.FACTORY, True)  # bot fill: a bot from week 1
+    for week in range(1, 37):
+        if week == 30:
+            engine.set_bot(Role.RETAILER, True)  # the host swaps two players out
+            engine.set_bot(Role.WHOLESALER, True)
+        for role in ROLE_ORDER:
+            engine.submit_order(role, 4 if week < 5 else 8 + (week % 3))
+        engine.close_week()
+    assert engine.weeks_played == 36
+
+    participants = {
+        "P1": make_participant(
+            "P1", identity="uid-swapped-out", role=Role.RETAILER, is_bot=True
+        ),
+        "P2": make_participant(
+            "P2", identity="guest_swapped-out", role=Role.WHOLESALER, is_bot=True
+        ),
+        "P3": make_participant("P3", identity="uid-stayed", role=Role.DISTRIBUTOR),
+        "P4": make_participant("P4", identity=None, role=Role.FACTORY, is_bot=True),
+    }
+    room = make_room_document(config, engine, participants=participants)
+    snapshot = build_snapshot(room, config, engine)
+    game_id = DbService().persist_game(db, snapshot)
+
+    rows = {
+        r.alias: r
+        for r in db.query(Participant).filter_by(game_id=game_id).all()
+        if r.participant_type == "PLAYER"
+    }
+    swapped_user = db.query(User).filter_by(firebase_uid="uid-swapped-out").one()
+    assert rows["P1"].user_id == swapped_user.id
+    assert rows["P1"].guest_identity is None
+    assert bool(rows["P1"].is_bot) is True
+    assert rows["P1"].bullwhip_ratio is not None
+
+    assert rows["P2"].user_id is None
+    assert rows["P2"].guest_identity == "guest_swapped-out"
+    assert rows["P2"].bullwhip_ratio is not None
+
+    assert rows["P4"].user_id is None  # bot fill stays anonymous
+    assert rows["P4"].guest_identity is None
+    assert rows["P4"].bullwhip_ratio is None
+
+    retailer_weeks = {
+        w.week: bool(w.was_bot)
+        for w in db.query(Week).filter_by(game_id=game_id, role="RETAILER").all()
+    }
+    assert not any(retailer_weeks[w] for w in range(1, 30))
+    assert all(retailer_weeks[w] for w in range(30, 37))
+
+    StatsService().recompute_user_stats(db, swapped_user.id)
+    stats_row = db.get(UserStats, swapped_user.id)
+    assert stats_row is not None
+    assert stats_row.games_played == 1
+    assert stats_row.weeks_played == 36
+    assert stats_row.games_as_retailer == 1
+    assert stats_row.bullwhip_avg is not None
+
+
 # ---------------------------------------------------------------------------
 # Acceptance criterion 5b
 # ---------------------------------------------------------------------------
@@ -354,7 +431,7 @@ def test_ac5b_reading_weeks_back_reproduces_the_engines_game_stats(db):
             backlog_cost=float(r.backlog_cost),
             fixed_order_cost=float(r.fixed_order_cost),
             purchase_cost=float(r.purchase_cost),
-            week_cost=float(r.week_cost),
+            total_week_cost=float(r.total_week_cost),
             cumulative_cost=float(r.cumulative_cost),
             production_started=r.production_started,
             production_queued=r.production_queued,
@@ -463,7 +540,7 @@ async def test_fm2_fm3_persist_finished_game_logs_error_and_does_not_raise(
     """A raising `persist_game` must be logged at ERROR naming the room code
     (not a bare `except: pass`) and must not break the caller (`finish_game`
     already emitted `game_finished`; this must return `False`, not raise)."""
-    config = make_config(duration_weeks=6)
+    config = make_config(duration_weeks=8)
     engine = run_full_game(config, seed=41)
     # Public field, deliberately corrupted the same way as AC 7: a duplicate
     # (week, role) pair forces a real, deterministic DB failure.
@@ -598,7 +675,7 @@ def test_fm7_money_rounds_half_up_to_two_decimals_at_the_boundary(db):
         "backlog_cost": 0.0,
         "fixed_order_cost": 0.0,
         "purchase_cost": 0.0,
-        "week_cost": 0.50,
+        "total_week_cost": 0.50,
         "cumulative_cost": 1234.567,
         "production_started": None,
         "production_queued": None,
@@ -634,7 +711,7 @@ def test_fm7_money_rounds_half_up_to_two_decimals_at_the_boundary(db):
 
     game_id = DbService().persist_game(db, snapshot)
     row = db.query(Week).filter_by(game_id=game_id, role=Role.RETAILER.value).one()
-    assert row.week_cost == Decimal("0.50")
+    assert row.total_week_cost == Decimal("0.50")
     assert row.cumulative_cost == Decimal("1234.57")
 
 
@@ -671,7 +748,7 @@ async def test_ac20_persistence_runs_with_the_room_lock_released(
 
     monkeypatch.setattr(state_svc, "lock", spy_lock)
 
-    config = make_config(duration_weeks=6)
+    config = make_config(duration_weeks=8)
     engine = run_full_game(config, seed=83)
     room = make_room_document(config, engine)
     stats = compute_stats(engine.history, engine.demand_series, engine.weeks_played)
@@ -688,7 +765,7 @@ async def test_ac20_persistence_runs_with_the_room_lock_released(
 
 
 def test_fm9_no_guest_identity_in_return_value_or_logs(db, caplog):
-    config = make_config(duration_weeks=6)
+    config = make_config(duration_weeks=8)
     engine = run_full_game(config, seed=53)
     participants = {
         "P1": make_participant(
@@ -719,7 +796,7 @@ def test_fm9_no_guest_identity_in_return_value_or_logs(db, caplog):
 
 
 def test_ac8_role_configs_factory_only_columns(db):
-    config = make_config(duration_weeks=6)
+    config = make_config(duration_weeks=8)
     engine = run_full_game(config, seed=73)
     room = make_room_document(config, engine)
     snapshot = build_snapshot(room, config, engine)
@@ -776,7 +853,7 @@ def _host_row(db, game_id: int) -> Participant:
 
 def test_ac10_guest_hosted_game_persists_with_a_guest_host_row(db):
     guest = "guest_00000000-0000-0000-0000-000000000061"
-    config = make_config(duration_weeks=6)
+    config = make_config(duration_weeks=8)
     engine = run_full_game(config, seed=61)
     room = make_room_document(
         config,
@@ -803,7 +880,7 @@ def test_registered_host_resolves_to_the_matching_users_row(db):
     )
     db.commit()
 
-    config = make_config(duration_weeks=6)
+    config = make_config(duration_weeks=8)
     engine = run_full_game(config, seed=67)
     room = make_room_document(
         config,
@@ -829,7 +906,7 @@ def test_fm11_unregistered_firebase_uid_gets_a_users_row(db):
     `/users/upsert`) must not raise a foreign-key error, and must not be left
     with neither identity: the write creates a bare `users` row for it, so
     the result is attributed and shows on that account (§3.6)."""
-    config = make_config(duration_weeks=6)
+    config = make_config(duration_weeks=8)
     engine = run_full_game(config, seed=59)
     participants = {
         "P1": make_participant(
@@ -856,7 +933,7 @@ def test_fm11_unregistered_firebase_uid_gets_a_users_row(db):
 
 
 def test_ac11_bot_participant_has_null_identity_columns(db):
-    config = make_config(duration_weeks=6)
+    config = make_config(duration_weeks=8)
     engine = run_full_game(config, seed=71, bot_roles=frozenset({Role.RETAILER}))
     participants = {
         "P1": make_participant("P1", identity=None, role=Role.RETAILER, is_bot=True),
@@ -876,21 +953,23 @@ def test_ac11_bot_participant_has_null_identity_columns(db):
 # ---------------------------------------------------------------------------
 
 
-def test_host_numbers_past_their_column_ranges_still_persist(db):
+def test_host_numbers_at_their_ceilings_persist(db):
     """A ``random_seed`` past ``BIGINT``, a ``period_weeks`` past ``INT`` and a
-    ``phase`` past ``NUMERIC(10, 4)`` were accepted, played to the end, and
-    then failed this write with "Out of range value for column", losing the
-    stored results. ``from_host_input`` now bounds all three."""
+    ``phase`` past ``NUMERIC(10, 4)`` were once accepted, played to the end,
+    and then failed this write with "Out of range value for column", losing
+    the stored results. ``from_host_input`` refuses all three past their
+    ceilings now (2026-11-02), so the largest values it accepts are the ones
+    that must fit."""
     config = GameConfig.from_host_input(
         {
             **make_config(duration_weeks=8).to_payload(),
-            "random_seed": 2**70,
+            "random_seed": DEFAULT_LIMITS.max_random_seed,
             "demand": {
                 "kind": "SEASONAL",
                 "base": 8,
                 "amplitude": 4,
-                "period_weeks": 3_000_000_000,
-                "phase": 1e7,
+                "period_weeks": DEFAULT_LIMITS.max_period_weeks,
+                "phase": -DEFAULT_LIMITS.max_phase,
             },
         },
         DEFAULT_LIMITS,
@@ -904,4 +983,5 @@ def test_host_numbers_past_their_column_ranges_still_persist(db):
     assert db.get(Game, game_id).rng_seed == DEFAULT_LIMITS.max_random_seed
     row = db.query(DemandConfigRow).filter_by(game_id=game_id).one()
     assert row.period_weeks == DEFAULT_LIMITS.max_period_weeks
-    assert abs(float(row.phase)) < 2 * math.pi
+    # NUMERIC(10, 4) rounds to four places, so a full turn reads 6.2832.
+    assert abs(float(row.phase)) == pytest.approx(2 * math.pi, abs=1e-4)

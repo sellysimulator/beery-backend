@@ -148,11 +148,13 @@ def test_forced_week_contributes_the_zero_the_engine_recorded():
     assert history(engine)["FACTORY"] == [distinct_orders(1)[Role.FACTORY], 0]
 
 
-def test_bot_week_contributes_the_clamped_order_that_was_recorded():
+def test_bot_week_contributes_the_order_that_was_recorded():
+    """The engine refuses an order above the ceiling rather than clamping it,
+    so the play loop caps a bot's figure before submitting (`12 §3.2`); the
+    history carries exactly what was recorded."""
     engine = new_engine()
     engine.set_bot(Role.WHOLESALER)
-    over_ceiling = DEFAULT_LIMITS.max_order_quantity + 500
-    stored = engine.submit_order(Role.WHOLESALER, over_ceiling)
+    stored = engine.submit_order(Role.WHOLESALER, DEFAULT_LIMITS.max_order_quantity)
     assert stored == DEFAULT_LIMITS.max_order_quantity
     for role in (Role.RETAILER, Role.DISTRIBUTOR, Role.FACTORY):
         engine.submit_order(role, 8)

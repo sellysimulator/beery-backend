@@ -33,7 +33,13 @@ from .enums import ROLE_ORDER, Role
 from .limits import DEFAULT_LIMITS
 from .records import OrderCharge, ProductionOutcome, WeekSettlement
 
-__all__ = ["EngineStateError", "GameEngine", "GamePhase", "WeekRecord"]
+__all__ = [
+    "EngineStateError",
+    "GameEngine",
+    "GamePhase",
+    "OrderOutOfRangeError",
+    "WeekRecord",
+]
 
 
 class GamePhase(str, Enum):
@@ -59,8 +65,18 @@ class WeekRecord:
     persists.
 
     `orders_in_flight_after` is this role's **own** order pipeline, sampled in
-    Phase A pass 3. It is deliberately *not* the quantity `player_view` sends
-    under the same name, which is the **supplier's** pipeline (§3.8).
+    Phase A pass 3: orders its downstream customer has placed that are still
+    travelling *to* this role. It is deliberately *not* the quantity
+    `player_view` sends as `orders_in_flight`, which is the **supplier's**
+    pipeline -- this role's own orders going upstream (§3.8). The export names
+    the column `incoming_orders_in_flight_after` for that reason
+    (`15-results-and-export-api.md` §3.2).
+
+    `total_week_cost` is the whole week: holding and backlog cost plus this
+    week's order cost (`fixed_order_cost + purchase_cost`). It was called
+    `week_cost` until 2026-11-02, when the screens stopped showing a single
+    "week cost" -- they show "Holding & backlog" and "Order cost" separately
+    -- and the stored sum was renamed so nobody mistakes it for either.
     """
 
     role: Role
@@ -83,7 +99,7 @@ class WeekRecord:
     backlog_cost: float
     fixed_order_cost: float
     purchase_cost: float
-    week_cost: float
+    total_week_cost: float  # carrying cost + order cost
     cumulative_cost: float
     production_started: int | None  # FACTORY only, else None
     production_queued: int | None  # FACTORY only, else None
@@ -91,6 +107,21 @@ class WeekRecord:
 
 class EngineStateError(RuntimeError):
     """A method was called in a phase that does not permit it."""
+
+
+class OrderOutOfRangeError(ValueError):
+    """An order outside `[low, high]`, refused rather than clamped (§3.3).
+
+    The message is written for the player: the socket layer sends it as is.
+    """
+
+    low: int
+    high: int
+
+    def __init__(self, low: int, high: int) -> None:
+        super().__init__(f"Order must be a whole number from {low} to {high}.")
+        self.low = low
+        self.high = high
 
 
 def _require_role(value: object) -> Role:
@@ -158,7 +189,12 @@ def _record_from_payload(payload: dict) -> WeekRecord:
         backlog_cost=float(payload["backlog_cost"]),
         fixed_order_cost=float(payload["fixed_order_cost"]),
         purchase_cost=float(payload["purchase_cost"]),
-        week_cost=float(payload["week_cost"]),
+        # A room saved before the rename still holds `week_cost`.
+        total_week_cost=float(
+            payload["total_week_cost"]
+            if "total_week_cost" in payload
+            else payload["week_cost"]
+        ),
         cumulative_cost=float(payload["cumulative_cost"]),
         production_started=_optional_int(payload["production_started"]),
         production_queued=_optional_int(payload["production_queued"]),
@@ -304,12 +340,12 @@ class GameEngine:
         return len(self.history) // len(ROLE_ORDER)
 
     def _order_ceiling(self) -> int:
-        """The ceiling `submit_order` enforces.
+        """The highest order `submit_order` accepts.
 
         `visibility.max_order_quantity` when set, and the hard ceiling from
         `DEFAULT_LIMITS` always. `GameConfig` carries no `limits`, so the number
-        is read rather than written twice; section 03 has already clamped the
-        visibility value to the same ceiling, so the second bound only ever
+        is read rather than written twice; section 03 has already refused a
+        visibility value above the same ceiling, so the second bound only ever
         catches a caller, never a config.
         """
         ceiling = DEFAULT_LIMITS.max_order_quantity
@@ -318,8 +354,22 @@ class GameEngine:
             ceiling = min(ceiling, configured)
         return ceiling
 
-    def _clamp_order(self, qty: int) -> int:
-        """Coerce and clamp a decision, in the order of §3.3."""
+    def order_bounds(self) -> tuple[int, int]:
+        """`(lowest, highest)` order this game accepts, both inclusive.
+
+        The floor is always 0: there are no negative orders (the
+        `allow_negative_orders` option was removed on 2026-11-02). The player
+        view carries both numbers, so the order form checks exactly what this
+        engine enforces.
+        """
+        return 0, self._order_ceiling()
+
+    def _checked_order(self, qty: int) -> int:
+        """Coerce a decision and refuse it when out of range (§3.3).
+
+        Never clamped: a clamped order is an order nobody placed, and the
+        player would only find out from a supply line that does not add up.
+        """
         raw: Any = qty
         if isinstance(raw, float) and not raw.is_integer():
             raise ValueError(f"order quantity must be an integer, got {qty!r}")
@@ -327,22 +377,26 @@ class GameEngine:
             quantity = int(raw)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"order quantity must be an integer, got {qty!r}") from exc
-        ceiling = self._order_ceiling()
-        floor = -ceiling if self.config.visibility.allow_negative_orders else 0
-        return max(floor, min(ceiling, quantity))
+        low, high = self.order_bounds()
+        if not low <= quantity <= high:
+            raise OrderOutOfRangeError(low, high)
+        return quantity
 
     def submit_order(self, role: Role, qty: int) -> int:
         """Record a decision for the open week.
 
         Idempotent by role: a second call REPLACES the value. Returns the
-        clamped quantity actually stored, so the caller can tell the player what
-        was recorded.
+        quantity stored, which is always exactly the one passed in.
 
         Bot roles are not special: section 08's bot produces a quantity and the
-        caller submits it exactly as a human's.
+        caller submits it exactly as a human's -- the play loop caps the bot's
+        own figure at `order_bounds()` first, because a heuristic has nobody to
+        show a refusal to.
 
         Raises `EngineStateError` unless phase is `DECISION`.
-        Raises `ValueError` if `role` is not a real role.
+        Raises `OrderOutOfRangeError` (a `ValueError`) for an order outside
+        `order_bounds()`, and `ValueError` for a non-integer quantity or a
+        role that is not a real role. A refused order changes nothing.
         """
         if self.phase is not GamePhase.DECISION:
             raise EngineStateError(
@@ -350,7 +404,7 @@ class GameEngine:
                 f"not {self.phase.value}."
             )
         target = _require_role(role)
-        quantity = self._clamp_order(qty)
+        quantity = self._checked_order(qty)
         self.pending_orders[target] = quantity
         return quantity
 
@@ -448,24 +502,35 @@ class GameEngine:
             backlog_cost=settlement.backlog_cost,
             fixed_order_cost=charge.fixed_order_cost,
             purchase_cost=charge.purchase_cost,
-            week_cost=settlement.carrying_cost + charge.order_cost,
+            total_week_cost=settlement.carrying_cost + charge.order_cost,
             cumulative_cost=agent.accumulated_cost,
             production_started=None if outcome is None else outcome.started,
             production_queued=None if outcome is None else outcome.queued,
         )
 
     def end_early(self) -> None:
-        """Abandon the open week without settling it and move to `FINISHED`.
+        """Abandon the open week and move to `FINISHED`.
 
         The open week has been settled by Phase A but has no decisions, so it
         produces **no** `WeekRecord` and is not counted in `weeks_played`
         (§3.5). A half-week with no orders would otherwise contribute a zero
         order and distort the bullwhip ratio.
 
+        Phase A did charge that week's holding and backlog cost, though, and
+        every live total reads `accumulated_cost`. So the charge is rolled back
+        out: each role's `accumulated_cost` returns to its last recorded
+        `cumulative_cost` (0 when no week closed), restored from the record
+        rather than by subtracting, so it is exact. The chain total, a
+        balance, the leaderboard -- all derived from it -- then agree with the
+        results, which read the same records. Before this, a Classic game ended
+        in week 10 showed the host $180 live and $164 on the results.
+
         Raises `EngineStateError` if phase is already `FINISHED`.
         """
         if self.phase is GamePhase.FINISHED:
             raise EngineStateError("the game has already finished.")
+        for role in ROLE_ORDER:
+            self.agents[role].accumulated_cost = self._previous_cumulative(role)
         self.phase = GamePhase.FINISHED
 
     def set_bot(self, role: Role, is_bot: bool = True) -> None:
@@ -499,10 +564,39 @@ class GameEngine:
 
     def _previous_cumulative(self, role: Role) -> float:
         """That role's `cumulative_cost` at the last complete week, else 0.0."""
+        record = self._last_record(role)
+        return 0.0 if record is None else record.cumulative_cost
+
+    def _last_record(self, role: Role) -> WeekRecord | None:
+        """That role's record for the last complete week, or `None`."""
         for record in reversed(self.history):
             if record.role is role:
-                return record.cumulative_cost
-        return 0.0
+                return record
+        return None
+
+    def _week_cost_figures(self, role: Role) -> tuple[float, float | None]:
+        """`(holding & backlog, order cost)` for the week a player is looking at.
+
+        The two are never added together on screen (2026-11-02): they are
+        charged at different moments, so one "week cost" was always either
+        incomplete or not what the recap showed.
+
+        - While a week is open it is that week's: the holding and backlog
+          Phase A charged, and `None` for the order cost, which is charged
+          only when the week closes (D10) -- "not yet charged".
+        - Once the game is over it is the last closed week's record.
+        """
+        if self.phase is GamePhase.DECISION:
+            settlement = self.settlements.get(role)
+            carrying = 0.0 if settlement is None else settlement.carrying_cost
+            return carrying, None
+        record = self._last_record(role)
+        if record is None:
+            return 0.0, None
+        return (
+            record.holding_cost + record.backlog_cost,
+            record.fixed_order_cost + record.purchase_cost,
+        )
 
     def _stock_of(self, role: Role) -> dict:
         agent = self.agents[role]
@@ -565,10 +659,11 @@ class GameEngine:
             ),
             "has_submitted": target in self.pending_orders,
             "awaiting_roles": self._awaiting_roles(),
-            # The ceiling the server actually enforces, never None: the client
-            # cannot derive it, and `00-conventions.md` §4 forbids it trying.
-            "max_order_quantity": self._order_ceiling(),
-            "allow_negative_orders": visibility.allow_negative_orders,
+            # The bounds the server actually enforces, never None: the client
+            # cannot derive them, and `00-conventions.md` §4 forbids it trying.
+            # The order form refuses outside them with the same message.
+            "min_order_quantity": self.order_bounds()[0],
+            "max_order_quantity": self.order_bounds()[1],
             "show_supply_line_prominently": visibility.show_supply_line_prominently,
             "order_arrival_lead_weeks": self._order_arrival_lead_weeks(target),
             "production_queue": (
@@ -587,12 +682,12 @@ class GameEngine:
 
         if visibility.show_running_cost_to_players:
             view["accumulated_cost"] = agent.accumulated_cost
-            # What has been charged since the last week closed: the carrying
-            # portion while the week is open, because the order portion is not
-            # charged until the week closes (D10).
-            view["week_cost"] = agent.accumulated_cost - self._previous_cumulative(
-                target
-            )
+            # Two figures, never one "week cost": the holding and backlog
+            # already charged for the open week, and its order cost, which is
+            # `None` ("not yet charged") until the week closes (D10).
+            holding_backlog, order_cost = self._week_cost_figures(target)
+            view["week_holding_backlog_cost"] = holding_backlog
+            view["week_order_cost"] = order_cost
             if role_config.starting_capital > 0:
                 view["balance"] = role_config.starting_capital - agent.accumulated_cost
 
@@ -721,10 +816,14 @@ class GameEngine:
         engine.phase = GamePhase(payload["phase"])
 
         pending = payload["pending_orders"]
+        # A negative pending order can only be a room saved while the removed
+        # `allow_negative_orders` option was on. It would raise when the week
+        # closes and freeze the room for good, so it is dropped: that role
+        # shows as undecided and its player orders again.
         engine.pending_orders = {
             role: int(pending[role.value])
             for role in ROLE_ORDER
-            if role.value in pending
+            if role.value in pending and int(pending[role.value]) >= 0
         }
 
         settlements = payload["settlements"]

@@ -177,7 +177,6 @@ class RoomService:
                 "show_running_cost_to_players": visibility.show_running_cost_to_players,
                 "show_leaderboard_during_game": visibility.show_leaderboard_during_game,
                 "max_order_quantity": visibility.max_order_quantity,
-                "allow_negative_orders": visibility.allow_negative_orders,
             },
         }
 

@@ -164,12 +164,13 @@ class RoleAgent:
 
         Does NOT push the order anywhere — the caller routes it upstream.
 
-        A negative `qty`, reachable only when `visibility.allow_negative_orders`
-        is true, charges a `fixed_order_cost` of 0 — a cancellation is not an
-        order — and a correspondingly negative `purchase_cost`. Whether a
-        negative order is legal at all is the engine's decision, not this
-        method's.
+        An order of 0 is not an order, so it charges no `fixed_order_cost`.
+        Orders are never negative: the engine refuses one before it gets here
+        (`07-game-engine.md` §3.3), and this method refuses one too rather than
+        charging a negative purchase cost for it.
         """
+        if qty < 0:
+            raise ValueError(f"an order is never negative, got {qty}")
         self.last_order = qty
         fixed_order_cost = self._role_config.fixed_order_cost if qty > 0 else 0.0
         purchase_cost = self._role_config.unit_purchase_cost * qty
@@ -350,23 +351,18 @@ class FactoryAgent(RoleAgent):
         Excess is **queued, not lost**, and the queue is drained
         first-in-first-out, which adding it to `requested` achieves implicitly.
         A capacity of `None` means unlimited; a capacity of 0 cannot occur
-        because section 03 clamps it to 1, and a 0 would queue forever.
+        because section 03 reads a host's 0 as "unlimited" (`None`), and a 0
+        would queue forever.
 
-        A negative `qty` is legal — `visibility.allow_negative_orders` lets the
-        Factory player cancel, and the cancellation is drawn against what is
-        already queued, so cancelling 3 with 4 queued is an ordinary week.
-        Only a cancellation larger than the queue plus this week's order, which
-        would leave `requested` below zero, raises `ValueError`. It is raised
-        here, before anything is mutated, so a caller that catches it is not
-        left holding a Factory with a negative `production_queue`.
+        A negative `qty` raises `ValueError`, before anything is mutated, so a
+        caller that catches it is not left holding a half-run Factory. There are
+        no negative orders (the cancellation option was removed on 2026-11-02),
+        and the engine refuses one long before it could reach here.
         """
+        if qty < 0:
+            raise ValueError(f"production is never negative, got {qty}")
         capacity = self._factory_config.production_capacity_per_week
         requested = qty + self.production_queue
-        if requested < 0:
-            raise ValueError(
-                f"cannot cancel more than is queued: requested {requested} "
-                f"from qty {qty} and a queue of {self.production_queue}"
-            )
         started = requested if capacity is None else min(requested, capacity)
         queued = requested - started
         self.production_queue = queued

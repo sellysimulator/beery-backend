@@ -120,7 +120,9 @@ async def pause_game(sid: str, data: dict | None = None) -> None:
 @sio.event
 @guarded("error")
 async def resume_game(sid: str, data: dict | None = None) -> None:
-    """``§3.6``. ``PAUSED`` -> ``RUNNING``, then a full state re-broadcast."""
+    """``§3.6``. ``PAUSED`` -> ``RUNNING``, a full state re-broadcast, then
+    every bot seat still owing the open week its order plays
+    (``GameService.resume_play``) -- a bot swapped in while paused included."""
     data = _payload(data)
     room_id = _room_id_of(data)
     if room_id is None:
@@ -153,6 +155,7 @@ async def resume_game(sid: str, data: dict | None = None) -> None:
         await socket_manager.emit_to_room(room_code, "game_resumed", resumed_payload)
     if room_snapshot is not None:
         await get_game_service().broadcast_state(room_code)
+        await get_game_service().resume_play(room_code)
 
 
 # --- force_close_week --------------------------------------------------------- #
@@ -202,7 +205,12 @@ async def substitute_bot(sid: str, data: dict | None = None) -> None:
     """``§3.6``. A no-op, not an error, when the role is already a bot.
     ``engine.set_bot(role)`` is what makes every subsequent ``WeekRecord``
     attribute the play correctly -- the participant flag alone is not
-    enough (module docstring, `07-game-engine.md`'s ``set_bot``)."""
+    enough (module docstring, `07-game-engine.md`'s ``set_bot``).
+
+    Allowed while paused. The bot is asked to play at once, which does
+    nothing in a paused room; ``resume_game`` plays it when the room runs
+    again. The displaced player's ``identity`` stays on the seat, so the
+    finished game is still theirs (`14 §3.6`)."""
     data = _payload(data)
     room_id = _room_id_of(data)
     if room_id is None:
@@ -277,7 +285,13 @@ async def substitute_bot(sid: str, data: dict | None = None) -> None:
 @guarded("error")
 async def end_game_early(sid: str, data: dict | None = None) -> None:
     """``§3.6``. Abandons the open week and finishes with the weeks
-    actually played -- ``engine.end_early()`` never settles it."""
+    actually played -- ``engine.end_early()`` never records it, and rolls its
+    holding and backlog cost back out of every live total.
+
+    The host and every seated player get a fresh state before
+    ``game_finished``, so the "Chain cost so far" the console is left showing
+    is the rolled-back figure the results show too, not the one from before
+    the abandoned week was taken back out."""
     data = _payload(data)
     room_id = _room_id_of(data)
     if room_id is None:
@@ -286,6 +300,7 @@ async def end_game_early(sid: str, data: dict | None = None) -> None:
     state_svc = get_state_service()
     room_code = room_id
     room_snapshot: dict | None = None
+    refresh_events: list[tuple[str, str, dict]] = []
 
     async with state_svc.lock(room_id):
         room = await state_svc.get_room(room_id)
@@ -313,9 +328,14 @@ async def end_game_early(sid: str, data: dict | None = None) -> None:
         state_svc.store_engine(room, engine)
         room["state"] = RoomState.FINISHED.value
         room["finished_at"] = datetime.now(timezone.utc).isoformat()
+        refresh_events = get_game_service().state_refresh_events(
+            room, engine, state_svc
+        )
         await state_svc.save_room(room_code, room)
         room_snapshot = room
 
+    for target_sid, event, payload in refresh_events:
+        await socket_manager.emit_to_sid(target_sid, event, payload)
     if room_snapshot is not None:
         await get_game_service().finish_game(room_code, room_snapshot)
 

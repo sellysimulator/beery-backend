@@ -125,6 +125,10 @@ class StatsService:
             )
             total_cost += game_cost
 
+            # Every game is compared with every other, whatever its length,
+            # preset or cost settings: "best" is simply the lowest cost per
+            # week, and the averages below mix them all. Deliberately kept;
+            # the profile says so beside the figures (`22`, 2026-11-02).
             if weeks_played > 0:
                 cost_per_week = game_cost / weeks_played
                 if best_cost_per_week is None or cost_per_week < best_cost_per_week:

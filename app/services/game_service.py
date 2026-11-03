@@ -29,7 +29,12 @@ from sqlalchemy import select
 
 from ..core.bot import bot_for
 from ..core.enums import ROLE_ORDER, Role, RoomState
-from ..core.game_engine import GameEngine, GamePhase, WeekRecord
+from ..core.game_engine import (
+    GameEngine,
+    GamePhase,
+    OrderOutOfRangeError,
+    WeekRecord,
+)
 from ..core.stats import GameStats, compute_stats
 from ..db import session as db_session
 from ..models.game import Game
@@ -114,13 +119,20 @@ def _host_refresh_after_submission(
     """A fresh `host_state` for the host's submission tracker, or `None`.
 
     The host console reads every "decided" mark from `host_state`, so without
-    this one the tracker shows nobody as decided until the week closes. It is
-    left out once every role is in: the close that follows sends the host a
-    state for the new week anyway. Called inside the lock, so the `seq` is
-    allocated with the others; the caller emits it after the lock.
+    this one the tracker shows nobody as decided until the week closes.
+
+    It is sent even when this submission was the last one the week needed.
+    It used to be left out then, on the reasoning that the close which follows
+    sends the host a state for the new week anyway -- but the final week's
+    close finishes the game and sends no new week, so the host's last state
+    was the one from before the last submission and the console ended the
+    game showing that player as "Still deciding". One extra `host_state` a
+    week is the price of a rule with no exception in it. Called inside the
+    lock, so the `seq` is allocated with the others; the caller emits it
+    after the lock.
     """
     host_sid = room.get("host_sid")
-    if engine.all_orders_in() or not (isinstance(host_sid, str) and host_sid):
+    if not (isinstance(host_sid, str) and host_sid):
         return None
     return host_sid, {"seq": state_svc.next_seq(room), **engine.host_view()}
 
@@ -325,6 +337,21 @@ class GameService:
                     {"message": _INVALID_ORDER_MSG, "code": "INVALID_ORDER"},
                 )
                 return
+            # Refused, never clamped: an order outside the game's bounds is
+            # sent back with the bounds in the message (the order form reads
+            # the same two numbers from `your_state`), records nothing and
+            # spends no resubmission (`§3.1` step 5a).
+            low, high = engine.order_bounds()
+            if not low <= coerced <= high:
+                await socket_manager.emit_to_sid(
+                    sid,
+                    "error",
+                    {
+                        "message": str(OrderOutOfRangeError(low, high)),
+                        "code": "INVALID_ORDER",
+                    },
+                )
+                return
 
             count_key = (room_code_out, engine.week, role.value)
             count = _submission_counts.get(count_key, 0) + 1
@@ -378,8 +405,30 @@ class GameService:
         """`§3.2`. Plays every bot role due a decision for the currently
         open week, and keeps going through any further weeks an all-bot
         room closes on its own -- iteratively (`§2.1`, acceptance
-        criterion 13)."""
+        criterion 13).
+
+        Only a `RUNNING` room plays: a call while the room is paused does
+        nothing, which is why `resume_game` calls `resume_play` below."""
         await self._drive(room_code)
+
+    async def resume_play(self, room_code: str) -> None:
+        """`§3.6`: what a room owes the moment it is running again.
+
+        Plays every bot seat that has no order for the open week, then closes
+        the week if that completed it. A bot swapped in while the room was
+        paused (the usual sequence: a player drops, the room auto-pauses, the
+        host swaps in a bot, then resumes) is asked to play at the swap, but
+        `run_bot_decisions` does nothing in a paused room -- so without this
+        the week waited on a bot nobody would ever ask again, forever.
+
+        The close after the drive covers the one case the drive cannot see: a
+        week whose four orders were all in before the pause but which never
+        closed. Both calls take their own short locks, like every other
+        cascade here (`§2.1`), and both are no-ops for a room with nothing
+        due.
+        """
+        await self._drive(room_code)
+        await self.close_week_if_ready(room_code)
 
     async def _play_bot_round(self, room_code: str) -> bool:
         """One lock cycle: a decision from every bot role that has not yet
@@ -424,6 +473,11 @@ class GameService:
                 qty = bot.decide(
                     view["inventory"], view["backlog"], view["supply_line"]
                 )
+                # The engine refuses an out-of-range order rather than
+                # clamping it, and a bot has nobody to show a refusal to: its
+                # own figure is capped here, the one place it is (`08 §3.5`).
+                # `decide()` already floors at 0.
+                qty = min(qty, engine.order_bounds()[1])
                 engine.submit_order(role, qty)
                 bots[role] = bot
                 changed = True
@@ -625,18 +679,20 @@ class GameService:
             engine = state_svc.load_engine(room)
             if engine is None:
                 return
-            pending = self._state_refresh_events(room, engine, state_svc)
+            pending = self.state_refresh_events(room, engine, state_svc)
             await state_svc.save_room(room["room_code"], room)
 
         for target_sid, event, payload in pending:
             await socket_manager.emit_to_sid(target_sid, event, payload)
 
-    def _state_refresh_events(
+    def state_refresh_events(
         self, room: dict, engine: GameEngine, state_svc: StateService
     ) -> list[tuple[str, str, dict]]:
-        """Allocate one `seq` per recipient and build their refresh payload.
+        """Allocate one `seq` per recipient and build their refresh payload:
+        `your_state` for every connected human seat, `host_state` for the host.
 
         Called inside the lock; the caller saves before emitting any of them.
+        `broadcast_state` and `end_game_early` both use it.
         """
         events: list[tuple[str, str, dict]] = []
         for role in ROLE_ORDER:

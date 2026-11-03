@@ -27,6 +27,15 @@ __all__ = ["WEEK_EXPORT_COLUMNS", "ExportService"]
 # per-week value. This is the one frozen column list -- both the CSV header
 # and the keys of every dict the route hands to `to_json` / `to_csv` must
 # match it exactly.
+#
+# Two names changed on 2026-11-02, at this boundary only:
+# - `incoming_orders_in_flight_after` (was `orders_in_flight_after`, still the
+#   `weeks` column's name): orders the downstream customer placed that are
+#   still travelling TO this role. Not the player's on-screen "orders in
+#   flight", which are the player's own orders going upstream.
+# - `total_week_cost` (was `week_cost`): holding + backlog + fixed order +
+#   purchase cost for the week. The screens show "Holding & backlog" and
+#   "Order cost" separately and never a single "week cost".
 WEEK_EXPORT_COLUMNS: tuple[str, ...] = (
     "room_code",
     "week",
@@ -46,13 +55,13 @@ WEEK_EXPORT_COLUMNS: tuple[str, ...] = (
     "closing_inventory",
     "closing_backlog",
     "supply_line_after",
-    "orders_in_flight_after",
+    "incoming_orders_in_flight_after",
     "order_qty",
     "holding_cost",
     "backlog_cost",
     "fixed_order_cost",
     "purchase_cost",
-    "week_cost",
+    "total_week_cost",
     "cumulative_cost",
     "production_started",
     "production_queued",
@@ -64,7 +73,7 @@ _MONEY_COLUMNS = frozenset(
         "backlog_cost",
         "fixed_order_cost",
         "purchase_cost",
-        "week_cost",
+        "total_week_cost",
         "cumulative_cost",
     }
 )

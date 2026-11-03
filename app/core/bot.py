@@ -134,11 +134,11 @@ class BotAgent:
         """Return the order quantity for the open week.
 
         Pure: identical inputs and identical memory always give an identical
-        answer, and nothing is mutated (§3.6). The floor is 0, even when
-        `visibility.allow_negative_orders` is true -- a heuristic that hands
-        stock back is not what the model describes. `max_order_quantity` is
-        never applied here; `GameEngine.submit_order` clamps, and clamping
-        twice would hide a clamping bug (§3.5).
+        answer, and nothing is mutated (§3.6). The floor is 0, the same floor
+        every order has. `max_order_quantity` is never applied here: the play
+        loop caps the bot's figure at `GameEngine.order_bounds()` just before
+        submitting it (`12-socket-play.md` §3.2), so there is one cap and one
+        place it lives (§3.5).
         """
         raw = self.memory.expected_demand + self.alpha * (
             self.target_stock - inventory + backlog - self.beta * supply_line

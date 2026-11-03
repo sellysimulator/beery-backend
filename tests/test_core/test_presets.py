@@ -200,7 +200,7 @@ def test_classic_mit_visibility_defaults() -> None:
     assert vis.show_running_cost_to_players is True
     assert vis.show_leaderboard_during_game is False
     assert vis.max_order_quantity is None
-    assert vis.allow_negative_orders is False
+    assert "allow_negative_orders" not in vis.model_dump()  # removed 2026-11-02
     assert vis == VisibilityConfig()
 
 

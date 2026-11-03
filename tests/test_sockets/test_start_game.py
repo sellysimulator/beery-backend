@@ -69,6 +69,52 @@ async def test_start_game_with_three_players_and_bot_fill_creates_one_bot(
     assert "game_started" in fake_socket_manager.events_for(room["room_code"])
 
 
+async def test_start_game_broadcasts_the_bot_seats_it_filled(
+    make_room, connect_identity, fake_socket_manager, state_svc
+):
+    """The bots created at start reach every client as participants, named
+    and flagged. ``game_started`` alone carries no names, and the live
+    results' cost cards are built from the participant list."""
+    room = await _seat_n(
+        make_room,
+        connect_identity,
+        2,
+        role_assignment_mode="PLAYER_CHOOSES",
+        bot_fill_empty_roles=True,
+    )
+    for i, role in enumerate(["RETAILER", "WHOLESALER"]):
+        await claim_role(f"sid-{i}", {"room_id": room["room_code"], "role": role})
+    await connect_identity("sid-host", new_guest())
+    await join_waiting(
+        "sid-host", {"room_id": room["room_code"], "host_secret": room["host_secret"]}
+    )
+    fake_socket_manager.clear()
+
+    await start_game(
+        "sid-host", {"room_id": room["room_code"], "host_secret": room["host_secret"]}
+    )
+
+    emits = fake_socket_manager.room_emits
+    names = [event for _room, event, _data in emits]
+    assert names.index("lobby_update") > names.index("game_started")
+    lobby = next(data for _room, event, data in emits if event == "lobby_update")
+    started = next(data for _room, event, data in emits if event == "game_started")
+    assert lobby["seq"] > started["seq"]
+    assert lobby["state"] == "RUNNING"
+    bots = {p["role"]: p for p in lobby["participants"] if p["is_bot"]}
+    assert set(bots) == {"DISTRIBUTOR", "FACTORY"}
+    assert bots["FACTORY"]["display_name"] == "Factory (bot)"
+    for participant in lobby["participants"]:
+        assert set(participant) == {
+            "alias",
+            "display_name",
+            "role",
+            "is_bot",
+            "connected",
+            "is_host",
+        }
+
+
 # --- AC 28 -------------------------------------------------------------------- #
 
 
@@ -411,7 +457,6 @@ async def test_game_started_config_public_has_no_cost_delay_or_demand(
         "show_running_cost_to_players",
         "show_leaderboard_during_game",
         "max_order_quantity",
-        "allow_negative_orders",
     }
     forbidden_fields = (
         "holding_cost_per_unit_week",

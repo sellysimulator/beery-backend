@@ -64,13 +64,13 @@ EXPECTED_HEADER = [
     "closing_inventory",
     "closing_backlog",
     "supply_line_after",
-    "orders_in_flight_after",
+    "incoming_orders_in_flight_after",
     "order_qty",
     "holding_cost",
     "backlog_cost",
     "fixed_order_cost",
     "purchase_cost",
-    "week_cost",
+    "total_week_cost",
     "cumulative_cost",
     "production_started",
     "production_queued",
@@ -241,7 +241,7 @@ def _build_manual_history(
                     backlog_cost=0.0,
                     fixed_order_cost=0.0,
                     purchase_cost=0.0,
-                    week_cost=0.5,
+                    total_week_cost=0.5,
                     cumulative_cost=round(0.5 * week, 2),
                     production_started=4 if is_factory else None,
                     production_queued=4 if is_factory else None,
@@ -342,7 +342,7 @@ def test_ac11a_was_bot_differs_from_is_bot_around_a_mid_game_substitution(
     game = _persist_manual_game_with_substitution(
         session_factory,
         firebase_tokens,
-        duration_weeks=6,
+        duration_weeks=8,
         switch_week=4,
         substituted_role=Role.WHOLESALER,
         seed=91,
@@ -420,7 +420,7 @@ def test_ac13_json_export_has_the_same_number_of_week_rows_as_the_csv(
 def test_ac14_fm4_no_credentials_is_403_with_no_partial_body(
     api_client, session_factory, fake_redis
 ):
-    game = persist_full_game(session_factory, duration_weeks=6, seed=34)
+    game = persist_full_game(session_factory, duration_weeks=8, seed=34)
 
     response = api_client.get(EXPORT_URL(game["room_code"], "csv"))
 
@@ -448,7 +448,7 @@ def test_export_for_a_room_with_no_finished_game_is_403(api_client, fake_redis):
 async def test_ac15_wrong_host_secret_on_a_live_room_is_403(
     api_client, session_factory, fake_redis
 ):
-    game = persist_full_game(session_factory, duration_weeks=6, seed=35)
+    game = persist_full_game(session_factory, duration_weeks=8, seed=35)
     await write_live_redis_room(
         fake_redis, game["room_code"], host_secret="the-real-secret"
     )
@@ -464,7 +464,7 @@ async def test_ac15_wrong_host_secret_on_a_live_room_is_403(
 async def test_export_with_matching_host_secret_on_a_live_room_succeeds(
     api_client, session_factory, fake_redis
 ):
-    game = persist_full_game(session_factory, duration_weeks=6, seed=40)
+    game = persist_full_game(session_factory, duration_weeks=8, seed=40)
     await write_live_redis_room(
         fake_redis, game["room_code"], host_secret="matching-secret-xyz"
     )

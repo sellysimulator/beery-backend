@@ -81,7 +81,9 @@ def test_ac13_put_merges_a_partial_update_and_keeps_untouched_fields(
 # --- AC 14 -----------------------------------------------------------------
 
 
-def test_ac14_out_of_range_values_are_clamped_not_rejected(client, fake_redis):
+def test_ac14_out_of_range_values_are_refused_not_clamped(client, fake_redis):
+    """Amended 2026-11-02: a value outside its range is a 422 naming the field
+    and the range, and the stored config is left as it was."""
     room_code, secret = create_room(client)
 
     response = client.put(
@@ -90,8 +92,28 @@ def test_ac14_out_of_range_values_are_clamped_not_rejected(client, fake_redis):
         headers=_headers(secret),
     )
 
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert isinstance(detail, str)
+    assert detail.startswith("duration_weeks:")
+    assert "between 8 and 104" in detail
+
+    stored = client.get(config_url(room_code), headers=_headers(secret))
+    assert stored.json()["config"]["duration_weeks"] == 36
+
+
+def test_limits_endpoint_serves_every_range_the_forms_check(client):
+    """The backend is the only copy of the form's ranges (2026-11-02)."""
+    from app.core.limits import DEFAULT_LIMITS
+
+    response = client.get("/api/v1/rooms/limits")
+
     assert response.status_code == 200
-    assert response.json()["config"]["duration_weeks"] == 104
+    body = response.json()
+    assert body == DEFAULT_LIMITS.model_dump()
+    assert body["min_step_week"] == 2
+    assert body["max_period_weeks"] == 104
+    assert body["max_order_quantity"] == 9_999
 
 
 # --- AC 15 -----------------------------------------------------------------

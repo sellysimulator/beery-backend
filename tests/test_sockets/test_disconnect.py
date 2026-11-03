@@ -24,7 +24,7 @@ from app.core.config_models import ConstantDemand, FactoryConfig, GameConfig, Ro
 from app.core.enums import Role
 from app.sockets.handlers.connection import disconnect
 from app.sockets.handlers.lobby import join, join_waiting
-from app.sockets.handlers.play import resume_game, substitute_bot
+from app.sockets.handlers.play import resume_game, submit_order, substitute_bot
 
 pytestmark = pytest.mark.asyncio
 
@@ -263,3 +263,82 @@ async def test_disconnect_never_auto_substitutes_a_bot(
     assert stored["participants"][distributor_alias]["is_bot"] is False
     assert engine.agents[Role.DISTRIBUTOR].is_bot is False
     assert "bot_substituted" not in fake_socket_manager.events_for(game["room_code"])
+
+
+# --- A bot swapped in while paused plays on resume (2026-11-02) ---------------- #
+
+
+async def test_a_bot_swapped_in_while_paused_plays_on_resume_and_the_week_closes(
+    make_room, start_running_game, state_svc, fake_socket_manager
+):
+    """The normal path that used to freeze the game for good: a player drops,
+    the room auto-pauses (``pause_on_disconnect`` defaults on), the host swaps
+    in a bot -- allowed while paused -- and resumes. The swap asks the bot to
+    play at once, but a paused room plays nothing, and resuming only
+    re-broadcast state: the week waited on a bot nobody asked again. Resume
+    now plays every bot seat still owing the open week its order."""
+    room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
+    game = await start_running_game(room)
+    _stored, engine = await _current(state_svc, game["room_code"])
+    week = engine.week
+
+    await disconnect(game["sids_by_role"]["FACTORY"])
+    stored, _engine = await _current(state_svc, game["room_code"])
+    assert stored["state"] == "PAUSED"
+
+    await substitute_bot(game["host_sid"], _host_secret_payload(game, role="FACTORY"))
+    stored, engine = await _current(state_svc, game["room_code"])
+    assert stored["state"] == "PAUSED"
+    assert Role.FACTORY not in engine.pending_orders  # nothing plays while paused
+
+    fake_socket_manager.clear()
+    await resume_game(game["host_sid"], _host_secret_payload(game))
+
+    stored, engine = await _current(state_svc, game["room_code"])
+    assert stored["state"] == "RUNNING"
+    assert Role.FACTORY in engine.pending_orders  # the bot played on resume
+    factory_orders = [
+        data
+        for _room_id, event, data in fake_socket_manager.room_emits
+        if event == "order_submitted" and data["role"] == "FACTORY"
+    ]
+    assert factory_orders and factory_orders[0]["is_bot"] is True
+
+    for role in ("RETAILER", "WHOLESALER", "DISTRIBUTOR"):
+        await submit_order(
+            game["sids_by_role"][role],
+            {"room_id": game["room_code"], "week": week, "order": 4},
+        )
+
+    _stored, engine = await _current(state_svc, game["room_code"])
+    assert engine.week == week + 1  # the week closed
+    closed = {r.role: r for r in engine.history if r.week == week}
+    assert set(closed) == set(Role)
+    assert closed[Role.FACTORY].was_bot is True
+    assert closed[Role.FACTORY].was_forced is False
+    assert "week_closed" in fake_socket_manager.events_for(game["room_code"])
+
+
+async def test_resume_closes_a_week_whose_orders_were_all_in_before_the_pause(
+    make_room, start_running_game, state_svc
+):
+    """The other thing a room can owe the moment it runs again: three humans
+    submitted, the fourth seat was swapped to a bot while paused -- and here
+    the remaining humans had already decided, so the bot's order completes the
+    week and resume closes it without anyone pressing anything."""
+    room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
+    game = await start_running_game(room)
+    _stored, engine = await _current(state_svc, game["room_code"])
+    week = engine.week
+    for role in ("RETAILER", "WHOLESALER", "DISTRIBUTOR"):
+        await submit_order(
+            game["sids_by_role"][role],
+            {"room_id": game["room_code"], "week": week, "order": 4},
+        )
+
+    await disconnect(game["sids_by_role"]["FACTORY"])
+    await substitute_bot(game["host_sid"], _host_secret_payload(game, role="FACTORY"))
+    await resume_game(game["host_sid"], _host_secret_payload(game))
+
+    _stored, engine = await _current(state_svc, game["room_code"])
+    assert engine.week == week + 1

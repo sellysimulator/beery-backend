@@ -33,7 +33,13 @@ from app.core.config_models import (
     VisibilityConfig,
 )
 from app.core.enums import ROLE_ORDER, Role
-from app.core.game_engine import EngineStateError, GameEngine, GamePhase, WeekRecord
+from app.core.game_engine import (
+    EngineStateError,
+    GameEngine,
+    GamePhase,
+    OrderOutOfRangeError,
+    WeekRecord,
+)
 from app.core.presets import get_preset
 
 SEED = 20260919
@@ -238,7 +244,7 @@ def test_worked_example_week_one_records() -> None:
         assert record.order == 4
         assert record.supply_line_after == expected_supply_line[role]
         assert record.orders_in_flight_after == expected_orders_in_flight[role]
-        assert record.week_cost == pytest.approx(6.00)
+        assert record.total_week_cost == pytest.approx(6.00)
         assert record.cumulative_cost == pytest.approx(6.00)
         assert record.was_bot is False
         assert record.was_forced is False
@@ -333,57 +339,75 @@ def test_fm4_week_one_uses_demand_series_index_zero() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 5, FM 12 -- clamping
+# AC 5, FM 12 -- order bounds: refused, never clamped (amended 2026-11-02)
 # --------------------------------------------------------------------------
 
 
-def test_ac5_default_clamp_is_zero_to_nine_nine_nine_nine() -> None:
+def test_ac5_default_bounds_are_zero_to_nine_nine_nine_nine() -> None:
     engine = GameEngine.start(get_preset("CLASSIC_MIT"), SEED)
+    assert engine.order_bounds() == (0, 9_999)
     assert engine.submit_order(Role.RETAILER, 12) == 12
     assert engine.submit_order(Role.RETAILER, 0) == 0
     assert engine.submit_order(Role.RETAILER, 9_999) == 9_999
-    assert engine.submit_order(Role.RETAILER, 10_000) == 9_999
-    assert engine.submit_order(Role.RETAILER, 1_000_000) == 9_999
 
 
-def test_fm12_negative_order_without_the_flag_clamps_to_zero() -> None:
+@pytest.mark.parametrize("quantity", [10_000, 1_000_000, -1, -5, -9_999_999])
+def test_ac5_an_order_out_of_bounds_is_refused_and_records_nothing(
+    quantity: int,
+) -> None:
+    """A clamped order is an order nobody placed. The refusal carries the
+    bounds in a message the socket layer sends to the player as is."""
     engine = GameEngine.start(get_preset("CLASSIC_MIT"), SEED)
-    assert engine.submit_order(Role.RETAILER, -5) == 0
-    assert engine.submit_order(Role.WHOLESALER, -9_999_999) == 0
+    engine.submit_order(Role.RETAILER, 7)
+    with pytest.raises(OrderOutOfRangeError) as excinfo:
+        engine.submit_order(Role.RETAILER, quantity)
+    assert isinstance(excinfo.value, ValueError)
+    assert (excinfo.value.low, excinfo.value.high) == (0, 9_999)
+    assert str(excinfo.value) == "Order must be a whole number from 0 to 9999."
+    assert engine.pending_orders[Role.RETAILER] == 7  # the earlier one stands
+    with pytest.raises(OrderOutOfRangeError):
+        engine.submit_order(Role.WHOLESALER, quantity)
+    assert Role.WHOLESALER not in engine.pending_orders
 
 
-def test_ac5_clamps_to_configured_max_order_quantity() -> None:
+def test_ac5_a_configured_max_order_quantity_lowers_the_ceiling() -> None:
     config = make_config(
         visibility=VisibilityConfig(max_order_quantity=50),
         duration_weeks=12,
     )
     engine = GameEngine.start(config, SEED)
+    assert engine.order_bounds() == (0, 50)
     assert engine.submit_order(Role.RETAILER, 50) == 50
-    assert engine.submit_order(Role.RETAILER, 51) == 50
-    assert engine.submit_order(Role.RETAILER, 10_000) == 50
-    assert engine.submit_order(Role.RETAILER, -1) == 0
+    for quantity in (51, 10_000, -1):
+        with pytest.raises(OrderOutOfRangeError) as excinfo:
+            engine.submit_order(Role.RETAILER, quantity)
+        assert "from 0 to 50" in str(excinfo.value)
+    view = engine.player_view(Role.RETAILER)
+    assert (view["min_order_quantity"], view["max_order_quantity"]) == (0, 50)
 
 
-def test_ac5_allow_negative_orders_opens_the_floor() -> None:
-    config = make_config(
-        visibility=VisibilityConfig(max_order_quantity=50, allow_negative_orders=True),
-        duration_weeks=12,
-    )
-    engine = GameEngine.start(config, SEED)
-    assert engine.submit_order(Role.RETAILER, -1) == -1
-    assert engine.submit_order(Role.RETAILER, -50) == -50
-    assert engine.submit_order(Role.RETAILER, -51) == -50
-    assert engine.submit_order(Role.RETAILER, 51) == 50
+def test_fm12_there_are_no_negative_orders_even_for_a_legacy_config() -> None:
+    """``allow_negative_orders`` was removed: a stored config that still says
+    ``true`` loads, and its floor is still 0."""
+    stored = get_preset("CLASSIC_MIT").to_payload()
+    stored["visibility"]["allow_negative_orders"] = True
+    engine = GameEngine.start(GameConfig.from_payload(stored), SEED)
+    assert engine.order_bounds()[0] == 0
+    with pytest.raises(OrderOutOfRangeError):
+        engine.submit_order(Role.FACTORY, -3)
+    assert "allow_negative_orders" not in engine.player_view(Role.FACTORY)
 
 
-def test_ac5_allow_negative_orders_without_a_configured_ceiling() -> None:
-    config = make_config(
-        visibility=VisibilityConfig(allow_negative_orders=True),
-        duration_weeks=12,
-    )
-    engine = GameEngine.start(config, SEED)
-    assert engine.submit_order(Role.RETAILER, -9_999) == -9_999
-    assert engine.submit_order(Role.RETAILER, -20_000) == -9_999
+def test_a_room_saved_with_a_negative_pending_order_drops_it_on_load() -> None:
+    """A room saved while the removed option was on may hold a negative
+    pending order, which would raise at the close and freeze the room. It is
+    dropped on load, so that role is simply undecided again."""
+    engine = GameEngine.start(get_preset("CLASSIC_MIT"), SEED)
+    engine.submit_order(Role.RETAILER, 4)
+    payload = engine.to_payload()
+    payload["pending_orders"]["FACTORY"] = -3
+    restored = GameEngine.from_payload(payload, get_preset("CLASSIC_MIT"))
+    assert restored.pending_orders == {Role.RETAILER: 4}
 
 
 def test_submit_order_rejects_a_non_integer_and_a_non_role() -> None:
@@ -508,7 +532,7 @@ def test_ac8_close_week_returns_records_in_role_order() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_ac9_week_cost_is_the_sum_of_its_four_components() -> None:
+def test_ac9_total_week_cost_is_the_sum_of_its_four_components() -> None:
     config = make_config(
         {"fixed_order_cost": 1.5, "unit_purchase_cost": 0.25},
         demand=get_preset("CLASSIC_MIT").demand,
@@ -518,7 +542,7 @@ def test_ac9_week_cost_is_the_sum_of_its_four_components() -> None:
     quantities = [4, 9, 0, 14, 6, 2, 11, 0, 7, 3, 5, 8]
     for quantity in quantities:
         for record in play_week(engine, {role: quantity for role in ROLE_ORDER}):
-            assert record.week_cost == pytest.approx(
+            assert record.total_week_cost == pytest.approx(
                 record.holding_cost
                 + record.backlog_cost
                 + record.fixed_order_cost
@@ -539,7 +563,7 @@ def test_ac10_cumulative_cost_accumulates_week_by_week() -> None:
     for quantity in quantities:
         for record in play_week(engine, {role: quantity for role in ROLE_ORDER}):
             assert record.cumulative_cost == pytest.approx(
-                previous[record.role] + record.week_cost, abs=1e-9
+                previous[record.role] + record.total_week_cost, abs=1e-9
             )
             previous[record.role] = record.cumulative_cost
 
@@ -560,7 +584,7 @@ def test_fm5_an_order_is_charged_exactly_once_per_week() -> None:
             assert record.purchase_cost == pytest.approx(0.00)
             assert record.holding_cost == pytest.approx(6.00)
             assert record.backlog_cost == pytest.approx(0.00)
-            assert record.week_cost == pytest.approx(7.00)
+            assert record.total_week_cost == pytest.approx(7.00)
             assert record.cumulative_cost == pytest.approx(
                 expected_cumulative[week_index]
             )
@@ -575,7 +599,71 @@ def test_fm5_a_zero_order_is_not_charged_the_fixed_cost() -> None:
     engine = GameEngine.start(config, SEED)
     for record in play_week(engine, {role: 0 for role in ROLE_ORDER}):
         assert record.fixed_order_cost == pytest.approx(0.00)
-        assert record.week_cost == pytest.approx(6.00)
+        assert record.total_week_cost == pytest.approx(6.00)
+
+
+def test_a_record_saved_before_the_rename_still_loads() -> None:
+    """A room in flight in Redis holds history written as ``week_cost``."""
+    engine = GameEngine.start(get_preset("CLASSIC_MIT"), SEED)
+    play_week(engine, {role: 4 for role in ROLE_ORDER})
+    payload = engine.to_payload()
+    for record in payload["history"]:
+        record["week_cost"] = record.pop("total_week_cost")
+    restored = GameEngine.from_payload(payload, get_preset("CLASSIC_MIT"))
+    assert restored == engine
+    assert restored.history[0].total_week_cost == engine.history[0].total_week_cost
+
+
+# --------------------------------------------------------------------------
+# The two week-cost figures a player sees (2026-11-02)
+# --------------------------------------------------------------------------
+
+
+def test_the_player_sees_holding_and_backlog_and_an_uncharged_order_cost() -> None:
+    """The example from the review: $10 fixed + $1/unit, a week-1 order of 4.
+    The screen used to say "Week cost $6", then "Total so far" jumped $26 at
+    the close. Now it shows $6 holding & backlog and an order cost that is not
+    yet charged, and the record that closes the week itemises the $14."""
+    config = make_config(
+        {"fixed_order_cost": 10.0, "unit_purchase_cost": 1.0},
+        demand=ConstantDemand(value=4),
+        duration_weeks=12,
+    )
+    engine = GameEngine.start(config, SEED)
+    view = engine.player_view(Role.WHOLESALER)
+    assert view["week_holding_backlog_cost"] == pytest.approx(6.00)
+    assert view["week_holding_backlog_cost"] == view["settlement"]["carrying_cost"]
+    assert view["week_order_cost"] is None
+    assert "week_cost" not in view
+
+    records = play_week(engine, {role: 4 for role in ROLE_ORDER})
+    week1 = records_for(records, Role.WHOLESALER)[0]
+    assert week1.fixed_order_cost + week1.purchase_cost == pytest.approx(14.00)
+    assert week1.total_week_cost == pytest.approx(20.00)
+
+    view = engine.player_view(Role.WHOLESALER)
+    assert view["week_order_cost"] is None  # week 2 is open
+    assert view["accumulated_cost"] == pytest.approx(26.00)
+
+
+def test_after_the_last_week_the_figures_are_that_week_s_record() -> None:
+    config = make_config(
+        {"fixed_order_cost": 10.0, "unit_purchase_cost": 1.0},
+        demand=ConstantDemand(value=4),
+        duration_weeks=8,
+    )
+    engine = GameEngine.start(config, SEED)
+    play_flat(engine, 4, 8)
+    assert engine.phase is GamePhase.FINISHED
+    last = engine.history[-4:]
+    view = engine.player_view(Role.RETAILER)
+    record = records_for(last, Role.RETAILER)[0]
+    assert view["week_holding_backlog_cost"] == pytest.approx(
+        record.holding_cost + record.backlog_cost
+    )
+    assert view["week_order_cost"] == pytest.approx(
+        record.fixed_order_cost + record.purchase_cost
+    )
 
 
 # --------------------------------------------------------------------------
@@ -675,6 +763,58 @@ def test_ac12_end_early_discards_pending_orders_for_the_open_week() -> None:
     engine.end_early()
     assert engine.weeks_played == 3
     assert all(record.week <= 3 for record in engine.history)
+
+
+def test_ac12a_end_early_rolls_the_open_week_out_of_every_live_total() -> None:
+    """Classic ended in week 10 showed the host $180 live and $164 on the
+    results: the abandoned week's holding and backlog were in the live totals
+    and in no record. After ``end_early`` every live figure equals the
+    results' figure -- accumulated cost, the chain total, the leaderboard and
+    a balance."""
+    from app.core.stats import compute_stats
+
+    config = make_config(
+        {"starting_capital": 500.0},
+        demand=get_preset("CLASSIC_MIT").demand,
+        duration_weeks=36,
+        visibility=VisibilityConfig(
+            show_running_cost_to_players=True, show_leaderboard_during_game=True
+        ),
+    )
+    engine = GameEngine.start(config, SEED)
+    play_flat(engine, 4, 9)
+    before = engine.host_view()["chain_total_cost"]
+    open_week = sum(engine.settlements[role].carrying_cost for role in ROLE_ORDER)
+    assert open_week > 0
+
+    engine.end_early()
+
+    stats = compute_stats(engine.history, engine.demand_series, engine.weeks_played)
+    host = engine.host_view()
+    assert host["chain_total_cost"] == stats.chain_total_cost
+    assert host["chain_total_cost"] == pytest.approx(before - open_week)
+    for role in ROLE_ORDER:
+        assert host["roles"][role.value]["accumulated_cost"] == (
+            stats.per_role[role].total_cost
+        )
+        view = engine.player_view(role)
+        assert view["accumulated_cost"] == stats.per_role[role].total_cost
+        assert view["balance"] == 500.0 - stats.per_role[role].total_cost
+        for entry in view["leaderboard"]:
+            assert entry["accumulated_cost"] == (
+                stats.per_role[Role(entry["role"])].total_cost
+            )
+
+    restored = GameEngine.from_payload(engine.to_payload(), config)
+    assert restored == engine
+
+
+def test_ac12a_end_early_in_week_one_leaves_every_total_at_zero() -> None:
+    config = make_config(demand=ConstantDemand(value=4), duration_weeks=12)
+    engine = GameEngine.start(config, SEED)
+    assert engine.host_view()["chain_total_cost"] > 0
+    engine.end_early()
+    assert engine.host_view()["chain_total_cost"] == 0.0
 
 
 # --------------------------------------------------------------------------
@@ -990,8 +1130,8 @@ def test_player_view_always_included_keys(role: Role) -> None:
         "has_submitted",
         "awaiting_roles",
         "own_history",
+        "min_order_quantity",
         "max_order_quantity",
-        "allow_negative_orders",
         "show_supply_line_prominently",
         "order_arrival_lead_weeks",
         "production_queue",
@@ -1077,7 +1217,8 @@ def test_player_view_conditional_keys_follow_their_gates() -> None:
     view = GameEngine.start(off, SEED).player_view(Role.WHOLESALER)
     for key in (
         "accumulated_cost",
-        "week_cost",
+        "week_holding_backlog_cost",
+        "week_order_cost",
         "balance",
         "customer_demand_series",
         "neighbours",
@@ -1099,7 +1240,8 @@ def test_player_view_conditional_keys_follow_their_gates() -> None:
     )
     view = GameEngine.start(on, SEED).player_view(Role.WHOLESALER)
     assert "accumulated_cost" in view
-    assert "week_cost" in view
+    assert "week_holding_backlog_cost" in view
+    assert "week_order_cost" in view
     assert set(view["neighbours"]) == {Role.RETAILER, Role.DISTRIBUTOR}
     assert set(view["chain"]) == set(ROLE_ORDER)
     for entry in view["neighbours"].values():

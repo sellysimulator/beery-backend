@@ -160,8 +160,14 @@ async def test_fourth_order_closes_week_with_the_specified_emit_shape(
         for i, (_t, e, _d) in enumerate(events)
         if e == "your_state" and i > week_closed_idx
     ]
-    host_state_idxs = [i for i, (_t, e, _d) in enumerate(events) if e == "host_state"]
-    assert host_state_idxs, "host_state was never emitted"
+    # The closing submission's own host_state goes out before the close; the
+    # one for the new week is what must follow the records.
+    host_state_idxs = [
+        i
+        for i, (_t, e, _d) in enumerate(events)
+        if e == "host_state" and i > week_closed_idx
+    ]
+    assert host_state_idxs, "host_state was never emitted after the close"
     assert all(
         i > last_ywc_idx for i in post_close_your_state_idxs + host_state_idxs
     ), "a fresh your_state/host_state must follow every your_week_closed (§3.3 step 2)"
@@ -251,6 +257,56 @@ async def test_the_host_sees_the_bots_decided_while_humans_still_decide(
     assert latest["awaiting_roles"] == ["RETAILER", "WHOLESALER"]
 
 
+async def test_the_host_sees_every_seat_decided_when_the_last_order_ends_the_game(
+    make_room, connect_identity, fake_socket_manager, state_svc, monkeypatch
+):
+    """Two humans and two bots, played to the end. The last human's order
+    closes the final week and finishes the game, and no state for a new week
+    follows it -- so unless the host is sent a state *for that submission*,
+    the console ends the game with that player still "Still deciding"."""
+
+    async def no_persist(room_code, room, engine, stats):
+        return None
+
+    monkeypatch.setattr(game_service_module, "persist_finished_game", no_persist)
+
+    room = await make_room(
+        role_assignment_mode="PLAYER_CHOOSES",
+        bot_fill_empty_roles=True,
+        duration_weeks=8,
+    )
+    room_code = room["room_code"]
+    humans = {"RETAILER": "sid-retailer", "WHOLESALER": "sid-wholesaler"}
+    for role, sid in humans.items():
+        await connect_identity(sid, new_guest())
+        await join(sid, {"room_id": room_code, "display_name": role.title()})
+        await claim_role(sid, {"room_id": room_code, "role": role})
+    await connect_identity("sid-host", new_guest())
+    await join_waiting(
+        "sid-host", {"room_id": room_code, "host_secret": room["host_secret"]}
+    )
+    await start_game(
+        "sid-host", {"room_id": room_code, "host_secret": room["host_secret"]}
+    )
+
+    for _ in range(8):
+        _stored, engine = await _current(state_svc, room_code)
+        week = engine.week
+        fake_socket_manager.clear()
+        for sid in humans.values():
+            await submit_order(sid, {"room_id": room_code, "week": week, "order": 4})
+
+    stored, _engine = await _current(state_svc, room_code)
+    assert stored["state"] == "FINISHED"
+    latest = _sid_events(fake_socket_manager, "sid-host", "host_state")[-1]
+    assert {role: view["has_submitted"] for role, view in latest["roles"].items()} == {
+        "RETAILER": True,
+        "WHOLESALER": True,
+        "DISTRIBUTOR": True,
+        "FACTORY": True,
+    }
+
+
 # --- AC 13 -------------------------------------------------------------- #
 
 
@@ -308,6 +364,51 @@ async def test_end_game_early_mid_week_reports_weeks_played_as_week_minus_one(
     )
     assert finished_payload["weeks_played"] == open_week - 1
     assert not any(r.week == open_week for r in engine.history)
+
+
+async def test_end_game_early_leaves_every_live_total_equal_to_the_results(
+    make_room, start_running_game, fake_socket_manager, state_svc
+):
+    """2026-11-02: the abandoned week's holding and backlog used to stay in the
+    live totals (host console $180) while the results left it out ($164). The
+    host and every seated player now get a fresh state, before
+    ``game_finished``, whose totals are the rolled-back ones."""
+    room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
+    game = await start_running_game(room)
+    await _close_the_open_week(game, state_svc)
+    await _close_the_open_week(game, state_svc)
+    _stored, engine = await _current(state_svc, game["room_code"])
+    live_before = engine.host_view()["chain_total_cost"]
+
+    fake_socket_manager.clear()
+    await end_game_early(
+        game["host_sid"],
+        {"room_id": game["room_code"], "host_secret": game["host_secret"]},
+    )
+
+    finished = next(
+        data
+        for _room_id, event, data in fake_socket_manager.room_emits
+        if event == "game_finished"
+    )
+    host_state = next(
+        data
+        for target, event, data in fake_socket_manager.sid_emits
+        if event == "host_state" and target == game["host_sid"]
+    )
+    assert host_state["phase"] == "FINISHED"
+    assert host_state["seq"] < finished["seq"]
+    assert host_state["chain_total_cost"] == finished["stats"]["chain_total_cost"]
+    assert host_state["chain_total_cost"] < live_before
+    for role, sid in game["sids_by_role"].items():
+        your_state = next(
+            data
+            for target, event, data in fake_socket_manager.sid_emits
+            if event == "your_state" and target == sid
+        )
+        assert your_state["accumulated_cost"] == (
+            finished["stats"]["per_role"][role]["total_cost"]
+        )
 
 
 # --- AC 27 ------------------------------------------------------------------ #

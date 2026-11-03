@@ -57,6 +57,9 @@ _ROLE_ACTION_STARTED = "The game has already started."
 _UNKNOWN_PARTICIPANT = "Unknown participant."
 _UNKNOWN_ROLE = "Unknown role."
 _ROLE_TAKEN = "That role has already been taken."
+_ROLE_HELD = (
+    "That role is already held by another participant. Set them to No role first."
+)
 _HOST_ASSIGNING = "The host is assigning roles."
 _RANDOM_ROLES_DEALT = "Roles are dealt at random when the game starts."
 
@@ -514,7 +517,8 @@ async def set_role_mode(sid: str, data: dict | None = None) -> None:
 @sio.event
 @guarded("join_error")
 async def assign_role(sid: str, data: dict | None = None) -> None:
-    """Host authority. ``role: null`` unseats (``§3.5``)."""
+    """Host authority. ``role: null`` unseats; a role another participant
+    already holds is refused (``§3.5``)."""
     data = _payload(data)
     room_id = _room_id_of(data)
     if room_id is None:
@@ -562,6 +566,16 @@ async def assign_role(sid: str, data: dict | None = None) -> None:
                 await _reject(sid, _UNKNOWN_ROLE)
                 return
 
+        # A role someone else holds is refused, not moved. Moving it used to
+        # unseat the holder silently, which a host picking from a list reads
+        # as two people sharing a seat until one of them vanishes from it.
+        # Taking a seat over is two deliberate steps: unseat, then assign.
+        if new_role is not None:
+            holder = room["role_to_alias"].get(new_role.value)
+            if holder is not None and holder != alias:
+                await _reject(sid, _ROLE_HELD)
+                return
+
         current_role = room["participants"][alias].get("role")
         if (
             current_role is not None
@@ -570,9 +584,6 @@ async def assign_role(sid: str, data: dict | None = None) -> None:
             room["role_to_alias"][current_role] = None
 
         if new_role is not None:
-            previous_holder = room["role_to_alias"].get(new_role.value)
-            if previous_holder is not None and previous_holder != alias:
-                room["participants"][previous_holder]["role"] = None
             room["role_to_alias"][new_role.value] = alias
 
         room["participants"][alias]["role"] = (
@@ -745,6 +756,7 @@ async def start_game(sid: str, data: dict | None = None) -> None:
     room_code: str
     host_target: str
     game_started_event: dict
+    lobby_event: dict
     host_state_event: dict
     your_state_events: list[tuple[str, dict]] = []
 
@@ -824,6 +836,12 @@ async def start_game(sid: str, data: dict | None = None) -> None:
         game_started_event = _game_started_payload(
             room, engine, state_svc.next_seq(room)
         )
+        # The participant list as it now stands, bots included. The bot seats
+        # filled just above exist nowhere else on the wire: `game_started`
+        # carries `role_to_alias` but no names, so without this every client
+        # held a participant list with no entry for a bot -- and the live
+        # results built those seats' cost cards with no name and no Bot tag.
+        lobby_event = _room_service.lobby_payload(room, state_svc.next_seq(room))
 
         for role in ROLE_ORDER:
             alias = room["role_to_alias"].get(role.value)
@@ -847,6 +865,7 @@ async def start_game(sid: str, data: dict | None = None) -> None:
         await state_svc.save_room(room_code, room)
 
     await socket_manager.emit_to_room(room_code, "game_started", game_started_event)
+    await socket_manager.emit_to_room(room_code, "lobby_update", lobby_event)
     for target_sid, payload in your_state_events:
         await socket_manager.emit_to_sid(target_sid, "your_state", payload)
     await socket_manager.emit_to_sid(host_target, "host_state", host_state_event)

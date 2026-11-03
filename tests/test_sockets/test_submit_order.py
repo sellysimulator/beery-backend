@@ -217,17 +217,16 @@ async def test_invalid_order_is_rejected_and_records_nothing(
 # --- AC 7 --------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("huge", [1_000_000_000, 1e9])
-async def test_huge_order_is_clamped_to_9999(
-    make_room, start_running_game, fake_socket_manager, state_svc, huge
+@pytest.mark.parametrize("out_of_range", [1_000_000_000, 1e9, 10_000, -1, -5.0])
+async def test_an_out_of_range_order_is_refused_not_clamped(
+    make_room, start_running_game, fake_socket_manager, state_svc, out_of_range
 ):
-    """``your_state`` is frozen as ``{seq, ...player_view(role)}``, and
-    ``player_view`` carries ``has_submitted``/``awaiting_roles`` but no
-    pending-order-quantity field -- there is nothing for the clamped value to
-    be echoed in. The clamp is asserted on the record instead: ``has_submitted``
-    flips ``True`` in the submitter's refreshed ``your_state``, and the
-    week's ``your_week_closed`` record for that role carries ``order ==
-    9999`` once the week closes."""
+    """Amended 2026-11-02 (was "huge order is clamped to 9999"). A clamped
+    order is an order nobody placed, and the player only found out from a
+    supply line that did not add up. The order is refused with
+    ``INVALID_ORDER`` and a message naming the bounds -- the same two numbers
+    ``your_state`` carries for the form -- records nothing, and does not use
+    up one of the player's resubmissions."""
     room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
     game = await start_running_game(room)
     engine = await _current_engine(state_svc, game["room_code"])
@@ -235,29 +234,35 @@ async def test_huge_order_is_clamped_to_9999(
     sid = game["sids_by_role"]["RETAILER"]
     fake_socket_manager.clear()
 
-    await submit_order(sid, {"room_id": game["room_code"], "week": week, "order": huge})
+    await submit_order(
+        sid, {"room_id": game["room_code"], "week": week, "order": out_of_range}
+    )
 
     engine = await _current_engine(state_svc, game["room_code"])
-    assert engine.pending_orders[Role.RETAILER] == 9_999
-
-    your_state_payload = next(
+    assert Role.RETAILER not in engine.pending_orders
+    error = next(
         data
         for target, event, data in fake_socket_manager.sid_emits
-        if event == "your_state" and target == sid
+        if event == "error" and target == sid
     )
-    assert your_state_payload["has_submitted"] is True
-
-    for role in ("WHOLESALER", "DISTRIBUTOR", "FACTORY"):
-        await submit_order(
-            game["sids_by_role"][role],
-            {"room_id": game["room_code"], "week": week, "order": 4},
-        )
-
-    engine_after = await _current_engine(state_svc, game["room_code"])
-    retailer_record = next(
-        r for r in engine_after.history if r.week == week and r.role == Role.RETAILER
+    assert error == {
+        "message": "Order must be a whole number from 0 to 9999.",
+        "code": "INVALID_ORDER",
+    }
+    assert not any(
+        event == "order_submitted" for _r, event, _d in fake_socket_manager.room_emits
     )
-    assert retailer_record.order == 9_999
+
+    # The bounds the refusal named are the ones the form reads.
+    view = engine.player_view(Role.RETAILER)
+    assert (view["min_order_quantity"], view["max_order_quantity"]) == (0, 9_999)
+
+    # An order at the ceiling is accepted exactly as sent.
+    await submit_order(
+        sid, {"room_id": game["room_code"], "week": week, "order": 9_999}
+    )
+    engine = await _current_engine(state_svc, game["room_code"])
+    assert engine.pending_orders[Role.RETAILER] == 9_999
 
 
 # --- AC 8 --------------------------------------------------------------- #
@@ -496,11 +501,13 @@ async def test_a_submission_that_leaves_the_week_open_refreshes_the_host(
     assert host_state["seq"] > order_seq
 
 
-async def test_the_submission_that_closes_the_week_sends_the_host_one_state(
+async def test_the_submission_that_closes_the_week_sends_the_host_both_states(
     make_room, start_running_game, fake_socket_manager, state_svc
 ):
-    """The close already sends the host a fresh state for the new week, so the
-    closing submission adds none of its own."""
+    """The closing submission sends the host a state showing every role
+    decided, then the close sends the state for the new week. The first one
+    is the only state the host gets for the final week's last submission,
+    which closes the game rather than opening a new week (12 §3.1 step 7)."""
     room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
     game = await start_running_game(room)
     engine = await _current_engine(state_svc, game["room_code"])
@@ -517,5 +524,48 @@ async def test_the_submission_that_closes_the_week_sends_the_host_one_state(
         {"room_id": game["room_code"], "week": week, "order": 4},
     )
 
-    (host_state,) = _host_states(fake_socket_manager, game["host_sid"])
-    assert host_state["week"] == week + 1
+    submitted, new_week = _host_states(fake_socket_manager, game["host_sid"])
+    assert submitted["week"] == week
+    assert all(view["has_submitted"] for view in submitted["roles"].values())
+    assert new_week["week"] == week + 1
+    assert submitted["seq"] < new_week["seq"]
+
+
+# --- A room in flight from before 2026-11-02 keeps playing ------------------ #
+
+
+async def test_a_room_saved_before_the_removals_still_plays(
+    make_room, start_running_game, state_svc
+):
+    """A room already in the state store when this build deploys carries
+    ``visibility.allow_negative_orders`` in its config and ``week_cost`` in its
+    history. Both are read (the first ignored, the second renamed), and the
+    room plays on."""
+    room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
+    game = await start_running_game(room)
+    engine = await _current_engine(state_svc, game["room_code"])
+    for role in ("RETAILER", "WHOLESALER", "DISTRIBUTOR", "FACTORY"):
+        await submit_order(
+            game["sids_by_role"][role],
+            {"room_id": game["room_code"], "week": engine.week, "order": 4},
+        )
+
+    async with state_svc.lock(game["room_code"]):
+        stored = await state_svc.get_room(game["room_code"])
+        stored["config"]["visibility"]["allow_negative_orders"] = True
+        for record in stored["engine"]["history"]:
+            record["week_cost"] = record.pop("total_week_cost")
+        await state_svc.save_room(game["room_code"], stored)
+
+    engine = await _current_engine(state_svc, game["room_code"])
+    week = engine.week
+    for role in ("RETAILER", "WHOLESALER", "DISTRIBUTOR", "FACTORY"):
+        await submit_order(
+            game["sids_by_role"][role],
+            {"room_id": game["room_code"], "week": week, "order": 4},
+        )
+
+    engine = await _current_engine(state_svc, game["room_code"])
+    assert engine.week == week + 1
+    assert engine.order_bounds() == (0, 9_999)
+    assert all(record.total_week_cost >= 0 for record in engine.history)

@@ -17,7 +17,7 @@ from fastapi import APIRouter, Header, HTTPException, status
 
 from ...core.config_models import ConfigValidationError, GameConfig
 from ...core.enums import RoomState
-from ...core.limits import DEFAULT_LIMITS
+from ...core.limits import DEFAULT_LIMITS, Limits
 from ...core.presets import get_preset, preset_names
 from ...schemas.room import (
     ConfigResponse,
@@ -272,3 +272,18 @@ async def list_presets() -> PresetListResponse:
         for name in preset_names()
     ]
     return PresetListResponse(presets=summaries)
+
+
+@router.get("/limits", response_model=Limits)
+async def list_limits() -> Limits:
+    """Every range the host form and the order form check, for the host UI.
+    No authentication.
+
+    The backend is the only copy of these numbers (2026-11-02). The form builds
+    its checks from this response instead of carrying its own table, so the
+    form and `GameConfig.from_host_input` cannot disagree about a bound -- they
+    did, on four fields, while there were two copies. The order bounds a player
+    sees travel separately, per game, in `your_state` (`min_order_quantity`,
+    `max_order_quantity`), because a host may lower the ceiling per game.
+    """
+    return DEFAULT_LIMITS
