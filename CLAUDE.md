@@ -15,7 +15,9 @@ measures.
   session, and sees all four seats. The host does not play and pays no costs.
 - **Players** join by code/link, signed in with Google (Firebase) or as a guest.
 - Bots (Sterman anchor-and-adjust) play a seat in exactly two cases: an **empty** seat at
-  start when the host turned on `bot_fill_empty_roles`, and a seat the host explicitly
+  start when the host turned on `bot_fill_empty_roles` (bots take only the roles nobody holds:
+  `RoomService.can_start` refuses while any person in the room has no role, naming them, so
+  nobody is left seatless; RANDOM deals everyone a role first), and a seat the host explicitly
   **swaps** to a bot ("Swap in a bot", `substitute_bot`). A player who drops is never replaced
   automatically — the room pauses (D7) and the host decides. A swapped seat keeps its player's
   identity, so the finished game still counts for them (`14 §3.6`); a bot swapped in while

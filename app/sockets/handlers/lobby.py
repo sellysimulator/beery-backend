@@ -743,9 +743,10 @@ async def release_role(sid: str, data: dict | None = None) -> None:
 @guarded("join_error")
 async def start_game(sid: str, data: dict | None = None) -> None:
     """Host authority. ``can_start`` is the whole gate (``§2.2``, ``§3.6``):
-    the invalid-config case, the already-running case and the
-    unfilled-roles case are all inside it, and none of them is restated
-    here."""
+    the invalid-config case, the already-running case, the unfilled-roles
+    case and the person-without-a-role case are all inside it, and none of
+    them is restated here. Bot fill below therefore only ever takes roles
+    nobody holds: by the time it runs, every person in the room has one."""
     data = _payload(data)
     room_id = _room_id_of(data)
     if room_id is None:
