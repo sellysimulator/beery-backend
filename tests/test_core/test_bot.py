@@ -500,6 +500,28 @@ def test_ac16_beta_1_damps_the_bullwhip_ratio_for_every_role() -> None:
         assert high_ratio < low_ratio
 
 
+def test_ac14a_beta_1_is_milder_not_steady_on_constant_demand() -> None:
+    """`08 §5` AC 14a (2026-11-03): the docs used to promise that a bot at
+    beta 1.0 "behaves stably". With demand flat at 4 it still orders well above
+    4 while it builds a target stock of 3x its opening stock, and then cuts
+    back below 4: its supply line is shipments in transit only, and it keeps
+    no target for the pipeline. The wording in `bot.py`, `08 §3.1` and the
+    host form's slider describes exactly this."""
+    classic = get_preset("CLASSIC_MIT").to_payload()
+    classic["demand"] = {"kind": "CONSTANT", "value": 4}
+    config = with_bot(GameConfig.from_host_input(classic, DEFAULT_LIMITS), beta=1.0)
+
+    engine = run_all_bot_game(config, SEED)
+    orders = {
+        role: [record.order for record in engine.history if record.role is role]
+        for role in ROLE_ORDER
+    }
+
+    assert all(series[0] > 4 for series in orders.values())
+    assert max(max(series) for series in orders.values()) >= 9
+    assert any(min(series[1:]) < 4 for series in orders.values())
+
+
 # --------------------------------------------------------------------------
 # AC 17 -- app/core/bot.py imports only app.core and the stdlib, never random
 # --------------------------------------------------------------------------

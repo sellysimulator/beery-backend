@@ -42,6 +42,11 @@ class WeekSettlement:
     opening_inventory: int
     opening_backlog: int
     arrived: int
+    # Stock after receiving and before shipping: step 1 of `settle()`, read
+    # off the agent rather than re-added. The recap shows it ("inventory 12 ->
+    # 16"), and a client adding `opening_inventory + arrived` itself would be a
+    # second copy of the settlement order (2026-11-03).
+    inventory_after_arrival: int
     incoming_order: int
     obligation: int  # incoming_order + opening_backlog
     shipped: int

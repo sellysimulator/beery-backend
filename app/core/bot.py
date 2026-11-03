@@ -78,9 +78,27 @@ class BotAgent:
                      + alpha * (target_stock - inventory_t + backlog_t - beta * supply_line_t))
     ```
 
-    `beta` is the whole point (§3.1): at 1.0 the bot fully credits its own
-    supply line and behaves stably; at 0.0 it ignores the supply line and
-    panics the way a losing human does.
+    `beta` is the whole point (§3.1): how much of its supply line the bot
+    credits before ordering more. At 0.0 it ignores the beer already on its
+    way and keeps re-ordering for a shortfall it has already covered, the way a
+    losing human does; at 1.0 it counts every unit of it, and its swings are
+    far milder.
+
+    It is not steady even at 1.0, and this rule is meant to be that way:
+
+    - its target stock is `target_stock_multiplier` x the role's starting
+      inventory (3 x 12 = 36 units on Classic), well above the opening stock,
+      so it orders above demand to build it up;
+    - there is no desired-supply-line term, so a full pipeline is not part of
+      the target it steers to;
+    - `supply_line` is the shipments already in transit to it
+      (`RoleAgent.supply_line`), not orders its supplier has not shipped yet,
+      so for an order delay's worth of weeks its own orders are invisible to
+      it and it orders again.
+
+    With constant demand of 4 on the Classic start, four bots at beta 1.0
+    order 9 to 14 a week while they build stock, then cut back below demand,
+    to 0 upstream, before they settle (`test_bot.py` pins this).
     """
 
     role: Role

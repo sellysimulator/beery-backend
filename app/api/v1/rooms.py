@@ -18,8 +18,11 @@ from fastapi import APIRouter, Header, HTTPException, status
 from ...core.config_models import ConfigValidationError, GameConfig
 from ...core.enums import RoomState
 from ...core.limits import DEFAULT_LIMITS, Limits
-from ...core.presets import get_preset, preset_names
+from ...core.presets import get_preset, preset_names, scenario_summary
+from ...core.preview import preview_config
 from ...schemas.room import (
+    ConfigPreviewRequest,
+    ConfigPreviewResponse,
     ConfigResponse,
     ConfigUpdateRequest,
     PresetListResponse,
@@ -43,25 +46,22 @@ _FORBIDDEN_DETAIL = "Invalid host secret."
 _STARTED_DETAIL = "Cannot change configuration after the game has started."
 _DEFAULT_PRESET = "CLASSIC_MIT"
 
-# Human copy for the host UI's preset picker (10-rooms-rest-api.md §3.5).
+# Human copy for the host UI's preset picker (10-rooms-rest-api.md §3.5): a
+# label and a tagline, and no figure. The figures are written out of each
+# preset's own config by `scenario_summary` (2026-11-03), so a card cannot
+# promise a preset the engine does not play.
 _PRESET_META: dict[str, tuple[str, str]] = {
     "CLASSIC_MIT": (
         "Classic MIT",
-        (
-            "36 weeks, 2-week delays, demand steps from 4 to 8 at week 5. "
-            "The textbook scenario."
-        ),
+        "The standard scenario, and the one that produces the textbook result.",
     ),
     "FAST_GAME": (
         "Fast Game",
-        "The classic scenario over 20 weeks, for a tighter schedule.",
+        "The classic scenario on a tight schedule.",
     ),
     "CHAOS": (
         "Chaos",
-        (
-            "Long delays, random demand, no supply-line prompt. Expect "
-            "spectacular failure."
-        ),
+        "Expect spectacular failure, which is the point.",
     ),
 }
 
@@ -266,12 +266,48 @@ async def list_presets() -> PresetListResponse:
         PresetSummary(
             name=name,
             label=_PRESET_META[name][0],
-            description=_PRESET_META[name][1],
+            description=(
+                f"{scenario_summary(get_preset(name))} {_PRESET_META[name][1]}"
+            ),
             config=get_preset(name).to_payload(),
         )
         for name in preset_names()
     ]
     return PresetListResponse(presets=summaries)
+
+
+@router.post("/preview", response_model=ConfigPreviewResponse)
+async def preview_room_config(payload: ConfigPreviewRequest) -> ConfigPreviewResponse:
+    """What a draft config will play, for the host form. No authentication.
+
+    The draft is checked by `GameConfig.from_host_input` exactly as a save is,
+    and a refusal is the same 422 naming the field and the range. A valid
+    draft returns the demand series and every role's lead time from
+    `core.preview`, which calls the generator and the lead-time function the
+    engine itself calls -- the host form keeps no copy of either (2026-11-03).
+    Nothing is stored and no room is read, so the call needs no room code and
+    no host secret: it is a pure function of the body, like `/limits`.
+    """
+    try:
+        config = GameConfig.from_host_input(payload.config, DEFAULT_LIMITS)
+    except ConfigValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"{exc.field}: {exc}",
+        ) from None
+    except Exception:
+        logger.exception("Failed to preview a config.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=_INTERNAL_ERROR_DETAIL,
+        ) from None
+
+    preview = preview_config(config)
+    return ConfigPreviewResponse(
+        demand_series=preview.demand_series,
+        demand_is_example=preview.demand_is_example,
+        lead_times={role.value: weeks for role, weeks in preview.lead_times.items()},
+    )
 
 
 @router.get("/limits", response_model=Limits)

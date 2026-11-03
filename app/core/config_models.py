@@ -513,6 +513,25 @@ class GameConfig(BaseModel):
         """
         return self.role_config(role).information_delay_weeks
 
+    def order_arrival_lead_weeks(self, role: Role) -> int:
+        """Weeks from `role` ordering to that order arriving (`07 §3.8`).
+
+        An order spends the **supplier's** order delay reaching them and the
+        goods spend this role's own inbound delay coming back. The Factory has
+        no supplier: its production delay is the whole lead time.
+
+        This is the one implementation. The engine sends it to the player as
+        `order_arrival_lead_weeks`, and `core.preview` returns it to the host
+        form for a draft config (2026-11-03) -- no client assembles a lead time
+        out of individual delays, because the Retailer and the Factory each
+        break a different term of the sum.
+        """
+        supplier = role.upstream
+        inbound = self.inbound_delay_weeks(role)
+        if supplier is None:
+            return inbound
+        return self.order_delay_weeks(supplier) + inbound
+
     # --- construction ------------------------------------------------------ #
 
     @classmethod

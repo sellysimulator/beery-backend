@@ -142,13 +142,25 @@ def _dataclass_payload(record: Any) -> dict:
 
 
 def _settlement_from_payload(payload: dict) -> WeekSettlement:
-    """Rebuild the `WeekSettlement` that `_dataclass_payload` described."""
+    """Rebuild the `WeekSettlement` that `_dataclass_payload` described.
+
+    A room saved before 2026-11-03 has no `inventory_after_arrival`. Its
+    settlement is rebuilt with the stock it had after receiving, which for
+    those rooms is exactly the opening stock plus what arrived (`settle()`
+    step 1), so a game in flight across the deploy keeps loading.
+    """
+    opening_inventory = int(payload["opening_inventory"])
+    arrived = int(payload["arrived"])
+    after_arrival = payload.get("inventory_after_arrival")
     return WeekSettlement(
         role=Role(payload["role"]),
         week=int(payload["week"]),
-        opening_inventory=int(payload["opening_inventory"]),
+        opening_inventory=opening_inventory,
         opening_backlog=int(payload["opening_backlog"]),
-        arrived=int(payload["arrived"]),
+        arrived=arrived,
+        inventory_after_arrival=(
+            opening_inventory + arrived if after_arrival is None else int(after_arrival)
+        ),
         incoming_order=int(payload["incoming_order"]),
         obligation=int(payload["obligation"]),
         shipped=int(payload["shipped"]),
@@ -550,17 +562,13 @@ class GameEngine:
     def _order_arrival_lead_weeks(self, role: Role) -> int:
         """Weeks from ordering now to that order arriving.
 
-        An order spends the **supplier's** information delay reaching them and
-        the goods spend this role's own shipping delay coming back. The Factory
-        has no information delay at all: its production delay is the whole lead
-        time. The engine computes it because a client assembling it from
-        individual delays gets both ends of the chain wrong (§3.8).
+        Delegates to `GameConfig.order_arrival_lead_weeks`, the one
+        implementation, which the host form's config preview also calls
+        (`core.preview`). The engine sends the figure because a client
+        assembling it from individual delays gets both ends of the chain wrong
+        (§3.8).
         """
-        supplier = role.upstream
-        inbound = self.config.inbound_delay_weeks(role)
-        if supplier is None:
-            return inbound
-        return self.config.order_delay_weeks(supplier) + inbound
+        return self.config.order_arrival_lead_weeks(role)
 
     def _previous_cumulative(self, role: Role) -> float:
         """That role's `cumulative_cost` at the last complete week, else 0.0."""
@@ -639,6 +647,10 @@ class GameEngine:
         supplier = target.upstream
         supplier_orders = None if supplier is None else self.agents[supplier].orders
         in_flight_slots = [] if supplier_orders is None else supplier_orders.slots()
+        in_flight_weeks = (
+            [] if supplier_orders is None else supplier_orders.weeks_until_out()
+        )
+        lead_weeks = self._order_arrival_lead_weeks(target)
 
         view: dict = {
             "role": target.value,
@@ -650,8 +662,12 @@ class GameEngine:
             "backlog": agent.backlog,
             "supply_line": agent.supply_line(),
             "supply_line_slots": agent.shipments.slots(),
+            # Weeks until each slot above arrives, aligned with it. The board
+            # reads these rather than counting slot positions (2026-11-03).
+            "supply_line_slot_weeks": agent.shipments.weeks_until_out(),
             "orders_in_flight": sum(in_flight_slots),
             "orders_in_flight_slots": in_flight_slots,
+            "orders_in_flight_slot_weeks": in_flight_weeks,
             "incoming_order": (0 if settlement is None else settlement.incoming_order),
             "last_order": agent.last_order,
             "settlement": (
@@ -665,7 +681,10 @@ class GameEngine:
             "min_order_quantity": self.order_bounds()[0],
             "max_order_quantity": self.order_bounds()[1],
             "show_supply_line_prominently": visibility.show_supply_line_prominently,
-            "order_arrival_lead_weeks": self._order_arrival_lead_weeks(target),
+            "order_arrival_lead_weeks": lead_weeks,
+            # The week an order placed now arrives: the open week plus the lead
+            # time, added here so the order form prints a week, not a sum.
+            "order_arrival_week": self.week + lead_weeks,
             "production_queue": (
                 agent.production_queue if isinstance(agent, FactoryAgent) else None
             ),
@@ -761,6 +780,11 @@ class GameEngine:
         return {
             "week": self.week,
             "duration_weeks": self.config.duration_weeks,
+            # Complete weeks so far -- the figure the results will report and
+            # what ending now would keep, since `end_early` drops the open week
+            # (§3.5). `week` is one higher while a week is open, and after an
+            # early end; the console reads this, never `week` (2026-11-03).
+            "weeks_played": self.weeks_played,
             "phase": self.phase.value,
             "currency_symbol": self.config.currency_symbol,
             "demand_series": list(self.demand_series),

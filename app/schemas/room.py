@@ -45,9 +45,22 @@ class ConfigResponse(BaseModel):
     config: dict
 
 
+class ConfigPreviewRequest(BaseModel):
+    config: dict  # a whole draft config, validated exactly as a save is
+
+
+class ConfigPreviewResponse(BaseModel):
+    """`core.preview.ConfigPreview` on the wire (`10 §3.5b`)."""
+
+    demand_series: list[int]  # weeks 1..duration_weeks, index 0 = week 1
+    demand_is_example: bool  # STOCHASTIC with no seed yet: an example draw
+    lead_times: dict[str, int]  # role -> weeks from ordering to arrival
+
+
 class PresetSummary(BaseModel):
     name: str
     label: str
+    # Figures written from the preset's own config, then a tagline (2026-11-03).
     description: str
     config: dict
 

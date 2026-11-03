@@ -128,6 +128,7 @@ class RoleAgent:
         opening_backlog = self.backlog
 
         self.inventory += arriving  # 1. receive
+        inventory_after_arrival = self.inventory
         obligation = incoming_order + opening_backlog  # 2. what is owed
         shipped = min(self.inventory, obligation)  # 3. ship what exists
         self.inventory -= shipped
@@ -146,6 +147,7 @@ class RoleAgent:
             opening_inventory=opening_inventory,
             opening_backlog=opening_backlog,
             arrived=arriving,
+            inventory_after_arrival=inventory_after_arrival,
             incoming_order=incoming_order,
             obligation=obligation,
             shipped=shipped,

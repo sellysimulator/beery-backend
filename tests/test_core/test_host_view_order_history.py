@@ -24,9 +24,12 @@ from app.core.game_engine import GameEngine
 
 SEED = 20261102
 
+# `weeks_played` joined on 2026-11-03 (`07 §3.9`): the console's "ending now
+# keeps N weeks" reads it instead of working it out from `week`.
 HOST_VIEW_KEYS = {
     "week",
     "duration_weeks",
+    "weeks_played",
     "phase",
     "currency_symbol",
     "demand_series",

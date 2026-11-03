@@ -86,8 +86,8 @@ app/
   api/
     deps.py          THE single Firebase token verifier + get_current/optional_firebase_user
     v1/              auto-discovered routers: health, users, user_games, rooms, games
-  core/              PURE domain: enums, config_models, presets, demand, pipeline, records,
-                     agents, game_engine, bot, stats
+  core/              PURE domain: enums, config_models, limits, presets, preview, demand,
+                     pipeline, records, agents, game_engine, bot, stats
     checks/          auto-discovered startup checks (NOT pure — does I/O)
     firebase.py      Firebase Admin bootstrap (NOT pure — does I/O)
   db/                base.py (re-export of Base), session.py (engine, SessionLocal, get_db)
@@ -143,7 +143,7 @@ cp .env.example .env
 ./venv/bin/uvicorn app.main:application --reload          # local iteration
 
 # tests
-./venv/bin/python -m pytest -m "not dbschema"             # 1754 passed, 1 skipped (~35s; verified 2026-11-02)
+./venv/bin/python -m pytest -m "not dbschema"             # 1781 passed, 1 skipped (~37s; verified 2026-11-03)
 ./venv/bin/python -m pytest tests/test_core               # one area
 ./venv/bin/python -m pytest -m dbschema                   # needs a Docker daemon (mysql:8.4)
 BEERY_DOCKER_BUILD_TEST=1 ./venv/bin/python -m pytest -k docker   # the opt-in image build
@@ -213,7 +213,7 @@ mount in the image, so a source change needs a rebuild.
 - **API/socket contract with the frontend.** REST: `/api/v1/health`, `/health/deep`,
   `/users/upsert`, `/users/me`, `/users/me/stats`, `/users/me/games`,
   `/users/me/games/{game_id}`, `/rooms/create`, `/rooms/presets`, `/rooms/limits`,
-  `/rooms/{code}/status`,
+  `POST /rooms/preview`, `/rooms/{code}/status`,
   `GET|PUT /rooms/{code}/config`, `/games/{code}/results`, `/games/{code}/export`,
   `POST /games/claim`.
   Socket in: `connect`, `disconnect`, `join_waiting`, `join`, `leave`, `config_update`,
@@ -267,6 +267,26 @@ mount in the image, so a source change needs a rebuild.
   `Limits`, never to a form. The only repairs left: a cap of 0 means unlimited, an inverted
   stochastic range is swapped. There are no negative orders (`allow_negative_orders` was
   removed; a stored config still carrying the key loads and ignores it).
+- **The server owns every game figure, not only the ranges** (2026-11-03, `00-decisions.md`
+  §5 amendment). The frontend computes nothing a rule defines; when it needs a figure, add it
+  to a payload or a route that calls **the function the engine itself uses**:
+  - `POST /rooms/preview` (`core/preview.py`, `10 §3.5b`): a draft config → `demand_series`
+    (`generate_demand_series`, with the host's `random_seed` or `EXAMPLE_SEED`),
+    `demand_is_example` (`demand.uses_seed` and no seed) and per-role `lead_times`
+    (`GameConfig.order_arrival_lead_weeks`, which the engine's `_order_arrival_lead_weeks`
+    now delegates to). No auth, nothing stored; a refusal is the `PUT /config` 422.
+  - `/rooms/presets` `description` = `scenario_summary(preset)` + a figure-free tagline.
+  - A demand-kind change may send `{kind}` alone: `from_host_input` fills the defaults, so the
+    form keeps none.
+  - `player_view`: `order_arrival_week`, `supply_line_slot_weeks`,
+    `orders_in_flight_slot_weeks` (`Pipeline.weeks_until_out`); `settlement.inventory_after_arrival`
+    (a stored settlement without it is rebuilt with `opening_inventory + arrived` in
+    `_settlement_from_payload`). `host_view`: `weeks_played` (in `test_host_view_order_history`'s
+    and `test_game_engine`'s frozen key sets).
+  - The bot is milder at β=1, **not steady** (on flat demand of 4 it orders 9–14 first): its
+    target is 3× opening stock, it has no desired-supply-line term and its supply line is
+    shipments in transit only. Don't let a docstring or label promise otherwise
+    (`test_bot.py::test_ac14a_…`).
 - **No screen shows a single "week cost".** `WeekRecord.total_week_cost` (and the
   `weeks.total_week_cost` column, the export's `total_week_cost`) is holding + backlog + order
   cost; `player_view` sends `week_holding_backlog_cost` and `week_order_cost` (`null` until the

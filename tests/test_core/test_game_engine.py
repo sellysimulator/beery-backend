@@ -905,8 +905,11 @@ def test_fm6_no_pipeline_drift_after_one_hundred_and_four_weeks() -> None:
 
 def test_fm7_player_view_never_carries_another_roles_order() -> None:
     engine = GameEngine.start(get_preset("CLASSIC_MIT"), SEED)
+    # Quantities no view carries for another reason. (The Retailer's was 5
+    # until 2026-11-03, when `order_arrival_week` -- week 1 + a 4-week lead,
+    # i.e. 5 -- joined the view: a coincidence, not a leak.)
     orders = {
-        Role.RETAILER: 5,
+        Role.RETAILER: 11,
         Role.WHOLESALER: 7,
         Role.DISTRIBUTOR: 13,
         Role.FACTORY: 29,
@@ -1306,6 +1309,7 @@ def test_host_view_keys_and_unredacted_series() -> None:
     assert set(view) == {
         "week",
         "duration_weeks",
+        "weeks_played",
         "phase",
         "currency_symbol",
         "demand_series",
@@ -1315,6 +1319,7 @@ def test_host_view_keys_and_unredacted_series() -> None:
         "order_history",
     }
     assert view["week"] == 1
+    assert view["weeks_played"] == 0
     assert view["duration_weeks"] == 36
     assert view["phase"] == GamePhase.DECISION
     assert list(view["demand_series"]) == engine.demand_series
