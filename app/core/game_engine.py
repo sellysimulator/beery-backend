@@ -77,6 +77,13 @@ class WeekRecord:
     `week_cost` until 2026-11-02, when the screens stopped showing a single
     "week cost" -- they show "Holding & backlog" and "Order cost" separately
     -- and the stored sum was renamed so nobody mistakes it for either.
+
+    `was_bot` says who placed *this week's* order: true when a bot did. A
+    week whose seat changed hands while it was open (the host swapped a bot
+    in after the player had ordered, or the player took the seat back after
+    the bot had) is attributed to whoever's order stood when it closed. A
+    forced week, with no order at all, goes to whoever held the seat at the
+    close (2026-11-03; it used to read the seat at the close every time).
     """
 
     role: Role
@@ -223,6 +230,7 @@ class GameEngine:
     phase: GamePhase
     agents: dict[Role, RoleAgent]
     pending_orders: dict[Role, int]  # orders received for the open week
+    pending_by_bot: set[Role]  # which of those a bot placed
     history: list[WeekRecord]
     settlements: dict[Role, WeekSettlement]  # Phase A output for the open week
     role_order: tuple[Role, ...]  # the settlement seam of §3.2
@@ -249,6 +257,7 @@ class GameEngine:
         self.phase = GamePhase.AWAITING_START
         self.agents = {role: agent_for(role, config) for role in ROLE_ORDER}
         self.pending_orders = {}
+        self.pending_by_bot = set()
         self.history = []
         self.settlements = {}
         # Phase A pass 3 samples. They feed `WeekRecord.supply_line_after` and
@@ -331,6 +340,7 @@ class GameEngine:
 
         self.settlements = {role: settlements[role] for role in ROLE_ORDER}
         self.pending_orders = {}
+        self.pending_by_bot = set()
         self.phase = GamePhase.DECISION
 
     def _sample_pipelines(self) -> None:
@@ -403,7 +413,10 @@ class GameEngine:
         Bot roles are not special: section 08's bot produces a quantity and the
         caller submits it exactly as a human's -- the play loop caps the bot's
         own figure at `order_bounds()` first, because a heuristic has nobody to
-        show a refusal to.
+        show a refusal to. The one thing kept is who placed it: the role's bot
+        flag at this moment, which `WeekRecord.was_bot` reports when the week
+        closes. A player who takes the seat back and changes the bot's order
+        makes the week theirs; one who leaves it stands as the bot's.
 
         Raises `EngineStateError` unless phase is `DECISION`.
         Raises `OrderOutOfRangeError` (a `ValueError`) for an order outside
@@ -418,6 +431,10 @@ class GameEngine:
         target = _require_role(role)
         quantity = self._checked_order(qty)
         self.pending_orders[target] = quantity
+        if self.agents[target].is_bot:
+            self.pending_by_bot.add(target)
+        else:
+            self.pending_by_bot.discard(target)
         return quantity
 
     def all_orders_in(self) -> bool:
@@ -475,6 +492,7 @@ class GameEngine:
         ]
         self.history.extend(records)
         self.pending_orders = {}
+        self.pending_by_bot = set()
 
         if week >= self.config.duration_weeks:
             self.phase = GamePhase.FINISHED
@@ -508,7 +526,13 @@ class GameEngine:
             supply_line_after=self._supply_line_after[role],
             orders_in_flight_after=self._orders_in_flight_after[role],
             order=charge.order,
-            was_bot=agent.is_bot,
+            # Whoever placed the order that stands; the seat holder at the
+            # close only when nobody did (a forced week).
+            was_bot=(
+                role in self.pending_by_bot
+                if role in self.pending_orders
+                else agent.is_bot
+            ),
             was_forced=role in missing,
             holding_cost=settlement.holding_cost,
             backlog_cost=settlement.backlog_cost,
@@ -546,12 +570,16 @@ class GameEngine:
         self.phase = GamePhase.FINISHED
 
     def set_bot(self, role: Role, is_bot: bool = True) -> None:
-        """Mark a role as bot-played from now on. Idempotent, legal in any phase.
+        """Mark a role as bot-played from now on, or, with `is_bot=False`,
+        human-played again. Idempotent, legal in any phase.
 
-        This is what section 12's `substitute_bot` calls: the room document's
-        participant flag is about the seat, and only this flag reaches
-        `WeekRecord.was_bot`, which is what the export and the results screen
-        attribute the play by. Records already in `history` are untouched.
+        Section 12's `substitute_bot` calls it with True and `reclaim_seat`
+        with False: the room document's participant flag is about the seat,
+        and only this flag reaches `WeekRecord.was_bot` (through the order
+        `submit_order` records next), which is what the export and the results
+        screen attribute the play by. Records already in `history` are
+        untouched, and so is an order already in for the open week -- it stays
+        attributed to whoever placed it.
 
         Raises `ValueError` if `role` is not a real role.
         """
@@ -816,6 +844,9 @@ class GameEngine:
                 for role in ROLE_ORDER
                 if role in self.pending_orders
             },
+            "pending_by_bot": [
+                role.value for role in ROLE_ORDER if role in self.pending_by_bot
+            ],
             "settlements": {
                 role.value: _dataclass_payload(self.settlements[role])
                 for role in ROLE_ORDER
@@ -862,6 +893,21 @@ class GameEngine:
             role: RoleAgent.from_payload(payload["agents"][role.value], config)
             for role in ROLE_ORDER
         }
+
+        # A room saved before 2026-11-03 has no `pending_by_bot`. Its orders
+        # are attributed the way they were then: by the seat's flag now.
+        by_bot = payload.get("pending_by_bot")
+        if by_bot is None:
+            engine.pending_by_bot = {
+                role for role in engine.pending_orders if engine.agents[role].is_bot
+            }
+        else:
+            engine.pending_by_bot = {
+                role
+                for role in ROLE_ORDER
+                if role.value in by_bot and role in engine.pending_orders
+            }
+
         engine._sample_pipelines()
         return engine
 
@@ -882,6 +928,7 @@ class GameEngine:
             and self.week == other.week
             and self.phase == other.phase
             and self.pending_orders == other.pending_orders
+            and self.pending_by_bot == other.pending_by_bot
             and self.settlements == other.settlements
             and self.history == other.history
             and self.agents == other.agents

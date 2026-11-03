@@ -19,7 +19,10 @@ measures.
   **swaps** to a bot ("Swap in a bot", `substitute_bot`). A player who drops is never replaced
   automatically — the room pauses (D7) and the host decides. A swapped seat keeps its player's
   identity, so the finished game still counts for them (`14 §3.6`); a bot swapped in while
-  paused plays the moment the host resumes.
+  paused plays the moment the host resumes. The swapped player can take the seat back
+  (`reclaim_seat`, their own seat only, running or paused); rejoining alone never does.
+  `WeekRecord.was_bot` is who placed the week's standing order, not who held the seat at the
+  close (`GameEngine.pending_by_bot`).
 - Games are 8–104 weeks (default 36), with three presets: `CLASSIC_MIT`, `FAST_GAME`,
   `CHAOS`.
 
@@ -218,11 +221,11 @@ mount in the image, so a source change needs a rebuild.
   `POST /games/claim`.
   Socket in: `connect`, `disconnect`, `join_waiting`, `join`, `leave`, `config_update`,
   `set_role_mode`, `assign_role`, `claim_role`, `release_role`, `start_game`, `submit_order`,
-  `pause_game`, `resume_game`, `force_close_week`, `substitute_bot`, `end_game_early`,
-  `request_state`.
+  `pause_game`, `resume_game`, `force_close_week`, `substitute_bot`, `reclaim_seat`,
+  `end_game_early`, `request_state`.
   Socket out: `joined`, `join_error`, `leave_ack`, `lobby_update`, `config_updated`,
   `roles_assigned`, `game_started`, `game_paused`, `game_resumed`, `your_state`, `host_state`,
-  `order_submitted`, `your_week_closed`, `error`.
+  `order_submitted`, `your_week_closed`, `bot_substituted`, `seat_reclaimed`, `error`.
   Any change here must ship with `Beery_Frontend/src/api/socketHandlers.ts` in the same
   window, backend first, unless the backend stops sending a field the live frontend reads
   (e.g. `own_history` leaving the per-round `your_state`): then frontend first, per

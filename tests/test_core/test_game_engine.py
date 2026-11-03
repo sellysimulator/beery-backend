@@ -410,6 +410,56 @@ def test_a_room_saved_with_a_negative_pending_order_drops_it_on_load() -> None:
     assert restored.pending_orders == {Role.RETAILER: 4}
 
 
+def test_was_bot_follows_who_placed_the_order_not_the_seat_at_the_close() -> None:
+    """2026-11-03: a seat can change hands while a week is open (the host
+    swaps a bot in, or the player takes the seat back). The week goes to
+    whoever's order stood; a forced week, with no order, to the seat holder."""
+    config = get_preset("CLASSIC_MIT")
+    engine = GameEngine.start(config, SEED, frozenset({Role.WHOLESALER}))
+
+    engine.submit_order(Role.RETAILER, 4)  # human orders, then a bot takes over
+    engine.set_bot(Role.RETAILER)
+    engine.submit_order(Role.WHOLESALER, 4)  # bot orders, then the player is back
+    engine.set_bot(Role.WHOLESALER, False)
+    engine.submit_order(Role.DISTRIBUTOR, 4)
+    engine.set_bot(Role.FACTORY)  # nobody orders: forced, bot holds the seat
+    records = {r.role: r for r in engine.close_week(force=True)}
+
+    assert records[Role.RETAILER].was_bot is False
+    assert records[Role.WHOLESALER].was_bot is True
+    assert records[Role.DISTRIBUTOR].was_bot is False
+    assert records[Role.FACTORY].was_bot is True
+    assert records[Role.FACTORY].was_forced is True
+
+
+def test_who_placed_each_open_order_survives_a_save_and_load() -> None:
+    config = get_preset("CLASSIC_MIT")
+    engine = GameEngine.start(config, SEED, frozenset({Role.FACTORY}))
+    engine.submit_order(Role.FACTORY, 4)
+    engine.set_bot(Role.FACTORY, False)
+    engine.submit_order(Role.RETAILER, 4)
+
+    payload = engine.to_payload()
+    assert payload["pending_by_bot"] == ["FACTORY"]
+    restored = GameEngine.from_payload(payload, config)
+    assert restored == engine
+    assert restored.pending_by_bot == {Role.FACTORY}
+
+
+def test_a_room_saved_before_pending_by_bot_reads_the_seat_flag() -> None:
+    """Rooms saved before the field existed are attributed as they were then:
+    an open order belongs to a bot when the seat is a bot now."""
+    config = get_preset("CLASSIC_MIT")
+    engine = GameEngine.start(config, SEED, frozenset({Role.FACTORY}))
+    engine.submit_order(Role.FACTORY, 4)
+    engine.submit_order(Role.RETAILER, 4)
+    payload = engine.to_payload()
+    del payload["pending_by_bot"]
+
+    restored = GameEngine.from_payload(payload, config)
+    assert restored.pending_by_bot == {Role.FACTORY}
+
+
 def test_submit_order_rejects_a_non_integer_and_a_non_role() -> None:
     engine = GameEngine.start(get_preset("CLASSIC_MIT"), SEED)
     with pytest.raises(ValueError):

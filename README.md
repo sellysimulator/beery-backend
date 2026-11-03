@@ -96,10 +96,10 @@ resolved once, at `connect`, from an optional Firebase token in the handshake `a
 - **Lobby** (`lobby.py`) — in: `join_waiting`, `join`, `leave`, `config_update`,
   `set_role_mode`, `assign_role`, `claim_role`, `release_role`, `start_game`.
 - **Play** (`play.py`) — in: `submit_order`, `pause_game`, `resume_game`, `force_close_week`,
-  `substitute_bot`, `end_game_early`, `request_state`.
+  `substitute_bot`, `reclaim_seat`, `end_game_early`, `request_state`.
 - **Out** — `joined`, `join_error`, `leave_ack`, `lobby_update`, `config_updated`,
   `roles_assigned`, `game_started`, `game_paused`, `game_resumed`, `your_state`, `host_state`,
-  `order_submitted`, `your_week_closed`, `error`.
+  `order_submitted`, `your_week_closed`, `bot_substituted`, `seat_reclaimed`, `error`.
 
 `your_state` carries the role's whole `own_history` only where a client may have missed a
 record: game start, `join` (a reconnect), `request_state`, a stale-week resend and the
