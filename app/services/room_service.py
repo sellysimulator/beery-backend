@@ -39,6 +39,17 @@ def _unfilled_reason(unfilled: int) -> str:
     return f"{word} {noun} {verb} still empty. Assign them, or turn on bot fill."
 
 
+def _roleless_reason(names: list[str]) -> str:
+    if len(names) == 1:
+        who, verb = names[0], "has"
+    else:
+        who, verb = f"{', '.join(names[:-1])} and {names[-1]}", "have"
+    return (
+        f"{who} {verb} no role yet. Give everyone in the room a role first; "
+        "bots fill only the seats nobody holds."
+    )
+
+
 def _alias_sort_key(alias: str) -> int:
     try:
         return int(alias[1:])
@@ -177,7 +188,6 @@ class RoomService:
                 "show_running_cost_to_players": visibility.show_running_cost_to_players,
                 "show_leaderboard_during_game": visibility.show_leaderboard_during_game,
                 "max_order_quantity": visibility.max_order_quantity,
-                "allow_negative_orders": visibility.allow_negative_orders,
             },
         }
 
@@ -209,7 +219,11 @@ class RoomService:
 
     def can_start(self, room: dict) -> tuple[bool, str | None]:
         """The single eligibility rule (``11-socket-lobby.md §2.2``).
-        ``start_game`` calls this; it does not restate any part of it."""
+        ``start_game`` calls this; it does not restate any part of it.
+
+        In order: the room is not already running or over; the config builds;
+        with bot fill off, all four roles are taken; and nobody in the room is
+        left without a role, bot fill or not."""
         state = room["state"]
         if state in ("RUNNING", "PAUSED"):
             return False, _ALREADY_RUNNING
@@ -226,17 +240,43 @@ class RoomService:
             # enumerate every way a stored payload can be malformed.
             return False, _CONFIG_NOT_VALID
 
-        if config.bot_fill_empty_roles:
-            return True, None
+        if not config.bot_fill_empty_roles:
+            if config.role_assignment_mode is RoleAssignmentMode.RANDOM:
+                occupied = self.seats_taken(room)
+            else:
+                occupied = sum(
+                    1 for alias in room["role_to_alias"].values() if alias is not None
+                )
+            occupied = min(occupied, 4)
+            unfilled = 4 - occupied
+            if unfilled > 0:
+                return False, _unfilled_reason(unfilled)
 
+        # Nobody may be left in the room without a seat: bot fill takes the
+        # roles nobody holds, never a person's place, and a person with no role
+        # at start would wait forever for a position. With bot fill off this
+        # cannot trigger once every role is held -- four roles, at most four
+        # participants -- so the unfilled-roles reason above always comes first.
+        roleless = self._roleless_names(room, config)
+        if roleless:
+            return False, _roleless_reason(roleless)
+        return True, None
+
+    def _roleless_names(self, room: dict, config: GameConfig) -> list[str]:
+        """Display names of the people who hold no role, in alias order.
+
+        Always empty under ``RANDOM``: there nobody holds a role in the lobby,
+        and ``start_game`` deals one to every participant before it asks
+        ``can_start``. "Holds a role" is read from ``role_to_alias``, the map
+        ``start_game`` seats players and bots from.
+        """
         if config.role_assignment_mode is RoleAssignmentMode.RANDOM:
-            occupied = self.seats_taken(room)
-        else:
-            occupied = sum(
-                1 for alias in room["role_to_alias"].values() if alias is not None
+            return []
+        seated = {alias for alias in room["role_to_alias"].values() if alias}
+        return [
+            participant["display_name"]
+            for alias, participant in sorted(
+                room["participants"].items(), key=lambda item: _alias_sort_key(item[0])
             )
-        occupied = min(occupied, 4)
-        unfilled = 4 - occupied
-        if unfilled <= 0:
-            return True, None
-        return False, _unfilled_reason(unfilled)
+            if not participant.get("is_bot") and alias not in seated
+        ]

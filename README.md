@@ -64,7 +64,9 @@ Every router under `app/api/v1/` is auto-discovered, so this table is the whole 
 | `GET` | `/api/v1/health` | none | `{"status": "ok"}` — liveness; touches neither backing service |
 | `GET` | `/api/v1/health/deep` | none | `{status, database, redis, state_backend}`, always HTTP 200 |
 | `POST` | `/api/v1/rooms/create` | none (D3) | A new room: `room_code`, the `host_secret` (returned exactly once), `state`, `config` |
-| `GET` | `/api/v1/rooms/presets` | none | The three presets with their full configs, for the host UI |
+| `GET` | `/api/v1/rooms/presets` | none | The three presets with their full configs, for the host UI; each `description`'s figures are written from the preset's own config (`scenario_summary`) |
+| `GET` | `/api/v1/rooms/limits` | none | Every range the host form checks (`core.limits.Limits`); the frontend keeps no copy |
+| `POST` | `/api/v1/rooms/preview` | none | `{config}` → the `demand_series`, `demand_is_example` and per-role `lead_times` that draft plays, from the engine's own generator and lead-time function (`core.preview`); a refused draft is the same 422 as `PUT /config` |
 | `GET` | `/api/v1/rooms/{code}/status` | none | Is this room joinable? Always HTTP 200 — a 404 would be a room-code oracle |
 | `PUT` | `/api/v1/rooms/{code}/config` | host secret | Applies a config patch while the room is still configurable |
 | `GET` | `/api/v1/rooms/{code}/config` | host secret | The current config |
@@ -94,14 +96,16 @@ resolved once, at `connect`, from an optional Firebase token in the handshake `a
 - **Lobby** (`lobby.py`) — in: `join_waiting`, `join`, `leave`, `config_update`,
   `set_role_mode`, `assign_role`, `claim_role`, `release_role`, `start_game`.
 - **Play** (`play.py`) — in: `submit_order`, `pause_game`, `resume_game`, `force_close_week`,
-  `substitute_bot`, `end_game_early`, `request_state`.
+  `substitute_bot`, `reclaim_seat`, `end_game_early`, `request_state`.
 - **Out** — `joined`, `join_error`, `leave_ack`, `lobby_update`, `config_updated`,
   `roles_assigned`, `game_started`, `game_paused`, `game_resumed`, `your_state`, `host_state`,
-  `order_submitted`, `your_week_closed`, `error`.
+  `order_submitted`, `your_week_closed`, `bot_substituted`, `seat_reclaimed`, `error`.
 
 `your_state` carries the role's whole `own_history` only where a client may have missed a
 record: game start, `join` (a reconnect), `request_state`, a stale-week resend and the
-refresh after `resume_game`. The `your_state` after a submission or a week close leaves it
+refresh after `resume_game` (which then plays any bot seat still owing the open week its
+order, so a bot swapped in while paused does not freeze the week). The `your_state` after a
+submission or a week close leaves it
 out; the week's one new record travels in `your_week_closed` and the client appends it.
 Every `request_state` reply carries a fresh `seq`, above every number already sent. The host
 gets a fresh `host_state` after every submission (a person's, or a round of bot orders) that
@@ -121,7 +125,7 @@ stages. Check that file and `00-decisions.md` §3 before "adding" one.
 ## Tests
 
 ```bash
-./venv/bin/python -m pytest -m "not dbschema"   # 1557 passed, 1 skipped, 124 deselected
+./venv/bin/python -m pytest -m "not dbschema"   # 1781 passed, 1 skipped, 136 deselected (2026-11-03)
 ./venv/bin/python -m pytest tests/test_core     # one area
 ```
 
@@ -278,13 +282,14 @@ app/
 │       ├── health.py           /health, /health/deep
 │       ├── users.py            /users/upsert, /users/me
 │       ├── user_games.py       /users/me/stats, /users/me/games[/{id}], /users/me/hosted-games/{public_id}
-│       ├── rooms.py            /rooms/create, /rooms/presets, /rooms/{code}/status|config
+│       ├── rooms.py            /rooms/create, /rooms/presets, /rooms/limits, /rooms/preview, /rooms/{code}/status|config
 │       └── games.py            /games/{code}|id/{public_id} results and export, /games/claim
 ├── core/                       pure domain logic — no I/O, no clock, no global RNG
 │   ├── enums.py                Role, RoomState, DemandKind, Distribution, …
-│   ├── config_models.py        GameConfig; validation and clamping
+│   ├── config_models.py        GameConfig; validation (out of range is refused, never clamped)
 │   ├── limits.py               Limits/DEFAULT_LIMITS, the §5 hard ceilings
-│   ├── presets.py              CLASSIC_MIT, FAST_GAME, CHAOS
+│   ├── presets.py              CLASSIC_MIT, FAST_GAME, CHAOS; scenario_summary() writes their card figures
+│   ├── preview.py              what a draft config plays (demand series, lead times), for the host form
 │   ├── demand.py               the customer demand generator
 │   ├── pipeline.py             the shipment and order delay pipelines
 │   ├── agents.py               one station's settle-and-order step
@@ -326,7 +331,7 @@ app/
         ├── lobby.py            joining, seating, config, start_game
         └── play.py             orders, pause/resume, bots, ending a game
 
-alembic/                        env.py reads settings.db_url; versions 0001 to 0004 (head)
+alembic/                        env.py reads settings.db_url; versions 0001 to 0005 (head)
 tests/
 ├── conftest.py                 FakeRedis, firebase_tokens, FakeSocketManager, the env pinning
 ├── test_skeleton/              the app, config, packaging and assembly
@@ -349,8 +354,8 @@ handler, and has exactly one author. Each package also works while empty, which 
 section 01 ship and pass its own tests before any member existed.
 
 **`app/core/` is pure, with two named exceptions.** The domain modules — `enums`,
-`config_models`, `presets`, `demand`, `pipeline`, `agents`, `game_engine`, `bot`, `records` and
-`stats` — import nothing from `app.config`, `app.services`, `app.db`, `app.sockets` or `app.api`,
+`config_models`, `limits`, `presets`, `preview`, `demand`, `pipeline`, `agents`, `game_engine`,
+`bot`, `records` and `stats` — import nothing from `app.config`, `app.services`, `app.db`, `app.sockets` or `app.api`,
 perform no I/O, and read no clock and no global RNG. The hard ceilings of `00-decisions.md` §5
 arrive as an injected `Limits`, never as an import of `settings`. `app/core/checks/` and `app/core/firebase.py`
 are *not* domain modules and do perform I/O; the rule that matters is that **no domain module may

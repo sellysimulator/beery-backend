@@ -226,32 +226,48 @@ async def test_set_role_mode_after_start_is_rejected(
 # --- AC 25 -------------------------------------------------------------------- #
 
 
-async def test_assign_role_moves_role_atomically(
-    make_room, connect_identity, state_svc
+async def test_assign_role_refuses_a_role_someone_else_holds(
+    make_room, connect_identity, state_svc, fake_socket_manager
 ):
+    """The host's picker must not take a seat from its holder as a side
+    effect: the second assignment is refused and both participants keep what
+    they had. Unseating first, then assigning, still moves the role."""
     room = await _seat_two(make_room, connect_identity, mode="HOST_ASSIGNS")
+    await connect_identity("sid-host", new_guest())
 
-    await assign_role(
-        "sid-host",
-        {
+    def _assign(alias: str, role: str | None) -> dict:
+        return {
             "room_id": room["room_code"],
             "host_secret": room["host_secret"],
-            "alias": "P1",
-            "role": "FACTORY",
-        },
-    )
-    await assign_role(
-        "sid-host",
-        {
-            "room_id": room["room_code"],
-            "host_secret": room["host_secret"],
-            "alias": "P2",
-            "role": "FACTORY",
-        },
-    )
+            "alias": alias,
+            "role": role,
+        }
+
+    await assign_role("sid-host", _assign("P1", "FACTORY"))
+    await assign_role("sid-host", _assign("P2", "RETAILER"))
+    fake_socket_manager.clear()
+
+    await assign_role("sid-host", _assign("P2", "FACTORY"))
+
+    stored = await state_svc.get_room(room["room_code"])
+    assert stored["role_to_alias"]["FACTORY"] == "P1"
+    assert stored["role_to_alias"]["RETAILER"] == "P2"
+    assert stored["participants"]["P1"]["role"] == "FACTORY"
+    assert stored["participants"]["P2"]["role"] == "RETAILER"
+    errors = [
+        data
+        for target, event, data in fake_socket_manager.sid_emits
+        if target == "sid-host" and event == "join_error"
+    ]
+    assert errors and "already held" in errors[0]["message"]
+    assert "roles_assigned" not in fake_socket_manager.events_for(room["room_code"])
+
+    await assign_role("sid-host", _assign("P1", None))
+    await assign_role("sid-host", _assign("P2", "FACTORY"))
 
     stored = await state_svc.get_room(room["room_code"])
     assert stored["role_to_alias"]["FACTORY"] == "P2"
+    assert stored["role_to_alias"]["RETAILER"] is None
     assert stored["participants"]["P1"]["role"] is None
     assert stored["participants"]["P2"]["role"] == "FACTORY"
 

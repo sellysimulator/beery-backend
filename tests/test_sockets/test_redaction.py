@@ -129,7 +129,9 @@ async def test_no_private_key_anywhere_in_a_room_broadcast(
         "inventory",
         "backlog",
         "accumulated_cost",
-        "week_cost",
+        "week_holding_backlog_cost",
+        "week_order_cost",
+        "total_week_cost",
         "record",
         "identity",
         "session_token",
@@ -200,3 +202,112 @@ async def test_retailer_your_state_shows_wholesaler_inventory_when_enabled(
     assert contains_value(
         payload, 202
     ), "show_neighbour_inventory=True must surface the Wholesaler's inventory"
+
+
+# --- BE-4: order_history is host-sid only (12 §2, §3.4; 07 §3.9) ----------- #
+
+_ORDER_PROBES = {"RETAILER": 111, "WHOLESALER": 222, "DISTRIBUTOR": 333, "FACTORY": 444}
+
+
+async def _close_week_with_probe_orders(game, state_svc):
+    _stored, engine = await _current(state_svc, game["room_code"])
+    week = engine.week
+    for role, qty in _ORDER_PROBES.items():
+        await submit_order(
+            game["sids_by_role"][role],
+            {"room_id": game["room_code"], "week": week, "order": qty},
+        )
+
+
+def _host_states(fake_socket_manager, host_sid):
+    return [
+        data
+        for target, event, data in fake_socket_manager.sid_emits
+        if event == "host_state" and target == host_sid
+    ]
+
+
+async def test_host_state_after_a_closed_week_carries_order_history_to_the_host_sid(
+    make_room, start_running_game, fake_socket_manager, state_svc
+):
+    room = await make_room(role_assignment_mode="PLAYER_CHOOSES", duration_weeks=8)
+    game = await start_running_game(room)
+    fake_socket_manager.clear()
+
+    await _close_week_with_probe_orders(game, state_svc)
+
+    states = _host_states(fake_socket_manager, game["host_sid"])
+    assert states, "no host_state reached the host sid after the week closed"
+    latest = states[-1]
+    assert latest["order_history"] == {
+        role: [qty] for role, qty in _ORDER_PROBES.items()
+    }
+    assert list(latest["order_history"].keys()) == [
+        "RETAILER",
+        "WHOLESALER",
+        "DISTRIBUTOR",
+        "FACTORY",
+    ]
+
+
+async def test_host_state_is_never_sent_to_a_player_sid_or_the_room(
+    make_room, start_running_game, fake_socket_manager, state_svc
+):
+    room = await make_room(role_assignment_mode="PLAYER_CHOOSES", duration_weeks=8)
+    game = await start_running_game(room)
+    fake_socket_manager.clear()
+
+    await _close_week_with_probe_orders(game, state_svc)
+
+    assert not [e for _t, e, _d in fake_socket_manager.room_emits if e == "host_state"]
+    for target, event, _data in fake_socket_manager.sid_emits:
+        if event == "host_state":
+            assert target == game["host_sid"], target
+
+
+async def test_order_history_appears_in_no_room_broadcast(
+    make_room, start_running_game, fake_socket_manager, state_svc
+):
+    room = await make_room(role_assignment_mode="PLAYER_CHOOSES", duration_weeks=8)
+    game = await start_running_game(room)
+    fake_socket_manager.clear()
+
+    await _close_week_with_probe_orders(game, state_svc)
+    await pause_game(
+        game["host_sid"],
+        {"room_id": game["room_code"], "host_secret": game["host_secret"]},
+    )
+    await resume_game(
+        game["host_sid"],
+        {"room_id": game["room_code"], "host_secret": game["host_secret"]},
+    )
+
+    assert fake_socket_manager.room_emits, "no room broadcast was captured"
+    for _room_id, event, payload in fake_socket_manager.room_emits:
+        assert not contains_key(payload, "order_history"), (event, payload)
+        for qty in _ORDER_PROBES.values():
+            assert not _contains_leaked_value(payload, qty), (event, qty, payload)
+
+
+async def test_order_history_appears_in_no_player_your_state(
+    make_room, start_running_game, fake_socket_manager, state_svc
+):
+    room = await make_room(role_assignment_mode="PLAYER_CHOOSES", duration_weeks=8)
+    game = await start_running_game(room)
+    fake_socket_manager.clear()
+
+    await _close_week_with_probe_orders(game, state_svc)
+    for sid in game["sids_by_role"].values():
+        await request_state(sid, {"room_id": game["room_code"]})
+
+    player_sids = set(game["sids_by_role"].values())
+    seen = 0
+    for target, event, data in fake_socket_manager.sid_emits:
+        if target in player_sids:
+            seen += 1
+            assert not contains_key(data, "order_history"), (target, event, data)
+    assert seen, "no per-sid emit reached a player"
+    your_states = [
+        e for _t, e, _d in fake_socket_manager.sid_emits if e == "your_state"
+    ]
+    assert your_states, "no your_state was emitted"

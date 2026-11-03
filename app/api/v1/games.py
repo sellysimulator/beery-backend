@@ -117,7 +117,7 @@ def week_record_from_row(row: Week) -> WeekRecord:
         backlog_cost=float(row.backlog_cost),
         fixed_order_cost=float(row.fixed_order_cost),
         purchase_cost=float(row.purchase_cost),
-        week_cost=float(row.week_cost),
+        total_week_cost=float(row.total_week_cost),
         cumulative_cost=float(row.cumulative_cost),
         production_started=row.production_started,
         production_queued=row.production_queued,
@@ -263,13 +263,16 @@ def build_week_export_rows(db: Session, game: Game) -> list[dict]:
                 "closing_inventory": row.closing_inventory,
                 "closing_backlog": row.closing_backlog,
                 "supply_line_after": row.supply_line_after,
-                "orders_in_flight_after": row.orders_in_flight_after,
+                # Renamed at the boundary only (`15 §3.2`): the column holds
+                # orders coming TO the role, and the player's on-screen "orders
+                # in flight" are their own orders going upstream.
+                "incoming_orders_in_flight_after": row.orders_in_flight_after,
                 "order_qty": row.order_qty,
                 "holding_cost": float(row.holding_cost),
                 "backlog_cost": float(row.backlog_cost),
                 "fixed_order_cost": float(row.fixed_order_cost),
                 "purchase_cost": float(row.purchase_cost),
-                "week_cost": float(row.week_cost),
+                "total_week_cost": float(row.total_week_cost),
                 "cumulative_cost": float(row.cumulative_cost),
                 "production_started": row.production_started,
                 "production_queued": row.production_queued,

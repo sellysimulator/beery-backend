@@ -57,7 +57,7 @@ __all__ = [
 def round_money(value: float | Decimal) -> Decimal:
     """Round half-up to two decimals -- the one place `float` crosses to
     `DECIMAL(12, 2)` (`00-conventions.md §4`, `§3.5`). The engine's
-    accumulated values are never rounded mid-game, so `sum(week_cost)` may
+    accumulated values are never rounded mid-game, so `sum(total_week_cost)` may
     differ from `cumulative_cost` by less than a cent; that is expected and
     is not "fixed" here by re-summing.
 
@@ -87,9 +87,12 @@ def _decimal(value: float | Decimal | None) -> Decimal | None:
 @dataclass(frozen=True)
 class ParticipantSnapshot:
     """One row of `participants`. `identity` is copied straight out of the
-    room document: `None` for a role that was always a bot, and the original
-    human's identity for a role later substituted -- which is exactly what
-    `§3.7` needs to keep counting that game under the human's seat."""
+    room document: `None` for a role that was always a bot (bot fill), and the
+    original human's identity for a role the host later swapped to a bot --
+    `substitute_bot` sets `is_bot` and leaves `identity` alone. That identity
+    is what keeps the game in the player's match history and `user_stats`
+    (`§3.6`, `§3.7`), so a swapped seat is attributed exactly like a human
+    one; only the per-week `was_bot` says which weeks the bot played."""
 
     alias: str
     display_name: str
@@ -251,7 +254,7 @@ _WEEK_COLUMNS = (
     "backlog_cost",
     "fixed_order_cost",
     "purchase_cost",
-    "week_cost",
+    "total_week_cost",
     "cumulative_cost",
     "production_started",
     "production_queued",
@@ -383,7 +386,6 @@ class DbService:
                 show_running_cost_to_players=visibility.show_running_cost_to_players,
                 show_leaderboard_during_game=visibility.show_leaderboard_during_game,
                 max_order_quantity=visibility.max_order_quantity,
-                allow_negative_orders=visibility.allow_negative_orders,
                 theta=_decimal(bot.theta),
                 alpha=_decimal(bot.alpha),
                 beta=_decimal(bot.beta),
@@ -495,14 +497,22 @@ class DbService:
     def _resolve_attribution(
         self, db: Session, participant: ParticipantSnapshot
     ) -> tuple[int | None, str | None]:
-        """`§3.6`. A bot is `(None, None)`, a guest `(None, guest_identity)`.
+        """`§3.6`. A seat with no identity -- a bot from the start -- is
+        `(None, None)`, a guest `(None, guest_identity)`.
+
+        Attribution follows `identity`, not `is_bot`. A seat the host swapped
+        to a bot mid-game is `is_bot` and still carries the displaced player's
+        identity, and it is attributed to that player: the game stays in their
+        match history, counts in their `user_stats`, and a guest can claim it.
+        Reading `is_bot` here used to drop all of that for a player swapped out
+        in week 30 of 36.
 
         A Firebase uid always resolves to a `users` row: one that has none yet
         -- a signed-in user who never hit `/users/upsert` -- gets a bare row
         inside this transaction (failure mode 11). Storing `user_id` NULL
         instead would leave the row with neither identity, which no later
         sign-in or claim can ever attribute."""
-        if participant.is_bot or participant.identity is None:
+        if participant.identity is None:
             return None, None
         if participant.identity.startswith("guest_"):
             return None, participant.identity
@@ -513,9 +523,12 @@ class DbService:
     def _bullwhip_ratio(
         participant: ParticipantSnapshot, stats: GameStats
     ) -> Decimal | None:
-        """`§3.5a`: NULL for a bot, for the host (no role), and for any role
-        whose ratio is `None` (a `CONSTANT`-demand game)."""
-        if participant.is_bot or participant.role is None:
+        """`§3.5a`: NULL for a seat that was a bot from the start (no
+        identity), for the host (no role), and for any role whose ratio is
+        `None` (a `CONSTANT`-demand game). A swapped seat keeps its player's
+        identity and therefore its ratio, bot weeks included, like its cost
+        (`§3.7`)."""
+        if participant.identity is None or participant.role is None:
             return None
         role_stats = stats.per_role.get(participant.role)
         if role_stats is None or role_stats.bullwhip_ratio is None:
@@ -562,7 +575,7 @@ class DbService:
                 "backlog_cost": _money(record.backlog_cost),
                 "fixed_order_cost": _money(record.fixed_order_cost),
                 "purchase_cost": _money(record.purchase_cost),
-                "week_cost": _money(record.week_cost),
+                "total_week_cost": _money(record.total_week_cost),
                 "cumulative_cost": _money(record.cumulative_cost),
                 "production_started": record.production_started,
                 "production_queued": record.production_queued,

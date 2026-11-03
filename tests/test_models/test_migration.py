@@ -280,3 +280,74 @@ def test_0004_moves_the_host_onto_its_row_and_the_downgrade_restores_it(
         assert restored == user_id
     finally:
         engine.dispose()
+
+
+# --- 0005: weeks.total_week_cost, and no allow_negative_orders ---------------
+
+
+def _columns(engine, table: str) -> set[str]:
+    with engine.connect() as connection:
+        return set(
+            connection.execute(
+                text(
+                    "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :table"
+                ),
+                {"table": table},
+            ).scalars()
+        )
+
+
+def test_0005_renames_week_cost_keeping_every_value_and_drops_the_flag(
+    blank_database: str, alembic: AlembicRunner
+) -> None:
+    """A game stored before 0005 keeps its stored week costs under the new
+    name, `game_configs` loses `allow_negative_orders`, and the downgrade
+    puts both back (the flag as `false`, which every finished game had)."""
+    alembic(blank_database, "upgrade", "0004")
+    engine = create_engine(blank_database, future=True)
+    try:
+        with engine.begin() as connection:
+            game_id = connection.execute(
+                text(
+                    "INSERT INTO games (room_code, host_display_name,"
+                    " rng_seed, duration_weeks, weeks_played, started_at,"
+                    " finished_at, chain_total_cost, public_id)"
+                    " VALUES ('R0005', 'Prof', 1, 8, 1,"
+                    " '2026-01-01 08:00:00', '2026-01-01 10:00:00', 0, 'p0005')"
+                )
+            ).lastrowid
+            connection.execute(
+                text(
+                    "INSERT INTO weeks (game_id, week, role, opening_inventory,"
+                    " opening_backlog, arrived, incoming_order, obligation,"
+                    " shipped, unfulfilled, closing_inventory, closing_backlog,"
+                    " supply_line_after, orders_in_flight_after, order_qty,"
+                    " was_bot, was_forced, holding_cost, backlog_cost,"
+                    " fixed_order_cost, purchase_cost, week_cost, cumulative_cost)"
+                    " VALUES (:game_id, 1, 'RETAILER', 12, 0, 4, 4, 4, 4, 0, 12,"
+                    " 0, 8, 0, 4, 0, 0, 6.00, 0.00, 10.00, 4.00, 20.00, 20.00)"
+                ),
+                {"game_id": game_id},
+            )
+
+        alembic(blank_database, "upgrade", "head")
+        assert "week_cost" not in _columns(engine, "weeks")
+        assert "allow_negative_orders" not in _columns(engine, "game_configs")
+        with engine.connect() as connection:
+            total = connection.execute(
+                text("SELECT total_week_cost FROM weeks WHERE game_id = :id"),
+                {"id": game_id},
+            ).scalar_one()
+        assert float(total) == 20.00
+
+        alembic(blank_database, "downgrade", "0004")
+        assert "allow_negative_orders" in _columns(engine, "game_configs")
+        with engine.connect() as connection:
+            restored = connection.execute(
+                text("SELECT week_cost FROM weeks WHERE game_id = :id"),
+                {"id": game_id},
+            ).scalar_one()
+        assert float(restored) == 20.00
+    finally:
+        engine.dispose()

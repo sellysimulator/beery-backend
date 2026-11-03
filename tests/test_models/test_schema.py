@@ -57,7 +57,7 @@ MONEY_COLUMNS = (
     ("weeks", "backlog_cost"),
     ("weeks", "fixed_order_cost"),
     ("weeks", "purchase_cost"),
-    ("weeks", "week_cost"),
+    ("weeks", "total_week_cost"),
     ("weeks", "cumulative_cost"),
     ("user_stats", "total_cost"),
     ("user_stats", "avg_cost_per_week"),
@@ -420,14 +420,14 @@ def test_money_rounds_to_two_places_and_never_to_an_integer(
         game_id=game_id,
         week=1,
         role=Role.RETAILER.value,
-        week_cost=Decimal("0.50"),
+        total_week_cost=Decimal("0.50"),
         cumulative_cost=Decimal("12.345"),
     )
     stored = db.execute(
-        text("SELECT week_cost, cumulative_cost FROM weeks WHERE game_id = :id"),
+        text("SELECT total_week_cost, cumulative_cost FROM weeks WHERE game_id = :id"),
         {"id": game_id},
     ).one()
-    assert stored.week_cost == Decimal("0.50")
+    assert stored.total_week_cost == Decimal("0.50")
     assert stored.cumulative_cost in {Decimal("12.34"), Decimal("12.35")}
 
 

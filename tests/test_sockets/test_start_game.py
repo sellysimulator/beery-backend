@@ -10,7 +10,14 @@ import asyncio
 
 import pytest
 
-from app.sockets.handlers.lobby import claim_role, join, join_waiting, start_game
+from app.services.room_service import RoomService
+from app.sockets.handlers.lobby import (
+    assign_role,
+    claim_role,
+    join,
+    join_waiting,
+    start_game,
+)
 from tests.test_sockets.conftest import new_guest
 
 pytestmark = pytest.mark.asyncio
@@ -67,6 +74,52 @@ async def test_start_game_with_three_players_and_bot_fill_creates_one_bot(
     assert bot_participants[0]["role"] == "FACTORY"
     assert bot_participants[0]["display_name"] == "Factory (bot)"
     assert "game_started" in fake_socket_manager.events_for(room["room_code"])
+
+
+async def test_start_game_broadcasts_the_bot_seats_it_filled(
+    make_room, connect_identity, fake_socket_manager, state_svc
+):
+    """The bots created at start reach every client as participants, named
+    and flagged. ``game_started`` alone carries no names, and the live
+    results' cost cards are built from the participant list."""
+    room = await _seat_n(
+        make_room,
+        connect_identity,
+        2,
+        role_assignment_mode="PLAYER_CHOOSES",
+        bot_fill_empty_roles=True,
+    )
+    for i, role in enumerate(["RETAILER", "WHOLESALER"]):
+        await claim_role(f"sid-{i}", {"room_id": room["room_code"], "role": role})
+    await connect_identity("sid-host", new_guest())
+    await join_waiting(
+        "sid-host", {"room_id": room["room_code"], "host_secret": room["host_secret"]}
+    )
+    fake_socket_manager.clear()
+
+    await start_game(
+        "sid-host", {"room_id": room["room_code"], "host_secret": room["host_secret"]}
+    )
+
+    emits = fake_socket_manager.room_emits
+    names = [event for _room, event, _data in emits]
+    assert names.index("lobby_update") > names.index("game_started")
+    lobby = next(data for _room, event, data in emits if event == "lobby_update")
+    started = next(data for _room, event, data in emits if event == "game_started")
+    assert lobby["seq"] > started["seq"]
+    assert lobby["state"] == "RUNNING"
+    bots = {p["role"]: p for p in lobby["participants"] if p["is_bot"]}
+    assert set(bots) == {"DISTRIBUTOR", "FACTORY"}
+    assert bots["FACTORY"]["display_name"] == "Factory (bot)"
+    for participant in lobby["participants"]:
+        assert set(participant) == {
+            "alias",
+            "display_name",
+            "role",
+            "is_bot",
+            "connected",
+            "is_host",
+        }
 
 
 # --- AC 28 -------------------------------------------------------------------- #
@@ -411,7 +464,6 @@ async def test_game_started_config_public_has_no_cost_delay_or_demand(
         "show_running_cost_to_players",
         "show_leaderboard_during_game",
         "max_order_quantity",
-        "allow_negative_orders",
     }
     forbidden_fields = (
         "holding_cost_per_unit_week",
@@ -534,3 +586,209 @@ async def test_start_game_on_an_already_started_room_is_silent(
 
     assert fake_socket_manager.emits_for("sid-host") == []
     assert fake_socket_manager.room_emits == []
+
+
+# --- nobody left without a role ------------------------------------------------- #
+#
+# Bot fill takes the roles nobody holds, never a person's place. Before this
+# rule, `can_start` returned True at once with bot fill on, `start_game` gave
+# every empty role to a bot, and a person who had joined without a role was
+# left seatless, waiting forever for a position.
+
+_ROLELESS_TAIL = (
+    "no role yet. Give everyone in the room a role first; "
+    "bots fill only the seats nobody holds."
+)
+
+
+async def _seat_named(make_room, connect_identity, names, **config_kwargs):
+    room = await make_room(**config_kwargs)
+    for i, name in enumerate(names):
+        sid = f"sid-{i}"
+        await connect_identity(sid, new_guest())
+        await join(sid, {"room_id": room["room_code"], "display_name": name})
+    await connect_identity("sid-host", new_guest())
+    await join_waiting(
+        "sid-host", {"room_id": room["room_code"], "host_secret": room["host_secret"]}
+    )
+    return room
+
+
+def _host(room: dict, **extra) -> dict:
+    return {
+        "room_id": room["room_code"],
+        "host_secret": room["host_secret"],
+        **extra,
+    }
+
+
+def _last_lobby(fake_socket_manager) -> dict:
+    return [
+        payload
+        for _room, event, payload in fake_socket_manager.room_emits
+        if event == "lobby_update"
+    ][-1]
+
+
+@pytest.mark.parametrize("mode", ["HOST_ASSIGNS", "PLAYER_CHOOSES"])
+async def test_bot_fill_refuses_while_a_person_has_no_role_and_names_them(
+    make_room, connect_identity, fake_socket_manager, state_svc, mode
+):
+    room = await _seat_named(
+        make_room,
+        connect_identity,
+        ["Ana", "Ben"],
+        role_assignment_mode=mode,
+        bot_fill_empty_roles=True,
+    )
+    if mode == "HOST_ASSIGNS":
+        await assign_role("sid-host", _host(room, alias="P2", role="RETAILER"))
+    else:
+        await claim_role("sid-1", {"room_id": room["room_code"], "role": "RETAILER"})
+
+    expected = f"Ana has {_ROLELESS_TAIL}"
+    stored = await state_svc.get_room(room["room_code"])
+    assert stored["role_to_alias"]["RETAILER"] == "P2"
+    assert RoomService().can_start(stored) == (False, expected)
+    lobby = _last_lobby(fake_socket_manager)
+    assert lobby["can_start"] is False
+    assert lobby["start_blocked_reason"] == expected
+
+    fake_socket_manager.clear()
+    await start_game("sid-host", _host(room))
+
+    stored = await state_svc.get_room(room["room_code"])
+    assert stored["state"] != "RUNNING"
+    assert stored["engine"] is None
+    assert not any(p["is_bot"] for p in stored["participants"].values())
+    assert fake_socket_manager.emits_for("sid-host") == [
+        ("join_error", {"message": expected})
+    ]
+    assert "game_started" not in fake_socket_manager.events_for(room["room_code"])
+
+
+async def test_roleless_reason_lists_every_person_without_a_role(
+    make_room, connect_identity, state_svc
+):
+    room = await _seat_named(
+        make_room,
+        connect_identity,
+        ["Ana", "Ben", "Cleo"],
+        role_assignment_mode="HOST_ASSIGNS",
+        bot_fill_empty_roles=True,
+    )
+    service = RoomService()
+
+    stored = await state_svc.get_room(room["room_code"])
+    assert service.can_start(stored) == (
+        False,
+        f"Ana, Ben and Cleo have {_ROLELESS_TAIL}",
+    )
+
+    await assign_role("sid-host", _host(room, alias="P2", role="FACTORY"))
+    stored = await state_svc.get_room(room["room_code"])
+    assert service.can_start(stored) == (False, f"Ana and Cleo have {_ROLELESS_TAIL}")
+
+
+async def test_giving_the_person_a_role_lets_the_game_start_and_seats_them(
+    make_room, connect_identity, fake_socket_manager, state_svc
+):
+    room = await _seat_named(
+        make_room,
+        connect_identity,
+        ["Ana", "Ben"],
+        role_assignment_mode="HOST_ASSIGNS",
+        bot_fill_empty_roles=True,
+    )
+    await assign_role("sid-host", _host(room, alias="P2", role="RETAILER"))
+    await assign_role("sid-host", _host(room, alias="P1", role="DISTRIBUTOR"))
+
+    stored = await state_svc.get_room(room["room_code"])
+    assert RoomService().can_start(stored) == (True, None)
+    lobby = _last_lobby(fake_socket_manager)
+    assert lobby["can_start"] is True
+    assert lobby["start_blocked_reason"] is None
+
+    fake_socket_manager.clear()
+    await start_game("sid-host", _host(room))
+
+    stored = await state_svc.get_room(room["room_code"])
+    assert stored["state"] == "RUNNING"
+    assert stored["role_to_alias"]["DISTRIBUTOR"] == "P1"
+    assert stored["role_to_alias"]["RETAILER"] == "P2"
+    bots = {p["role"] for p in stored["participants"].values() if p["is_bot"]}
+    assert bots == {"WHOLESALER", "FACTORY"}
+    # Both people were sent their position.
+    assert "your_state" in fake_socket_manager.events_for("sid-0")
+    assert "your_state" in fake_socket_manager.events_for("sid-1")
+
+
+async def test_bot_fill_with_nobody_roleless_still_starts_and_fills_with_bots(
+    make_room, connect_identity, state_svc
+):
+    room = await _seat_named(
+        make_room,
+        connect_identity,
+        ["Ana"],
+        role_assignment_mode="PLAYER_CHOOSES",
+        bot_fill_empty_roles=True,
+    )
+    await claim_role("sid-0", {"room_id": room["room_code"], "role": "WHOLESALER"})
+
+    await start_game("sid-host", _host(room))
+
+    stored = await state_svc.get_room(room["room_code"])
+    assert stored["state"] == "RUNNING"
+    assert stored["role_to_alias"]["WHOLESALER"] == "P1"
+    bots = {p["role"] for p in stored["participants"].values() if p["is_bot"]}
+    assert bots == {"RETAILER", "DISTRIBUTOR", "FACTORY"}
+
+
+async def test_random_mode_with_bot_fill_is_not_blocked_by_roleless_people(
+    make_room, connect_identity, fake_socket_manager, state_svc
+):
+    """Nobody holds a role in a RANDOM lobby -- they are dealt inside
+    `start_game`, before `can_start` runs -- so the rule must not fire there."""
+    room = await _seat_named(
+        make_room,
+        connect_identity,
+        ["Ana", "Ben"],
+        role_assignment_mode="RANDOM",
+        bot_fill_empty_roles=True,
+        random_seed=77,
+    )
+    stored = await state_svc.get_room(room["room_code"])
+    assert all(p["role"] is None for p in stored["participants"].values())
+    assert RoomService().can_start(stored) == (True, None)
+    assert _last_lobby(fake_socket_manager)["can_start"] is True
+
+    await start_game("sid-host", _host(room))
+
+    stored = await state_svc.get_room(room["room_code"])
+    assert stored["state"] == "RUNNING"
+    humans = [p for p in stored["participants"].values() if not p["is_bot"]]
+    assert len(humans) == 2
+    assert all(p["role"] is not None for p in humans)
+    assert sum(1 for p in stored["participants"].values() if p["is_bot"]) == 2
+
+
+async def test_bot_fill_off_keeps_the_unfilled_roles_reason(
+    make_room, connect_identity, state_svc
+):
+    """With bot fill off a roleless person always comes with an empty role
+    (four roles, at most four people), and the existing reason wins."""
+    room = await _seat_named(
+        make_room,
+        connect_identity,
+        ["Ana", "Ben", "Cleo", "Dara"],
+        role_assignment_mode="HOST_ASSIGNS",
+        bot_fill_empty_roles=False,
+    )
+    for alias, role in (("P2", "RETAILER"), ("P3", "WHOLESALER"), ("P4", "FACTORY")):
+        await assign_role("sid-host", _host(room, alias=alias, role=role))
+
+    stored = await state_svc.get_room(room["room_code"])
+    assert RoomService().can_start(stored) == (
+        False,
+        "One role is still empty. Assign them, or turn on bot fill.",
+    )

@@ -26,10 +26,10 @@ from typing import Any
 
 from ...core.bot import bot_for
 from ...core.enums import Role, RoomState
-from ...core.game_engine import EngineStateError, GamePhase
+from ...core.game_engine import EngineStateError, GameEngine, GamePhase
 from ...services.game_service import get_game_service
 from ...services.room_service import RoomService
-from ...services.state_service import get_state_service
+from ...services.state_service import StateService, get_state_service
 from ..errors import guarded
 from ..manager import sio, socket_manager
 
@@ -120,7 +120,9 @@ async def pause_game(sid: str, data: dict | None = None) -> None:
 @sio.event
 @guarded("error")
 async def resume_game(sid: str, data: dict | None = None) -> None:
-    """``§3.6``. ``PAUSED`` -> ``RUNNING``, then a full state re-broadcast."""
+    """``§3.6``. ``PAUSED`` -> ``RUNNING``, a full state re-broadcast, then
+    every bot seat still owing the open week its order plays
+    (``GameService.resume_play``) -- a bot swapped in while paused included."""
     data = _payload(data)
     room_id = _room_id_of(data)
     if room_id is None:
@@ -153,6 +155,7 @@ async def resume_game(sid: str, data: dict | None = None) -> None:
         await socket_manager.emit_to_room(room_code, "game_resumed", resumed_payload)
     if room_snapshot is not None:
         await get_game_service().broadcast_state(room_code)
+        await get_game_service().resume_play(room_code)
 
 
 # --- force_close_week --------------------------------------------------------- #
@@ -202,7 +205,15 @@ async def substitute_bot(sid: str, data: dict | None = None) -> None:
     """``§3.6``. A no-op, not an error, when the role is already a bot.
     ``engine.set_bot(role)`` is what makes every subsequent ``WeekRecord``
     attribute the play correctly -- the participant flag alone is not
-    enough (module docstring, `07-game-engine.md`'s ``set_bot``)."""
+    enough (module docstring, `07-game-engine.md`'s ``set_bot``).
+
+    Allowed while paused. The bot is asked to play at once, which does
+    nothing in a paused room; ``resume_game`` plays it when the room runs
+    again. The displaced player's ``identity`` stays on the seat, so the
+    finished game is still theirs (`14 §3.6`), and they can take the seat
+    back with ``reclaim_seat``. The host gets a fresh ``host_state`` so the
+    seat card shows the bot even in a paused room, where no bot round runs
+    to send one."""
     data = _payload(data)
     room_id = _room_id_of(data)
     if room_id is None:
@@ -212,6 +223,7 @@ async def substitute_bot(sid: str, data: dict | None = None) -> None:
     state_svc = get_state_service()
     room_code = room_id
     bot_substituted_payload: dict | None = None
+    host_refresh: tuple[str, dict] | None = None
     needs_bot_pass = False
 
     async with state_svc.lock(room_id):
@@ -260,14 +272,126 @@ async def substitute_bot(sid: str, data: dict | None = None) -> None:
             "role": role.value,
             "display_name": participant.get("display_name"),
         }
+        host_refresh = _host_state_for(room, engine, state_svc)
         await state_svc.save_room(room_code, room)
 
     if bot_substituted_payload is not None:
         await socket_manager.emit_to_room(
             room_code, "bot_substituted", bot_substituted_payload
         )
+    if host_refresh is not None:
+        await socket_manager.emit_to_sid(host_refresh[0], "host_state", host_refresh[1])
     if needs_bot_pass:
         await get_game_service().run_bot_decisions(room_code)
+
+
+def _host_state_for(
+    room: dict, engine: GameEngine, state_svc: StateService
+) -> tuple[str, dict] | None:
+    """The host's sid and a fresh ``host_state``, or None with no host
+    connected. Called inside the lock: it allocates a ``seq``."""
+    host_sid = room.get("host_sid")
+    if not isinstance(host_sid, str) or not host_sid:
+        return None
+    return host_sid, {"seq": state_svc.next_seq(room), **engine.host_view()}
+
+
+# --- reclaim_seat ---------------------------------------------------------------- #
+
+_NOT_SEATED = "You are not seated in this room."
+_NO_ROLE = "You do not hold a role."
+_GAME_FINISHED_MSG = "The game has finished."
+
+
+@sio.event
+@guarded("error")
+async def reclaim_seat(sid: str, data: dict | None = None) -> None:
+    """The player whose seat the host swapped to a bot takes it back
+    (amended 2026-11-03; swapping used to be one-way).
+
+    Only the seat's own player can: the seat is found from the caller's
+    connection (``sid_to_alias``, which ``join`` maps by identity), never from
+    the payload, so nobody can claim somebody else's seat. A seat that has no
+    player -- a bot filling an empty role from the start -- is never mapped to
+    a connection, so it cannot be taken. Allowed while running or paused; a
+    no-op when the seat is already the player's.
+
+    The bot is dropped and ``engine.set_bot(role, False)`` makes the player's
+    next order theirs. An order the bot already placed for the open week
+    stands, still attributed to the bot, until the player changes it.
+    Everyone hears ``seat_reclaimed``; the player gets ``your_state`` and the
+    host ``host_state``."""
+    data = _payload(data)
+    room_id = _room_id_of(data)
+    if room_id is None:
+        await _emit_error(sid, _ROOM_NOT_FOUND, "NOT_IN_ROOM")
+        return
+
+    state_svc = get_state_service()
+    room_code = room_id
+    reclaimed_payload: dict | None = None
+    your_state: dict | None = None
+    host_refresh: tuple[str, dict] | None = None
+
+    async with state_svc.lock(room_id):
+        room = await state_svc.get_room(room_id)
+        if room is None:
+            await _emit_error(sid, _ROOM_NOT_FOUND, "NOT_IN_ROOM")
+            return
+        room_code = room["room_code"]
+
+        alias = room["sid_to_alias"].get(sid)
+        participant = room["participants"].get(alias) if alias else None
+        if participant is None:
+            await _emit_error(sid, _NOT_SEATED, "NOT_IN_ROOM")
+            return
+        role_raw = participant.get("role")
+        if role_raw is None:
+            await _emit_error(sid, _NO_ROLE, "NO_ROLE")
+            return
+        if not participant.get("is_bot"):
+            return  # already the player's -- a double click
+
+        if room["state"] == RoomState.FINISHED.value:
+            await _emit_error(sid, _GAME_FINISHED_MSG, "GAME_FINISHED")
+            return
+        if room["state"] not in (RoomState.RUNNING.value, RoomState.PAUSED.value):
+            await _emit_error(sid, _GAME_NOT_RUNNING_MSG, "GAME_NOT_RUNNING")
+            return
+
+        engine = state_svc.load_engine(room)
+        if engine is None:
+            await _emit_error(sid, _GAME_NOT_STARTED, "GAME_NOT_RUNNING")
+            return
+
+        role = Role(role_raw)
+        bots = state_svc.load_bots(room)
+        bots.pop(role, None)
+        state_svc.store_bots(room, bots)
+
+        participant["is_bot"] = False
+        participant["connected"] = True
+        engine.set_bot(role, False)
+        state_svc.store_engine(room, engine)
+
+        reclaimed_payload = {
+            "seq": state_svc.next_seq(room),
+            "role": role.value,
+            "alias": alias,
+            "display_name": participant.get("display_name"),
+        }
+        your_state = {"seq": state_svc.next_seq(room), **engine.player_view(role)}
+        host_refresh = _host_state_for(room, engine, state_svc)
+        await state_svc.save_room(room_code, room)
+
+    if reclaimed_payload is not None:
+        await socket_manager.emit_to_room(
+            room_code, "seat_reclaimed", reclaimed_payload
+        )
+    if your_state is not None:
+        await socket_manager.emit_to_sid(sid, "your_state", your_state)
+    if host_refresh is not None:
+        await socket_manager.emit_to_sid(host_refresh[0], "host_state", host_refresh[1])
 
 
 # --- end_game_early ------------------------------------------------------------ #
@@ -277,7 +401,13 @@ async def substitute_bot(sid: str, data: dict | None = None) -> None:
 @guarded("error")
 async def end_game_early(sid: str, data: dict | None = None) -> None:
     """``§3.6``. Abandons the open week and finishes with the weeks
-    actually played -- ``engine.end_early()`` never settles it."""
+    actually played -- ``engine.end_early()`` never records it, and rolls its
+    holding and backlog cost back out of every live total.
+
+    The host and every seated player get a fresh state before
+    ``game_finished``, so the "Chain cost so far" the console is left showing
+    is the rolled-back figure the results show too, not the one from before
+    the abandoned week was taken back out."""
     data = _payload(data)
     room_id = _room_id_of(data)
     if room_id is None:
@@ -286,6 +416,7 @@ async def end_game_early(sid: str, data: dict | None = None) -> None:
     state_svc = get_state_service()
     room_code = room_id
     room_snapshot: dict | None = None
+    refresh_events: list[tuple[str, str, dict]] = []
 
     async with state_svc.lock(room_id):
         room = await state_svc.get_room(room_id)
@@ -313,9 +444,14 @@ async def end_game_early(sid: str, data: dict | None = None) -> None:
         state_svc.store_engine(room, engine)
         room["state"] = RoomState.FINISHED.value
         room["finished_at"] = datetime.now(timezone.utc).isoformat()
+        refresh_events = get_game_service().state_refresh_events(
+            room, engine, state_svc
+        )
         await state_svc.save_room(room_code, room)
         room_snapshot = room
 
+    for target_sid, event, payload in refresh_events:
+        await socket_manager.emit_to_sid(target_sid, event, payload)
     if room_snapshot is not None:
         await get_game_service().finish_game(room_code, room_snapshot)
 

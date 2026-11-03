@@ -55,6 +55,17 @@ class Pipeline:
         """
         return list(self._slots)
 
+    def weeks_until_out(self) -> list[int]:
+        """For each slot, front first, the weeks until it comes out.
+
+        One `advance()` a week, front first, so the front slot comes out next
+        week (1), the one behind it the week after (2), and so on. Aligned
+        with `slots()`. The player view sends it beside each slot list, so the
+        board labels a slot "in 3 weeks" without knowing how a pipeline moves
+        (2026-11-03).
+        """
+        return list(range(1, len(self._slots) + 1))
+
     def __len__(self) -> int:
         """The number of slots currently held, which dips by one mid-cycle."""
         return len(self._slots)

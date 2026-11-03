@@ -111,7 +111,7 @@ def test_population_variance_edge_cases_and_known_values() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 18 -- total_cost agrees with the sum of week_cost
+# AC 18 -- total_cost agrees with the sum of total_week_cost
 # --------------------------------------------------------------------------
 
 
@@ -134,7 +134,7 @@ def test_ac18_total_cost_equals_the_sum_of_week_costs() -> None:
         role_stats = stats.per_role[role]
         assert isinstance(role_stats, RoleStats)
         expected = sum(
-            record.week_cost for record in engine.history if record.role == role
+            record.total_week_cost for record in engine.history if record.role == role
         )
         assert role_stats.total_cost == pytest.approx(expected, abs=1e-9)
         total += expected

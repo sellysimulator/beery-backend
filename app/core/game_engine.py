@@ -33,7 +33,13 @@ from .enums import ROLE_ORDER, Role
 from .limits import DEFAULT_LIMITS
 from .records import OrderCharge, ProductionOutcome, WeekSettlement
 
-__all__ = ["EngineStateError", "GameEngine", "GamePhase", "WeekRecord"]
+__all__ = [
+    "EngineStateError",
+    "GameEngine",
+    "GamePhase",
+    "OrderOutOfRangeError",
+    "WeekRecord",
+]
 
 
 class GamePhase(str, Enum):
@@ -59,8 +65,25 @@ class WeekRecord:
     persists.
 
     `orders_in_flight_after` is this role's **own** order pipeline, sampled in
-    Phase A pass 3. It is deliberately *not* the quantity `player_view` sends
-    under the same name, which is the **supplier's** pipeline (§3.8).
+    Phase A pass 3: orders its downstream customer has placed that are still
+    travelling *to* this role. It is deliberately *not* the quantity
+    `player_view` sends as `orders_in_flight`, which is the **supplier's**
+    pipeline -- this role's own orders going upstream (§3.8). The export names
+    the column `incoming_orders_in_flight_after` for that reason
+    (`15-results-and-export-api.md` §3.2).
+
+    `total_week_cost` is the whole week: holding and backlog cost plus this
+    week's order cost (`fixed_order_cost + purchase_cost`). It was called
+    `week_cost` until 2026-11-02, when the screens stopped showing a single
+    "week cost" -- they show "Holding & backlog" and "Order cost" separately
+    -- and the stored sum was renamed so nobody mistakes it for either.
+
+    `was_bot` says who placed *this week's* order: true when a bot did. A
+    week whose seat changed hands while it was open (the host swapped a bot
+    in after the player had ordered, or the player took the seat back after
+    the bot had) is attributed to whoever's order stood when it closed. A
+    forced week, with no order at all, goes to whoever held the seat at the
+    close (2026-11-03; it used to read the seat at the close every time).
     """
 
     role: Role
@@ -83,7 +106,7 @@ class WeekRecord:
     backlog_cost: float
     fixed_order_cost: float
     purchase_cost: float
-    week_cost: float
+    total_week_cost: float  # carrying cost + order cost
     cumulative_cost: float
     production_started: int | None  # FACTORY only, else None
     production_queued: int | None  # FACTORY only, else None
@@ -91,6 +114,21 @@ class WeekRecord:
 
 class EngineStateError(RuntimeError):
     """A method was called in a phase that does not permit it."""
+
+
+class OrderOutOfRangeError(ValueError):
+    """An order outside `[low, high]`, refused rather than clamped (§3.3).
+
+    The message is written for the player: the socket layer sends it as is.
+    """
+
+    low: int
+    high: int
+
+    def __init__(self, low: int, high: int) -> None:
+        super().__init__(f"Order must be a whole number from {low} to {high}.")
+        self.low = low
+        self.high = high
 
 
 def _require_role(value: object) -> Role:
@@ -111,13 +149,25 @@ def _dataclass_payload(record: Any) -> dict:
 
 
 def _settlement_from_payload(payload: dict) -> WeekSettlement:
-    """Rebuild the `WeekSettlement` that `_dataclass_payload` described."""
+    """Rebuild the `WeekSettlement` that `_dataclass_payload` described.
+
+    A room saved before 2026-11-03 has no `inventory_after_arrival`. Its
+    settlement is rebuilt with the stock it had after receiving, which for
+    those rooms is exactly the opening stock plus what arrived (`settle()`
+    step 1), so a game in flight across the deploy keeps loading.
+    """
+    opening_inventory = int(payload["opening_inventory"])
+    arrived = int(payload["arrived"])
+    after_arrival = payload.get("inventory_after_arrival")
     return WeekSettlement(
         role=Role(payload["role"]),
         week=int(payload["week"]),
-        opening_inventory=int(payload["opening_inventory"]),
+        opening_inventory=opening_inventory,
         opening_backlog=int(payload["opening_backlog"]),
-        arrived=int(payload["arrived"]),
+        arrived=arrived,
+        inventory_after_arrival=(
+            opening_inventory + arrived if after_arrival is None else int(after_arrival)
+        ),
         incoming_order=int(payload["incoming_order"]),
         obligation=int(payload["obligation"]),
         shipped=int(payload["shipped"]),
@@ -158,7 +208,12 @@ def _record_from_payload(payload: dict) -> WeekRecord:
         backlog_cost=float(payload["backlog_cost"]),
         fixed_order_cost=float(payload["fixed_order_cost"]),
         purchase_cost=float(payload["purchase_cost"]),
-        week_cost=float(payload["week_cost"]),
+        # A room saved before the rename still holds `week_cost`.
+        total_week_cost=float(
+            payload["total_week_cost"]
+            if "total_week_cost" in payload
+            else payload["week_cost"]
+        ),
         cumulative_cost=float(payload["cumulative_cost"]),
         production_started=_optional_int(payload["production_started"]),
         production_queued=_optional_int(payload["production_queued"]),
@@ -175,6 +230,7 @@ class GameEngine:
     phase: GamePhase
     agents: dict[Role, RoleAgent]
     pending_orders: dict[Role, int]  # orders received for the open week
+    pending_by_bot: set[Role]  # which of those a bot placed
     history: list[WeekRecord]
     settlements: dict[Role, WeekSettlement]  # Phase A output for the open week
     role_order: tuple[Role, ...]  # the settlement seam of §3.2
@@ -201,6 +257,7 @@ class GameEngine:
         self.phase = GamePhase.AWAITING_START
         self.agents = {role: agent_for(role, config) for role in ROLE_ORDER}
         self.pending_orders = {}
+        self.pending_by_bot = set()
         self.history = []
         self.settlements = {}
         # Phase A pass 3 samples. They feed `WeekRecord.supply_line_after` and
@@ -283,6 +340,7 @@ class GameEngine:
 
         self.settlements = {role: settlements[role] for role in ROLE_ORDER}
         self.pending_orders = {}
+        self.pending_by_bot = set()
         self.phase = GamePhase.DECISION
 
     def _sample_pipelines(self) -> None:
@@ -304,12 +362,12 @@ class GameEngine:
         return len(self.history) // len(ROLE_ORDER)
 
     def _order_ceiling(self) -> int:
-        """The ceiling `submit_order` enforces.
+        """The highest order `submit_order` accepts.
 
         `visibility.max_order_quantity` when set, and the hard ceiling from
         `DEFAULT_LIMITS` always. `GameConfig` carries no `limits`, so the number
-        is read rather than written twice; section 03 has already clamped the
-        visibility value to the same ceiling, so the second bound only ever
+        is read rather than written twice; section 03 has already refused a
+        visibility value above the same ceiling, so the second bound only ever
         catches a caller, never a config.
         """
         ceiling = DEFAULT_LIMITS.max_order_quantity
@@ -318,8 +376,22 @@ class GameEngine:
             ceiling = min(ceiling, configured)
         return ceiling
 
-    def _clamp_order(self, qty: int) -> int:
-        """Coerce and clamp a decision, in the order of §3.3."""
+    def order_bounds(self) -> tuple[int, int]:
+        """`(lowest, highest)` order this game accepts, both inclusive.
+
+        The floor is always 0: there are no negative orders (the
+        `allow_negative_orders` option was removed on 2026-11-02). The player
+        view carries both numbers, so the order form checks exactly what this
+        engine enforces.
+        """
+        return 0, self._order_ceiling()
+
+    def _checked_order(self, qty: int) -> int:
+        """Coerce a decision and refuse it when out of range (§3.3).
+
+        Never clamped: a clamped order is an order nobody placed, and the
+        player would only find out from a supply line that does not add up.
+        """
         raw: Any = qty
         if isinstance(raw, float) and not raw.is_integer():
             raise ValueError(f"order quantity must be an integer, got {qty!r}")
@@ -327,22 +399,29 @@ class GameEngine:
             quantity = int(raw)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"order quantity must be an integer, got {qty!r}") from exc
-        ceiling = self._order_ceiling()
-        floor = -ceiling if self.config.visibility.allow_negative_orders else 0
-        return max(floor, min(ceiling, quantity))
+        low, high = self.order_bounds()
+        if not low <= quantity <= high:
+            raise OrderOutOfRangeError(low, high)
+        return quantity
 
     def submit_order(self, role: Role, qty: int) -> int:
         """Record a decision for the open week.
 
         Idempotent by role: a second call REPLACES the value. Returns the
-        clamped quantity actually stored, so the caller can tell the player what
-        was recorded.
+        quantity stored, which is always exactly the one passed in.
 
         Bot roles are not special: section 08's bot produces a quantity and the
-        caller submits it exactly as a human's.
+        caller submits it exactly as a human's -- the play loop caps the bot's
+        own figure at `order_bounds()` first, because a heuristic has nobody to
+        show a refusal to. The one thing kept is who placed it: the role's bot
+        flag at this moment, which `WeekRecord.was_bot` reports when the week
+        closes. A player who takes the seat back and changes the bot's order
+        makes the week theirs; one who leaves it stands as the bot's.
 
         Raises `EngineStateError` unless phase is `DECISION`.
-        Raises `ValueError` if `role` is not a real role.
+        Raises `OrderOutOfRangeError` (a `ValueError`) for an order outside
+        `order_bounds()`, and `ValueError` for a non-integer quantity or a
+        role that is not a real role. A refused order changes nothing.
         """
         if self.phase is not GamePhase.DECISION:
             raise EngineStateError(
@@ -350,8 +429,12 @@ class GameEngine:
                 f"not {self.phase.value}."
             )
         target = _require_role(role)
-        quantity = self._clamp_order(qty)
+        quantity = self._checked_order(qty)
         self.pending_orders[target] = quantity
+        if self.agents[target].is_bot:
+            self.pending_by_bot.add(target)
+        else:
+            self.pending_by_bot.discard(target)
         return quantity
 
     def all_orders_in(self) -> bool:
@@ -409,6 +492,7 @@ class GameEngine:
         ]
         self.history.extend(records)
         self.pending_orders = {}
+        self.pending_by_bot = set()
 
         if week >= self.config.duration_weeks:
             self.phase = GamePhase.FINISHED
@@ -442,39 +526,60 @@ class GameEngine:
             supply_line_after=self._supply_line_after[role],
             orders_in_flight_after=self._orders_in_flight_after[role],
             order=charge.order,
-            was_bot=agent.is_bot,
+            # Whoever placed the order that stands; the seat holder at the
+            # close only when nobody did (a forced week).
+            was_bot=(
+                role in self.pending_by_bot
+                if role in self.pending_orders
+                else agent.is_bot
+            ),
             was_forced=role in missing,
             holding_cost=settlement.holding_cost,
             backlog_cost=settlement.backlog_cost,
             fixed_order_cost=charge.fixed_order_cost,
             purchase_cost=charge.purchase_cost,
-            week_cost=settlement.carrying_cost + charge.order_cost,
+            total_week_cost=settlement.carrying_cost + charge.order_cost,
             cumulative_cost=agent.accumulated_cost,
             production_started=None if outcome is None else outcome.started,
             production_queued=None if outcome is None else outcome.queued,
         )
 
     def end_early(self) -> None:
-        """Abandon the open week without settling it and move to `FINISHED`.
+        """Abandon the open week and move to `FINISHED`.
 
         The open week has been settled by Phase A but has no decisions, so it
         produces **no** `WeekRecord` and is not counted in `weeks_played`
         (§3.5). A half-week with no orders would otherwise contribute a zero
         order and distort the bullwhip ratio.
 
+        Phase A did charge that week's holding and backlog cost, though, and
+        every live total reads `accumulated_cost`. So the charge is rolled back
+        out: each role's `accumulated_cost` returns to its last recorded
+        `cumulative_cost` (0 when no week closed), restored from the record
+        rather than by subtracting, so it is exact. The chain total, a
+        balance, the leaderboard -- all derived from it -- then agree with the
+        results, which read the same records. Before this, a Classic game ended
+        in week 10 showed the host $180 live and $164 on the results.
+
         Raises `EngineStateError` if phase is already `FINISHED`.
         """
         if self.phase is GamePhase.FINISHED:
             raise EngineStateError("the game has already finished.")
+        for role in ROLE_ORDER:
+            self.agents[role].accumulated_cost = self._previous_cumulative(role)
         self.phase = GamePhase.FINISHED
 
     def set_bot(self, role: Role, is_bot: bool = True) -> None:
-        """Mark a role as bot-played from now on. Idempotent, legal in any phase.
+        """Mark a role as bot-played from now on, or, with `is_bot=False`,
+        human-played again. Idempotent, legal in any phase.
 
-        This is what section 12's `substitute_bot` calls: the room document's
-        participant flag is about the seat, and only this flag reaches
-        `WeekRecord.was_bot`, which is what the export and the results screen
-        attribute the play by. Records already in `history` are untouched.
+        Section 12's `substitute_bot` calls it with True and `reclaim_seat`
+        with False: the room document's participant flag is about the seat,
+        and only this flag reaches `WeekRecord.was_bot` (through the order
+        `submit_order` records next), which is what the export and the results
+        screen attribute the play by. Records already in `history` are
+        untouched, and so is an order already in for the open week -- it stays
+        attributed to whoever placed it.
 
         Raises `ValueError` if `role` is not a real role.
         """
@@ -485,24 +590,49 @@ class GameEngine:
     def _order_arrival_lead_weeks(self, role: Role) -> int:
         """Weeks from ordering now to that order arriving.
 
-        An order spends the **supplier's** information delay reaching them and
-        the goods spend this role's own shipping delay coming back. The Factory
-        has no information delay at all: its production delay is the whole lead
-        time. The engine computes it because a client assembling it from
-        individual delays gets both ends of the chain wrong (§3.8).
+        Delegates to `GameConfig.order_arrival_lead_weeks`, the one
+        implementation, which the host form's config preview also calls
+        (`core.preview`). The engine sends the figure because a client
+        assembling it from individual delays gets both ends of the chain wrong
+        (§3.8).
         """
-        supplier = role.upstream
-        inbound = self.config.inbound_delay_weeks(role)
-        if supplier is None:
-            return inbound
-        return self.config.order_delay_weeks(supplier) + inbound
+        return self.config.order_arrival_lead_weeks(role)
 
     def _previous_cumulative(self, role: Role) -> float:
         """That role's `cumulative_cost` at the last complete week, else 0.0."""
+        record = self._last_record(role)
+        return 0.0 if record is None else record.cumulative_cost
+
+    def _last_record(self, role: Role) -> WeekRecord | None:
+        """That role's record for the last complete week, or `None`."""
         for record in reversed(self.history):
             if record.role is role:
-                return record.cumulative_cost
-        return 0.0
+                return record
+        return None
+
+    def _week_cost_figures(self, role: Role) -> tuple[float, float | None]:
+        """`(holding & backlog, order cost)` for the week a player is looking at.
+
+        The two are never added together on screen (2026-11-02): they are
+        charged at different moments, so one "week cost" was always either
+        incomplete or not what the recap showed.
+
+        - While a week is open it is that week's: the holding and backlog
+          Phase A charged, and `None` for the order cost, which is charged
+          only when the week closes (D10) -- "not yet charged".
+        - Once the game is over it is the last closed week's record.
+        """
+        if self.phase is GamePhase.DECISION:
+            settlement = self.settlements.get(role)
+            carrying = 0.0 if settlement is None else settlement.carrying_cost
+            return carrying, None
+        record = self._last_record(role)
+        if record is None:
+            return 0.0, None
+        return (
+            record.holding_cost + record.backlog_cost,
+            record.fixed_order_cost + record.purchase_cost,
+        )
 
     def _stock_of(self, role: Role) -> dict:
         agent = self.agents[role]
@@ -545,6 +675,10 @@ class GameEngine:
         supplier = target.upstream
         supplier_orders = None if supplier is None else self.agents[supplier].orders
         in_flight_slots = [] if supplier_orders is None else supplier_orders.slots()
+        in_flight_weeks = (
+            [] if supplier_orders is None else supplier_orders.weeks_until_out()
+        )
+        lead_weeks = self._order_arrival_lead_weeks(target)
 
         view: dict = {
             "role": target.value,
@@ -556,8 +690,12 @@ class GameEngine:
             "backlog": agent.backlog,
             "supply_line": agent.supply_line(),
             "supply_line_slots": agent.shipments.slots(),
+            # Weeks until each slot above arrives, aligned with it. The board
+            # reads these rather than counting slot positions (2026-11-03).
+            "supply_line_slot_weeks": agent.shipments.weeks_until_out(),
             "orders_in_flight": sum(in_flight_slots),
             "orders_in_flight_slots": in_flight_slots,
+            "orders_in_flight_slot_weeks": in_flight_weeks,
             "incoming_order": (0 if settlement is None else settlement.incoming_order),
             "last_order": agent.last_order,
             "settlement": (
@@ -565,12 +703,16 @@ class GameEngine:
             ),
             "has_submitted": target in self.pending_orders,
             "awaiting_roles": self._awaiting_roles(),
-            # The ceiling the server actually enforces, never None: the client
-            # cannot derive it, and `00-conventions.md` §4 forbids it trying.
-            "max_order_quantity": self._order_ceiling(),
-            "allow_negative_orders": visibility.allow_negative_orders,
+            # The bounds the server actually enforces, never None: the client
+            # cannot derive them, and `00-conventions.md` §4 forbids it trying.
+            # The order form refuses outside them with the same message.
+            "min_order_quantity": self.order_bounds()[0],
+            "max_order_quantity": self.order_bounds()[1],
             "show_supply_line_prominently": visibility.show_supply_line_prominently,
-            "order_arrival_lead_weeks": self._order_arrival_lead_weeks(target),
+            "order_arrival_lead_weeks": lead_weeks,
+            # The week an order placed now arrives: the open week plus the lead
+            # time, added here so the order form prints a week, not a sum.
+            "order_arrival_week": self.week + lead_weeks,
             "production_queue": (
                 agent.production_queue if isinstance(agent, FactoryAgent) else None
             ),
@@ -587,12 +729,12 @@ class GameEngine:
 
         if visibility.show_running_cost_to_players:
             view["accumulated_cost"] = agent.accumulated_cost
-            # What has been charged since the last week closed: the carrying
-            # portion while the week is open, because the order portion is not
-            # charged until the week closes (D10).
-            view["week_cost"] = agent.accumulated_cost - self._previous_cumulative(
-                target
-            )
+            # Two figures, never one "week cost": the holding and backlog
+            # already charged for the open week, and its order cost, which is
+            # `None` ("not yet charged") until the week closes (D10).
+            holding_backlog, order_cost = self._week_cost_figures(target)
+            view["week_holding_backlog_cost"] = holding_backlog
+            view["week_order_cost"] = order_cost
             if role_config.starting_capital > 0:
                 view["balance"] = role_config.starting_capital - agent.accumulated_cost
 
@@ -635,6 +777,11 @@ class GameEngine:
         is `0` for the three non-Factory roles rather than `null`, so the host's
         four role cards are one shape. `demand_series` is the full series,
         future weeks included, which is why this view is never broadcast.
+        `order_history` maps each role to the `order` of every closed week, in
+        week order (`[]` before the first week closes). It is derived from
+        `history`, never stored: the open week adds nothing until it closes, a
+        forced week carries the `0` the engine recorded, and a bot week the
+        bot's recorded order.
         """
         roles: dict = {}
         for role in ROLE_ORDER:
@@ -654,9 +801,18 @@ class GameEngine:
                 "has_submitted": role in self.pending_orders,
                 "is_bot": agent.is_bot,
             }
+        order_history: dict[str, list[int]] = {
+            role.value: [r.order for r in self.history if r.role is role]
+            for role in ROLE_ORDER
+        }
         return {
             "week": self.week,
             "duration_weeks": self.config.duration_weeks,
+            # Complete weeks so far -- the figure the results will report and
+            # what ending now would keep, since `end_early` drops the open week
+            # (§3.5). `week` is one higher while a week is open, and after an
+            # early end; the console reads this, never `week` (2026-11-03).
+            "weeks_played": self.weeks_played,
             "phase": self.phase.value,
             "currency_symbol": self.config.currency_symbol,
             "demand_series": list(self.demand_series),
@@ -665,6 +821,7 @@ class GameEngine:
                 self.agents[role].accumulated_cost for role in ROLE_ORDER
             ),
             "roles": roles,
+            "order_history": order_history,
         }
 
     # --- persistence -------------------------------------------------------- #
@@ -687,6 +844,9 @@ class GameEngine:
                 for role in ROLE_ORDER
                 if role in self.pending_orders
             },
+            "pending_by_bot": [
+                role.value for role in ROLE_ORDER if role in self.pending_by_bot
+            ],
             "settlements": {
                 role.value: _dataclass_payload(self.settlements[role])
                 for role in ROLE_ORDER
@@ -711,10 +871,14 @@ class GameEngine:
         engine.phase = GamePhase(payload["phase"])
 
         pending = payload["pending_orders"]
+        # A negative pending order can only be a room saved while the removed
+        # `allow_negative_orders` option was on. It would raise when the week
+        # closes and freeze the room for good, so it is dropped: that role
+        # shows as undecided and its player orders again.
         engine.pending_orders = {
             role: int(pending[role.value])
             for role in ROLE_ORDER
-            if role.value in pending
+            if role.value in pending and int(pending[role.value]) >= 0
         }
 
         settlements = payload["settlements"]
@@ -729,6 +893,21 @@ class GameEngine:
             role: RoleAgent.from_payload(payload["agents"][role.value], config)
             for role in ROLE_ORDER
         }
+
+        # A room saved before 2026-11-03 has no `pending_by_bot`. Its orders
+        # are attributed the way they were then: by the seat's flag now.
+        by_bot = payload.get("pending_by_bot")
+        if by_bot is None:
+            engine.pending_by_bot = {
+                role for role in engine.pending_orders if engine.agents[role].is_bot
+            }
+        else:
+            engine.pending_by_bot = {
+                role
+                for role in ROLE_ORDER
+                if role.value in by_bot and role in engine.pending_orders
+            }
+
         engine._sample_pipelines()
         return engine
 
@@ -749,6 +928,7 @@ class GameEngine:
             and self.week == other.week
             and self.phase == other.phase
             and self.pending_orders == other.pending_orders
+            and self.pending_by_bot == other.pending_by_bot
             and self.settlements == other.settlements
             and self.history == other.history
             and self.agents == other.agents

@@ -94,7 +94,7 @@ def record_tuple(record: WeekRecord) -> tuple[Any, ...]:
         record.backlog_cost,
         record.fixed_order_cost,
         record.purchase_cost,
-        record.week_cost,
+        record.total_week_cost,
         record.cumulative_cost,
         record.production_started,
         record.production_queued,

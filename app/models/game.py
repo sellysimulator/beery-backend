@@ -150,7 +150,7 @@ class GameConfigRow(Base, TimestampMixin):
     show_running_cost_to_players: Mapped[bool] = mapped_column(Boolean, nullable=False)
     show_leaderboard_during_game: Mapped[bool] = mapped_column(Boolean, nullable=False)
     max_order_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    allow_negative_orders: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    # `allow_negative_orders` was dropped by revision 0005 (2026-11-02).
 
     # --- BotConfig ---
     theta: Mapped[Decimal] = mapped_column(BOT_PARAM, nullable=False)
@@ -319,6 +319,12 @@ class Week(Base):
 
     The source of truth for the results screen. `order` is a MySQL reserved
     word, so the decision column is `order_qty`. No `TimestampMixin`.
+
+    `orders_in_flight_after` is the role's OWN incoming-order pipeline:
+    orders its downstream customer placed that are still travelling to it.
+    The export renames it `incoming_orders_in_flight_after` at the boundary
+    (`15 §3.2`); the player's on-screen "orders in flight" are something else,
+    their own orders going upstream.
     """
 
     __tablename__ = "weeks"
@@ -352,7 +358,10 @@ class Week(Base):
     backlog_cost: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
     fixed_order_cost: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
     purchase_cost: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
-    week_cost: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    # Holding + backlog + fixed order + purchase cost. Called `week_cost`
+    # until revision 0005 renamed it, so nobody reads it as either of the two
+    # figures the screens show separately.
+    total_week_cost: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
     cumulative_cost: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
 
     # FACTORY only.

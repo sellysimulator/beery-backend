@@ -42,6 +42,7 @@ __all__ = [
     "StochasticGenerator",
     "generate_demand_series",
     "generator_for",
+    "uses_seed",
 ]
 
 
@@ -250,6 +251,16 @@ def generator_for(demand: DemandConfig) -> DemandGenerator:
     if isinstance(demand, CustomDemand):
         return CustomGenerator(demand)
     raise ValueError(f"Unknown demand kind {kind!r}.")
+
+
+def uses_seed(demand: DemandConfig) -> bool:
+    """Whether `generate_demand_series` reads the seed for this demand.
+
+    Only `STOCHASTIC` does; the other five kinds are a pure function of their
+    parameters. The host form's preview uses this to say whether the series it
+    shows is the one that will be played or an example draw (`core.preview`).
+    """
+    return isinstance(demand, StochasticDemand)
 
 
 def generate_demand_series(

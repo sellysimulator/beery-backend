@@ -499,18 +499,28 @@ def test_both_order_cost_terms_add_up() -> None:
     assert agent.accumulated_cost == pytest.approx(8.0)
 
 
-def test_a_negative_order_is_not_charged_the_fixed_cost() -> None:
-    """§3.4: a cancellation is not an order; its purchase cost is negative."""
+def test_a_negative_order_is_refused_and_charges_nothing() -> None:
+    """§3.4, amended 2026-11-02: there are no negative orders (the
+    cancellation option was removed), so one is refused before any cost is
+    charged rather than booked as a negative purchase."""
     config = make_config({"fixed_order_cost": 3.0, "unit_purchase_cost": 0.5})
     agent = agent_for(Role.WHOLESALER, config)
 
-    charge = agent.record_order(week=1, qty=-4)
-    assert charge.order == -4
+    with pytest.raises(ValueError):
+        agent.record_order(week=1, qty=-4)
+    assert agent.last_order is None
+    assert agent.accumulated_cost == pytest.approx(0.0)
+
+
+def test_a_zero_order_is_not_charged_the_fixed_cost() -> None:
+    """§3.4: an order of 0 is not an order."""
+    config = make_config({"fixed_order_cost": 3.0, "unit_purchase_cost": 0.5})
+    agent = agent_for(Role.WHOLESALER, config)
+
+    charge = agent.record_order(week=1, qty=0)
     assert charge.fixed_order_cost == pytest.approx(0.0)
-    assert charge.purchase_cost == pytest.approx(-2.0)
-    assert charge.order_cost == pytest.approx(-2.0)
-    assert agent.last_order == -4
-    assert agent.accumulated_cost == pytest.approx(-2.0)
+    assert charge.purchase_cost == pytest.approx(0.0)
+    assert agent.accumulated_cost == pytest.approx(0.0)
 
 
 def test_record_order_does_not_touch_inventory_or_pipelines() -> None:
