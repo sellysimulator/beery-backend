@@ -5,6 +5,7 @@ covered in `tests/test_core/test_abuse.py`."""
 from __future__ import annotations
 
 import pytest
+import socketio  # type: ignore[import-untyped]
 
 from app.core import abuse
 from app.core.abuse import RATE_LIMITED_MESSAGE
@@ -62,12 +63,14 @@ async def test_a_refused_lobby_event_uses_the_lobby_error_shape(
 async def test_the_handshake_refuses_past_the_socket_cap(
     fake_redis, fake_socket_manager, monkeypatch
 ):
-    from app.sockets.handlers.connection import connect
+    from app.sockets.handlers.connection import TOO_MANY_CONNECTIONS_MESSAGE, connect
 
     monkeypatch.setattr(abuse, "MAX_SOCKETS_PER_IP", 1)
 
     assert await connect("sid-1", _environ("203.0.113.1"), None) is None
-    assert await connect("sid-2", _environ("203.0.113.1"), None) is False
+    with pytest.raises(socketio.exceptions.ConnectionRefusedError) as refused:
+        await connect("sid-2", _environ("203.0.113.1"), None)
+    assert refused.value.error_args["message"] == TOO_MANY_CONNECTIONS_MESSAGE
     assert "sid-2" not in fake_socket_manager.sid_to_identity
     assert await connect("sid-3", _environ("203.0.113.2"), None) is None
 

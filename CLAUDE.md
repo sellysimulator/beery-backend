@@ -245,7 +245,7 @@ mount in the image, so a source change needs a rebuild.
   *under* `@sio.event` — `guarded("error")` for play (`{message, code}`), `guarded("join_error")`
   for the lobby (`{message}`). It logs the traceback and the event name, never the payload.
   It is also the one place socket events are rate-limited (`core/abuse.py`, code
-  `RATE_LIMITED`): never add a per-handler limit.
+  `RATE_LIMITED`): never add a per-handler limit. The first request from each IP source logs `client ip source: …` (never the IP), so the deployment's header can be checked in Render's logs.
 - **Startup never hard-fails on a missing credential.** An unset
   `FIREBASE_SERVICE_ACCOUNT_JSON` logs CRITICAL and guest play still works; the state-backend
   check logs the in-memory constraint at WARNING. A check that raises is logged and does not

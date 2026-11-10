@@ -91,7 +91,7 @@ a reason to degrade, and `state_backend` reports `"memory"` rather than `"redis"
 `app/core/abuse.py` holds every limit as a module constant (none is a setting), counted in
 this process's memory per client address: `CF-Connecting-IP` when present, else the
 **rightmost** non-empty `X-Forwarded-For` entry (Render's proxy appends it), else the TCP
-peer. Every window is 60 s.
+peer. Every window is 60 s. The first request from each IP source logs `client ip source: …` (never the IP), so the deployment's header can be checked in Render's logs.
 
 | What | Limit | Over it |
 |---|---|---|
@@ -99,7 +99,7 @@ peer. Every window is 60 s.
 | `POST /api/v1/rooms/create` | 30 per address | the same 429 |
 | `GET /api/v1/rooms/{code}/status` | 120 per address | the same 429 |
 | `POST /api/v1/rooms/preview` | 300 per address | the same 429 |
-| Open sockets | 200 per address | the handshake is refused (`connect_error`) |
+| Open sockets | 200 per address | the handshake is refused (`connect_error`, message `Too many connections from your network. Try again in a minute.`; a failed ID token gets the generic refusal) |
 | Socket events | 120 per connection | `error {message, code: "RATE_LIMITED"}` (play) or `join_error {message}` (lobby); the handler does not run |
 | `join` + `join_waiting` | 300 per address | as above |
 | One socket message | 64 KB (`max_http_buffer_size`) | refused by Engine.IO |

@@ -12,6 +12,8 @@ import re
 import uuid
 from typing import Any
 
+import socketio  # type: ignore[import-untyped]
+
 from ...api.deps import verify_firebase_id_token
 from ...core.abuse import socket_connect, socket_disconnect
 from ..manager import sio, socket_manager
@@ -22,6 +24,12 @@ logger = logging.getLogger(__name__)
 # A Firebase uid can never satisfy this, so a guest can never claim a Firebase
 # identity by presenting it as a guest id.
 GUEST_ID_RE = re.compile(r"^guest_[0-9a-f-]{36}$")
+
+# Shown by the client's `connect_error`. Deliberately free of auth words: being
+# over the limit is no reason to sign in again.
+TOO_MANY_CONNECTIONS_MESSAGE = (
+    "Too many connections from your network. Try again in a minute."
+)
 
 
 def _new_guest_identity() -> str:
@@ -73,7 +81,7 @@ async def connect(sid: str, environ: dict, auth: Any = None) -> Any:
     """
     if not socket_connect(sid, environ):
         logger.warning("Rejecting handshake for sid %s: too many sockets.", sid)
-        return False
+        raise socketio.exceptions.ConnectionRefusedError(TOO_MANY_CONNECTIONS_MESSAGE)
     accepted = False
     try:
         identity = await asyncio.to_thread(resolve_identity, auth)

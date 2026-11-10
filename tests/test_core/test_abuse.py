@@ -7,6 +7,8 @@ starts from zero.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from app.core import abuse
@@ -188,6 +190,18 @@ def test_a_429_still_carries_cors_headers(client, monkeypatch):
     assert response.headers["access-control-allow-origin"] == origin
 
 
+def test_a_429_exposes_retry_after_to_browsers(client, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(abuse, "_rest", RateLimiter(0))
+    origin = settings.CORS_ORIGINS[0]
+
+    response = client.get("/api/v1/rooms/presets", headers={"Origin": origin})
+
+    assert response.status_code == 429
+    assert "Retry-After" in response.headers["access-control-expose-headers"]
+
+
 @pytest.mark.asyncio
 async def test_non_http_scopes_pass_straight_through() -> None:
     seen: list[str] = []
@@ -253,3 +267,31 @@ def test_joins_are_limited_per_address_across_connections(monkeypatch) -> None:
 def test_a_sid_that_never_connected_is_not_counted(monkeypatch) -> None:
     monkeypatch.setattr(abuse, "_socket_events", RateLimiter(0))
     assert abuse.socket_event_allowed("never-connected", "join") is True
+
+
+def test_client_ip_source_is_logged_once_and_never_the_ip(caplog) -> None:
+    xff = {
+        "headers": [(b"x-forwarded-for", b"6.6.6.6, 203.0.113.7")],
+        "client": ("10.0.0.1", 1),
+    }
+    peer = {"headers": [], "client": ("203.0.113.7", 1)}
+    with caplog.at_level(logging.INFO, logger="app.core.abuse"):
+        assert client_ip(xff) == "203.0.113.7"
+        assert client_ip(xff) == "203.0.113.7"
+        assert caplog.text.count("client ip source: x-forwarded-for (2 entries)") == 1
+        assert client_ip(peer) == "203.0.113.7"
+    assert caplog.text.count("client ip source: peer") == 1
+    with caplog.at_level(logging.INFO, logger="app.core.abuse"):
+        for n in (4, 5, 9):
+            many = {
+                "headers": [
+                    (
+                        b"x-forwarded-for",
+                        b",".join([b"6.6.6.6"] * (n - 1) + [b"203.0.113.7"]),
+                    )
+                ]
+            }
+            assert client_ip(many) == "203.0.113.7"
+    assert caplog.text.count("client ip source: x-forwarded-for (3+ entries)") == 1
+    assert caplog.text.count("client ip source:") == 3
+    assert "203.0.113.7" not in caplog.text

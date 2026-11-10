@@ -24,9 +24,12 @@ about forty people sharing one IP -- not for one person.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping, MutableMapping
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "MAX_SOCKETS_PER_IP",
@@ -140,6 +143,16 @@ class RateLimiter:
                 del self._hits[key]
 
 
+_logged_ip_sources: set[str] = set()
+
+
+def _note_ip_source(source: str) -> None:
+    """Log, once per process, which branch of ``client_ip`` answered (never the IP)."""
+    if source not in _logged_ip_sources:
+        _logged_ip_sources.add(source)
+        logger.info("client ip source: %s", source)
+
+
 def client_ip(scope: Mapping[str, Any]) -> str:
     """The caller's address for an ASGI ``scope``: REST, or a socket's
     ``environ["asgi.scope"]``.
@@ -162,13 +175,19 @@ def client_ip(scope: Mapping[str, Any]) -> str:
             forwarded = value
     direct = connecting.decode("latin-1").strip()
     if direct:
+        _note_ip_source("cf-connecting-ip")
         return direct[:_MAX_IP_LENGTH]
-    for entry in reversed(forwarded.decode("latin-1").split(",")):
-        if entry.strip():
-            return entry.strip()[:_MAX_IP_LENGTH]
+    entries = [e.strip() for e in forwarded.decode("latin-1").split(",") if e.strip()]
+    if entries:
+        n = len(entries)
+        n_label = str(n) if n <= 3 else "3+"
+        _note_ip_source(f"x-forwarded-for ({n_label} entries)")
+        return entries[-1][:_MAX_IP_LENGTH]
     client = scope.get("client")
     if client:
+        _note_ip_source("peer")
         return str(client[0])[:_MAX_IP_LENGTH]
+    _note_ip_source("unknown")
     return "unknown"
 
 
@@ -298,3 +317,4 @@ def reset() -> None:
         limiter.reset()
     _sockets_per_ip.clear()
     _sid_ip.clear()
+    _logged_ip_sources.clear()
