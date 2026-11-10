@@ -637,3 +637,60 @@ async def test_fm8_lower_case_code_works_across_the_whole_lifecycle(fake_redis):
     await svc.delete_room(lower)
 
     assert await svc.get_room(code) is None
+
+
+# ---------------------------------------------------------------------------
+# Abuse limits -- a malformed room code never reaches the store or a lock
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "ABCDE",
+        "ABCDEFG",
+        "ABCDE0",
+        "ABCDE1",
+        "ABCDEI",
+        "ABC DE",
+        "x" * 10_000,
+        7,
+        None,
+    ],
+)
+def test_is_room_code_rejects_anything_generate_room_code_cannot_mint(value):
+    assert state_service_module.is_room_code(value) is False
+
+
+def test_is_room_code_accepts_generated_codes_in_either_case():
+    for _ in range(50):
+        code = state_service_module.generate_room_code()
+        assert state_service_module.is_room_code(code)
+        assert state_service_module.is_room_code(code.lower())
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_code_is_absent_without_a_store_read(fake_redis, monkeypatch):
+    reads: list[str] = []
+    real_get = fake_redis.get
+
+    async def _spy(key):
+        reads.append(key)
+        return await real_get(key)
+
+    monkeypatch.setattr(fake_redis, "get", _spy)
+
+    assert await get_state_service().get_room("x" * 5000) is None
+    assert reads == []
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_code_gets_a_no_op_lock(fake_redis, monkeypatch):
+    def _no_lock(*args, **kwargs):  # pragma: no cover - must not be called
+        raise AssertionError("a malformed code reached the backend lock")
+
+    monkeypatch.setattr(fake_redis, "lock", _no_lock)
+
+    async with get_state_service().lock("not-a-room-code"):
+        pass

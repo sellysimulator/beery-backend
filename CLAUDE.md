@@ -95,6 +95,7 @@ app/
                      pipeline, records, agents, game_engine, bot, stats
     checks/          auto-discovered startup checks (NOT pure — does I/O)
     firebase.py      Firebase Admin bootstrap (NOT pure — does I/O)
+    abuse.py         rate limits, socket caps, client_ip (NOT pure — reads the clock)
   db/                base.py (re-export of Base), session.py (engine, SessionLocal, get_db)
   models/            SQLAlchemy 2.0 models; package __init__ auto-imports every module
   schemas/           Pydantic request/response models (user, room, results)
@@ -148,7 +149,7 @@ cp .env.example .env
 ./venv/bin/uvicorn app.main:application --reload          # local iteration
 
 # tests
-./venv/bin/python -m pytest -m "not dbschema"             # 1781 passed, 1 skipped (~37s; verified 2026-11-03)
+./venv/bin/python -m pytest -m "not dbschema"             # 1858 passed, 1 skipped (verified 2026-11-10)
 ./venv/bin/python -m pytest tests/test_core               # one area
 ./venv/bin/python -m pytest -m dbschema                   # needs a Docker daemon (mysql:8.4)
 BEERY_DOCKER_BUILD_TEST=1 ./venv/bin/python -m pytest -k docker   # the opt-in image build
@@ -209,8 +210,8 @@ mount in the image, so a source change needs a rebuild.
 - **Purity of `app/core/`.** Domain modules import nothing from `app.config`,
   `app.services`, `app.db`, `app.sockets`, `app.api`; no I/O, no clock, no global `random`.
   Hard limits arrive as an injected `Limits` (`DEFAULT_LIMITS`), not by importing settings.
-  `app/core/checks/` and `app/core/firebase.py` are the two non-domain exceptions inside
-  that tree, and **no domain module may import either**.
+  `app/core/checks/`, `app/core/firebase.py` and `app/core/abuse.py` are the three
+  non-domain exceptions inside that tree, and **no domain module may import any of them**.
 - **Service layer.** One rule, one owner. `merge_config_patch` (`config_merge.py`) and
   `sanitise_display_name` (`display_name.py`) each exist once and are called from both the
   REST and socket collection points — do not reimplement them locally. `user_service._sanitise`
@@ -243,6 +244,8 @@ mount in the image, so a source change needs a rebuild.
   log with `logger.exception` and return a generic message. Sockets: apply `@guarded()`
   *under* `@sio.event` — `guarded("error")` for play (`{message, code}`), `guarded("join_error")`
   for the lobby (`{message}`). It logs the traceback and the event name, never the payload.
+  It is also the one place socket events are rate-limited (`core/abuse.py`, code
+  `RATE_LIMITED`): never add a per-handler limit.
 - **Startup never hard-fails on a missing credential.** An unset
   `FIREBASE_SERVICE_ACCOUNT_JSON` logs CRITICAL and guest play still works; the state-backend
   check logs the in-memory constraint at WARNING. A check that raises is logged and does not
@@ -301,7 +304,9 @@ mount in the image, so a source change needs a rebuild.
   The game ceilings live on `core.limits.Limits` / `DEFAULT_LIMITS` (re-exported by
   `core.config_models`) and are
   injected, because `app/core` may not import `app.config`; `ROOM_TTL_SECONDS` and
-  `LOCK_TIMEOUT_SECONDS` are module constants in `services/state_service.py`. The other ten
+  `LOCK_TIMEOUT_SECONDS` are module constants in `services/state_service.py`, `MAX_ROOMS` is
+  one in `services/state_backend.py`, and every abuse limit is one in `core/abuse.py`
+  (README "Abuse limits"). The other ten
   §5 names *were* `Settings` fields, were read by nothing, and were deleted on 2026-09-21
   so that `.env` stops lying — a variable the app ignores is worse than no variable. Change
   a ceiling at the site that owns it; `01-backend-skeleton.md` §2 still shows the old,

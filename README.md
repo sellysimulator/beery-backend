@@ -62,12 +62,12 @@ Every router under `app/api/v1/` is auto-discovered, so this table is the whole 
 |---|---|---|---|
 | `GET` | `/` | none | `{"app": "Beery", "version": "0.1.0", "status": "ok"}` |
 | `GET` | `/api/v1/health` | none | `{"status": "ok"}` — liveness; touches neither backing service |
-| `GET` | `/api/v1/health/deep` | none | `{status, database, redis, state_backend}`, always HTTP 200 |
+| `GET` | `/api/v1/health/deep` | none | `{status, database, redis, state_backend}`, always HTTP 200; the answer is reused for 15 s |
 | `POST` | `/api/v1/rooms/create` | none (D3) | A new room: `room_code`, the `host_secret` (returned exactly once), `state`, `config` |
 | `GET` | `/api/v1/rooms/presets` | none | The three presets with their full configs, for the host UI; each `description`'s figures are written from the preset's own config (`scenario_summary`) |
 | `GET` | `/api/v1/rooms/limits` | none | Every range the host form checks (`core.limits.Limits`); the frontend keeps no copy |
 | `POST` | `/api/v1/rooms/preview` | none | `{config}` → the `demand_series`, `demand_is_example` and per-role `lead_times` that draft plays, from the engine's own generator and lead-time function (`core.preview`); a refused draft is the same 422 as `PUT /config` |
-| `GET` | `/api/v1/rooms/{code}/status` | none | Is this room joinable? Always HTTP 200 — a 404 would be a room-code oracle |
+| `GET` | `/api/v1/rooms/{code}/status` | none | Is this room joinable? Always HTTP 200 — a 404 would be a room-code oracle. `host_display_name` is always `null` |
 | `PUT` | `/api/v1/rooms/{code}/config` | host secret | Applies a config patch while the room is still configurable |
 | `GET` | `/api/v1/rooms/{code}/config` | host secret | The current config |
 | `GET` | `/api/v1/games/{code}/results` | none | The full results payload for the latest finished game in that room — a results URL is shareable |
@@ -85,6 +85,29 @@ Every router under `app/api/v1/` is auto-discovered, so this table is the whole 
 In `/health/deep`, `status` is `"ok"` only when every backing service in use is reachable;
 otherwise `"degraded"`. With `REDIS_ENABLED=false` the unused Redis is not probed and is not
 a reason to degrade, and `state_backend` reports `"memory"` rather than `"redis"`.
+
+### Abuse limits
+
+`app/core/abuse.py` holds every limit as a module constant (none is a setting), counted in
+this process's memory per client address: `CF-Connecting-IP` when present, else the
+**rightmost** non-empty `X-Forwarded-For` entry (Render's proxy appends it), else the TCP
+peer. Every window is 60 s.
+
+| What | Limit | Over it |
+|---|---|---|
+| Any REST request except `/api/v1/health` | 1200 per address | `429 {"detail": "Too many requests. Please slow down and try again."}`, `Retry-After: 60` |
+| `POST /api/v1/rooms/create` | 30 per address | the same 429 |
+| `GET /api/v1/rooms/{code}/status` | 120 per address | the same 429 |
+| `POST /api/v1/rooms/preview` | 300 per address | the same 429 |
+| Open sockets | 200 per address | the handshake is refused (`connect_error`) |
+| Socket events | 120 per connection | `error {message, code: "RATE_LIMITED"}` (play) or `join_error {message}` (lobby); the handler does not run |
+| `join` + `join_waiting` | 300 per address | as above |
+| One socket message | 64 KB (`max_http_buffer_size`) | refused by Engine.IO |
+| Live rooms, in-memory backend | 500 (`MAX_ROOMS` in `state_backend.py`) | `POST /rooms/create` answers `503` |
+
+The numbers are sized for a classroom of about forty people behind one NAT address. A room
+code that `generate_room_code` could not have minted is refused before any lock or read
+(`is_room_code`), and a handshake `idToken` over 4096 characters is rejected unverified.
 
 ### The socket surface
 
@@ -125,7 +148,7 @@ stages. Check that file and `00-decisions.md` §3 before "adding" one.
 ## Tests
 
 ```bash
-./venv/bin/python -m pytest -m "not dbschema"   # 1781 passed, 1 skipped, 136 deselected (2026-11-03)
+./venv/bin/python -m pytest -m "not dbschema"   # 1858 passed, 1 skipped, 136 deselected (2026-11-10)
 ./venv/bin/python -m pytest tests/test_core     # one area
 ```
 
@@ -216,6 +239,11 @@ process can detect from the inside:
 The app says which backend is active every time it starts, at WARNING for the in-memory one.
 `GET /api/v1/health/deep` reports it as `state_backend: "memory" | "redis"`.
 
+The in-memory store refuses a new room past `MAX_ROOMS` (500) live ones -- `POST /rooms/create`
+answers 503 -- and sweeps expired rooms from the write path at most once a minute. Rewriting
+a room it already holds is never refused. With Redis on there is no such ceiling here; bound
+Redis with its own `maxmemory`.
+
 What you get in exchange, measured on this build: a player's order submission costs **5** state
 round trips and a full week costs **23**, so a 36-week game is around 830 — invisible in
 memory, and 1.7 s of added latency against a same-region Redis, 12 s against a distant one,
@@ -298,6 +326,7 @@ app/
 │   ├── records.py              the week/game record shapes the engine emits
 │   ├── stats.py                end-of-game statistics, including the bullwhip ratio
 │   ├── firebase.py             credential loading (not a domain module — see below)
+│   ├── abuse.py                rate limits and socket caps (not a domain module — see below)
 │   └── checks/                 ← auto-discovered startup-check package
 │       ├── __init__.py         register_check(), run_startup_checks()
 │       ├── firebase_check.py
@@ -353,13 +382,13 @@ time (as does `app/models/`), so behaviour is added by *dropping in a file* — 
 handler, and has exactly one author. Each package also works while empty, which is what let
 section 01 ship and pass its own tests before any member existed.
 
-**`app/core/` is pure, with two named exceptions.** The domain modules — `enums`,
+**`app/core/` is pure, with three named exceptions.** The domain modules — `enums`,
 `config_models`, `limits`, `presets`, `preview`, `demand`, `pipeline`, `agents`, `game_engine`,
 `bot`, `records` and `stats` — import nothing from `app.config`, `app.services`, `app.db`, `app.sockets` or `app.api`,
 perform no I/O, and read no clock and no global RNG. The hard ceilings of `00-decisions.md` §5
-arrive as an injected `Limits`, never as an import of `settings`. `app/core/checks/` and `app/core/firebase.py`
-are *not* domain modules and do perform I/O; the rule that matters is that **no domain module may
-import either**.
+arrive as an injected `Limits`, never as an import of `settings`. `app/core/checks/`,
+`app/core/firebase.py` and `app/core/abuse.py` are *not* domain modules (they perform I/O or
+read the clock); the rule that matters is that **no domain module may import any of them**.
 
 **`app/db/base.py` must read `from ..models.base import Base`.** Writing `from .base import Base`
 inside that file is a self-import that raises `ImportError` on any use.

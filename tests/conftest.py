@@ -198,6 +198,22 @@ def lifespan_client():
         yield c
 
 
+@pytest.fixture(autouse=True)
+def _reset_process_caches():
+    """Start every test with empty per-process caches.
+
+    Only modules already imported are touched, so a test that checks what a
+    fresh import does is not handed an import it did not make.
+    """
+    health = sys.modules.get("app.api.v1.health")
+    if health is not None:
+        health.reset_deep_health_cache()
+    abuse = sys.modules.get("app.core.abuse")
+    if abuse is not None:
+        abuse.reset()
+    yield
+
+
 # --- Firebase (01-backend-skeleton.md §4, 00-conventions.md §5) -------------
 
 # Shaped like a real service account file so that anything which parses it

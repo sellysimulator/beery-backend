@@ -33,6 +33,7 @@ from ...schemas.room import (
 )
 from ...services.config_merge import merge_config_patch
 from ...services.display_name import sanitise_display_name
+from ...services.state_backend import StoreFullError
 from ...services.state_service import get_state_service
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ _UNKNOWN_PRESET_DETAIL = "Unknown preset."
 _ROOM_NOT_FOUND_DETAIL = "Room does not exist."
 _FORBIDDEN_DETAIL = "Invalid host secret."
 _STARTED_DETAIL = "Cannot change configuration after the game has started."
+_ROOMS_FULL_DETAIL = "The server is at its room limit. Please try again later."
 _DEFAULT_PRESET = "CLASSIC_MIT"
 
 # Human copy for the host UI's preset picker (10-rooms-rest-api.md §3.5): a
@@ -123,6 +125,12 @@ async def create_room(payload: RoomCreateRequest | None = None) -> RoomCreateRes
         room = await get_state_service().create_room(config, host_display_name)
     except HTTPException:
         raise
+    except StoreFullError:
+        logger.warning("Refusing a new room: the in-memory store is full.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_ROOMS_FULL_DETAIL,
+        ) from None
     except Exception:
         logger.exception("Failed to create a room.")
         raise HTTPException(
@@ -168,11 +176,14 @@ async def room_status(room_code: str) -> RoomStatusResponse:
     if seats_taken >= 4:
         return RoomStatusResponse(ok=False, reason="Room is full.")
 
+    # `host_display_name` stays in the shape but is never filled: this route
+    # is unauthenticated, so a name here was readable by anyone guessing
+    # codes, and the frontend never reads it from a joinable room.
     return RoomStatusResponse(
         ok=True,
         room_code=room["room_code"],
         state=RoomState(state),
-        host_display_name=room["host_display_name"],
+        host_display_name=None,
         participant_count=seats_taken,
         seats_taken=seats_taken,
         seats_total=4,
@@ -277,7 +288,7 @@ async def list_presets() -> PresetListResponse:
 
 
 @router.post("/preview", response_model=ConfigPreviewResponse)
-async def preview_room_config(payload: ConfigPreviewRequest) -> ConfigPreviewResponse:
+def preview_room_config(payload: ConfigPreviewRequest) -> ConfigPreviewResponse:
     """What a draft config will play, for the host form. No authentication.
 
     The draft is checked by `GameConfig.from_host_input` exactly as a save is,
@@ -287,6 +298,9 @@ async def preview_room_config(payload: ConfigPreviewRequest) -> ConfigPreviewRes
     engine itself calls -- the host form keeps no copy of either (2026-11-03).
     Nothing is stored and no room is read, so the call needs no room code and
     no host secret: it is a pure function of the body, like `/limits`.
+
+    A plain `def`, so the CPU work runs on the threadpool and never blocks the
+    event loop; `core.abuse` gives it its own per-address limit.
     """
     try:
         config = GameConfig.from_host_input(payload.config, DEFAULT_LIMITS)

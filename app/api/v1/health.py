@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 import anyio.to_thread
 import redis.asyncio as aioredis
@@ -19,6 +20,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/health", tags=["health"])
 
 _CHECK_TIMEOUT_SECONDS = 5.0
+_DEEP_CACHE_SECONDS = 15.0
 
 
 class HealthResponse(BaseModel):
@@ -38,6 +40,10 @@ class DeepHealthResponse(BaseModel):
     redis: bool
     #: `"redis"` or `"memory"`. Which store holds live room state.
     state_backend: str
+
+
+_deep_cached: DeepHealthResponse | None = None
+_deep_checked_at: float = 0.0
 
 
 def _ping_database() -> None:
@@ -102,12 +108,31 @@ async def health() -> HealthResponse:
 
 @router.get("/deep", response_model=DeepHealthResponse)
 async def health_deep() -> DeepHealthResponse:
-    """Readiness probe. Reports each backing service, always with HTTP 200."""
+    """Readiness probe. Reports each backing service, always with HTTP 200.
+
+    The answer is reused for `_DEEP_CACHE_SECONDS`: the route is public, and
+    uncached every hit was a database connection and a worker thread. The
+    refresh is claimed before it runs, so callers arriving while it is in
+    flight get the previous answer instead of starting probes of their own.
+    """
+    global _deep_cached, _deep_checked_at
+    now = time.monotonic()
+    if _deep_cached is not None and now - _deep_checked_at < _DEEP_CACHE_SECONDS:
+        return _deep_cached
+    _deep_checked_at = now
     database_ok = await _database_reachable()
     redis_ok = await _redis_reachable()
-    return DeepHealthResponse(
+    _deep_cached = DeepHealthResponse(
         status="ok" if database_ok and redis_ok else "degraded",
         database=database_ok,
         redis=redis_ok,
         state_backend="redis" if settings.REDIS_ENABLED else "memory",
     )
+    return _deep_cached
+
+
+def reset_deep_health_cache() -> None:
+    """Forget the cached `/health/deep` answer (tests)."""
+    global _deep_cached, _deep_checked_at
+    _deep_cached = None
+    _deep_checked_at = 0.0

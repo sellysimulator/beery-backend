@@ -12,7 +12,11 @@ import asyncio
 
 import pytest
 
-from app.services.state_backend import InMemoryBackend, build_state_backend
+from app.services.state_backend import (
+    InMemoryBackend,
+    StoreFullError,
+    build_state_backend,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -108,3 +112,71 @@ async def test_redis_on_with_a_url_builds_a_redis_client() -> None:
     assert not isinstance(backend, InMemoryBackend)
     for name in ("get", "setex", "delete", "exists", "lock"):
         assert hasattr(backend, name), f"the real client lacks {name}"
+
+
+async def test_a_released_lock_leaves_no_entry_behind() -> None:
+    """Every key ever locked used to stay in `_locks` for the life of the
+    process -- including any string a client sent as a room id."""
+    backend = InMemoryBackend()
+    for n in range(100):
+        async with backend.lock(f"lock:room:JUNK{n}"):
+            assert len(backend._locks) == 1
+    assert len(backend._locks) == 0
+
+
+async def test_a_waiter_keeps_the_lock_shared_until_it_is_done() -> None:
+    """Weak entries must not let a second caller get a *different* lock for
+    the same key while the first still holds or waits on it."""
+    backend = InMemoryBackend()
+    holder = backend.lock("lock:room:AAAAAA")
+    async with holder:
+        waiter = backend.lock("lock:room:AAAAAA")
+        assert waiter._lock is holder._lock
+    del holder, waiter
+    assert len(backend._locks) == 0
+
+
+async def test_a_new_room_past_max_rooms_is_refused(monkeypatch) -> None:
+    """Room creation is unauthenticated; without a ceiling it grows the
+    process until the platform kills it."""
+    monkeypatch.setattr("app.services.state_backend.MAX_ROOMS", 2)
+    backend = InMemoryBackend()
+    await backend.setex("room:AAAAAA", 60, "{}")
+    await backend.setex("room:BBBBBB", 60, "{}")
+
+    with pytest.raises(StoreFullError):
+        await backend.setex("room:CCCCCC", 60, "{}")
+
+    # Rewriting a room already held is never refused.
+    await backend.setex("room:AAAAAA", 60, '{"v": 2}')
+    assert await backend.get("room:AAAAAA") == '{"v": 2}'
+
+
+async def test_expired_rooms_free_their_places_under_the_ceiling(monkeypatch) -> None:
+    monkeypatch.setattr("app.services.state_backend.MAX_ROOMS", 1)
+    clock = [1_000.0]
+    monkeypatch.setattr("app.services.state_backend.time.monotonic", lambda: clock[0])
+    backend = InMemoryBackend()
+    await backend.setex("room:AAAAAA", 10, "{}")
+    clock[0] += 11
+
+    await backend.setex("room:BBBBBB", 10, "{}")
+
+    assert "room:AAAAAA" not in backend._store
+
+
+async def test_expired_rooms_are_swept_from_the_write_path(monkeypatch) -> None:
+    """`purge_expired` used to be defined and never called."""
+    clock = [1_000.0]
+    monkeypatch.setattr("app.services.state_backend.time.monotonic", lambda: clock[0])
+    backend = InMemoryBackend()
+    await backend.setex("room:AAAAAA", 10, "{}")
+    clock[0] += 30
+    await backend.setex("room:BBBBBB", 600, "{}")  # within the interval: no sweep
+    assert "room:AAAAAA" in backend._store
+
+    clock[0] += 60
+    await backend.setex("room:CCCCCC", 600, "{}")
+
+    assert "room:AAAAAA" not in backend._store
+    assert "room:BBBBBB" in backend._store

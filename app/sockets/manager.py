@@ -26,7 +26,10 @@ sio = AsyncServer(
     engineio_logger=settings.DEBUG,
     ping_timeout=120,
     ping_interval=25,
-    max_http_buffer_size=5 * 1024 * 1024,
+    # The largest legitimate client message is a whole config patch with a
+    # 104-week CUSTOM demand series, a few KB. 5 MB per message was 5 MB of
+    # parsing any anonymous socket could ask for.
+    max_http_buffer_size=64 * 1024,
 )
 
 

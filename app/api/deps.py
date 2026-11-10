@@ -16,6 +16,10 @@ logger = logging.getLogger(__name__)
 
 _BEARER_PREFIX = "Bearer "
 
+#: Firebase ID tokens run to about 1 KB; custom claims are capped at 1000
+#: bytes. Anything longer is not a token this project mints.
+MAX_ID_TOKEN_LENGTH = 4096
+
 _MISSING_TOKEN_DETAIL = "Missing bearer token."
 _INVALID_TOKEN_DETAIL = "Invalid or expired token."
 _UNCONFIGURED_DETAIL = "Firebase authentication is not configured on this server."
@@ -32,8 +36,11 @@ def verify_firebase_id_token(token: str) -> dict | None:
     value: an unconfigured server is deliberately indistinguishable from an
     invalid token, because failing open reinstates the impersonation bug the
     three-identifier model exists to prevent.
+
+    A non-string or an over-long value is rejected before the SDK sees it:
+    a real ID token is about 1 KB, and a megabyte one is only CPU to parse.
     """
-    if not token:
+    if not token or not isinstance(token, str) or len(token) > MAX_ID_TOKEN_LENGTH:
         return None
 
     app = init_firebase()

@@ -103,3 +103,31 @@ def test_optional_user_is_none_for_a_bad_token_and_claims_for_a_good_one(
     claims = get_optional_firebase_user("Bearer good-token")
     assert claims is not None
     assert claims["uid"] == "firebase-uid-123"
+
+
+# --- abuse limits: oversized or non-string tokens ----------------------------
+
+
+@pytest.mark.parametrize(
+    "token",
+    ["x" * 4097, 12345, ["good-token"], {"t": "good-token"}],
+    ids=["over-4096-chars", "int", "list", "dict"],
+)
+def test_an_oversized_or_non_string_token_never_reaches_firebase(
+    firebase_tokens, token
+):
+    """A handshake `idToken` is any JSON value the client chose; only a
+    plausible-length string is worth the SDK's CPU."""
+    firebase_tokens.configure()
+    firebase_tokens.add("good-token", uid="firebase-uid-123")
+
+    assert verify_firebase_id_token(token) is None  # type: ignore[arg-type]
+    assert firebase_tokens.verify_calls == []
+
+
+def test_a_token_at_the_length_ceiling_is_still_verified(firebase_tokens):
+    firebase_tokens.configure()
+    token = "t" * 4096
+    firebase_tokens.add(token, uid="firebase-uid-123")
+
+    assert verify_firebase_id_token(token) == {"uid": "firebase-uid-123"}

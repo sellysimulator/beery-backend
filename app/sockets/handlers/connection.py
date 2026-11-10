@@ -6,12 +6,14 @@ every later handler reads `socket_manager.sid_to_identity[sid]` rather than
 accepting anything the client says about who it is.
 """
 
+import asyncio
 import logging
 import re
 import uuid
 from typing import Any
 
 from ...api.deps import verify_firebase_id_token
+from ...core.abuse import socket_connect, socket_disconnect
 from ..manager import sio, socket_manager
 from .play import on_participant_disconnected
 
@@ -60,16 +62,33 @@ def resolve_identity(auth: dict | None) -> str | None:
 
 @sio.event
 async def connect(sid: str, environ: dict, auth: Any = None) -> Any:
-    """Accept or reject a connection, recording its identity once on accept."""
-    identity = resolve_identity(auth)
-    if identity is None:
-        # The identity itself is never logged.
-        logger.warning("Rejecting handshake for sid %s: the ID token failed.", sid)
-        return False
+    """Accept or reject a connection, recording its identity once on accept.
 
-    await socket_manager.connect(sid, environ)
-    socket_manager.sid_to_identity[sid] = identity
-    return None
+    Verification runs on a worker thread: the Firebase SDK checks the
+    signature synchronously and may fetch Google's public keys over HTTP,
+    which on the event loop would stall every room in the process.
+
+    The per-address socket cap is checked first, before any token work, and
+    the slot it takes is given back on every path that does not accept.
+    """
+    if not socket_connect(sid, environ):
+        logger.warning("Rejecting handshake for sid %s: too many sockets.", sid)
+        return False
+    accepted = False
+    try:
+        identity = await asyncio.to_thread(resolve_identity, auth)
+        if identity is None:
+            # The identity itself is never logged.
+            logger.warning("Rejecting handshake for sid %s: the ID token failed.", sid)
+            return False
+
+        await socket_manager.connect(sid, environ)
+        socket_manager.sid_to_identity[sid] = identity
+        accepted = True
+        return None
+    finally:
+        if not accepted:
+            socket_disconnect(sid)
 
 
 @sio.event
@@ -81,5 +100,8 @@ async def disconnect(sid: str) -> None:
     left to look the participant up by (`12-socket-play.md`, module
     docstring).
     """
-    await on_participant_disconnected(sid)
-    await socket_manager.disconnect(sid)
+    try:
+        await on_participant_disconnected(sid)
+        await socket_manager.disconnect(sid)
+    finally:
+        socket_disconnect(sid)
