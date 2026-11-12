@@ -30,9 +30,28 @@ from __future__ import annotations
 
 import asyncio
 import time
+import weakref
 from typing import Protocol, Self
 
-__all__ = ["InMemoryBackend", "StateBackend", "build_state_backend"]
+__all__ = [
+    "MAX_ROOMS",
+    "InMemoryBackend",
+    "StateBackend",
+    "StoreFullError",
+    "build_state_backend",
+]
+
+#: Every key the in-memory backend holds is a room document. Past this many
+#: live rooms a new one is refused: room creation is unauthenticated (D3), and
+#: without a ceiling it grows the process until the platform kills it.
+#: A lobby is about 2.6 KB, a finished 36-week game about 77 KB.
+MAX_ROOMS = 500
+#: Expired rooms are swept from the write path at most this often.
+PURGE_INTERVAL_SECONDS = 60.0
+
+
+class StoreFullError(RuntimeError):
+    """The in-memory backend already holds `MAX_ROOMS` live rooms."""
 
 
 class StateBackend(Protocol):
@@ -76,15 +95,23 @@ class InMemoryBackend:
     """Room documents in this process's memory, with lazy TTL expiry.
 
     Expiry is checked on read rather than swept by a background task: a
-    sweeper is a task lifecycle to own and a source of surprise in tests,
-    and a room nobody reads costs 2.6 KB (77 KB for a finished 36-week
-    game) until the process ends. `purge_expired()` exists for a caller
-    that wants the memory back.
+    sweeper is a task lifecycle to own and a source of surprise in tests.
+    Instead, writing a *new* key runs `purge_expired()` when the last sweep
+    is `PURGE_INTERVAL_SECONDS` old or the store is at `MAX_ROOMS`, and a
+    new key past `MAX_ROOMS` live rooms raises `StoreFullError`. Rewriting
+    an existing room is never refused.
     """
 
     def __init__(self) -> None:
         self._store: dict[str, tuple[float | None, str]] = {}
-        self._locks: dict[str, asyncio.Lock] = {}
+        # Weak values: a lock lives exactly as long as some `_MemoryLock`
+        # (a holder or a waiter) references it, then drops out on its own.
+        # A plain dict kept one entry per key ever locked -- including any
+        # string a client sent as a room id -- for the life of the process.
+        self._locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
+            weakref.WeakValueDictionary()
+        )
+        self._purged_at = float("-inf")
 
     def _live(self, key: str) -> str | None:
         entry = self._store.get(key)
@@ -100,6 +127,13 @@ class InMemoryBackend:
         return self._live(key)
 
     async def setex(self, key: str, ttl: int, value: str) -> bool:
+        if key not in self._store:
+            now = time.monotonic()
+            due = now - self._purged_at >= PURGE_INTERVAL_SECONDS
+            if due or len(self._store) >= MAX_ROOMS:
+                self.purge_expired()
+            if len(self._store) >= MAX_ROOMS:
+                raise StoreFullError(f"{MAX_ROOMS} live rooms already held.")
         self._store[key] = (time.monotonic() + ttl if ttl else None, value)
         return True
 
@@ -108,7 +142,6 @@ class InMemoryBackend:
         for key in keys:
             if self._store.pop(key, None) is not None:
                 removed += 1
-            self._locks.pop(key, None)
         return removed
 
     async def exists(self, key: str) -> int:
@@ -124,6 +157,7 @@ class InMemoryBackend:
     def purge_expired(self) -> int:
         """Drop every expired entry. Returns how many went."""
         now = time.monotonic()
+        self._purged_at = now
         dead = [
             key
             for key, (expires_at, _) in self._store.items()
@@ -131,7 +165,6 @@ class InMemoryBackend:
         ]
         for key in dead:
             del self._store[key]
-            self._locks.pop(key, None)
         return len(dead)
 
 

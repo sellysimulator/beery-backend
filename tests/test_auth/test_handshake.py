@@ -535,3 +535,27 @@ async def test_a_falsy_uid_does_not_downgrade_to_a_supplied_guest_id(
     assert result is False
     assert guest_id not in sock_mgr.sid_to_identity.values()
     assert sock_mgr.sid_to_identity == {}
+
+
+# --- abuse limits: verification runs off the event loop ----------------------
+
+
+@pytest.mark.asyncio
+async def test_identity_is_resolved_on_a_worker_thread(sock_mgr, monkeypatch):
+    """The Firebase SDK verifies synchronously (and may fetch keys over
+    HTTP); on the loop thread that would stall every room in the process."""
+    import threading
+
+    from app.sockets.handlers import connection
+
+    loop_thread = threading.get_ident()
+    seen: list[int] = []
+
+    def _resolve(auth):
+        seen.append(threading.get_ident())
+        return "guest_" + str(uuid.uuid4())
+
+    monkeypatch.setattr(connection, "resolve_identity", _resolve)
+
+    assert await connect("sid-thread", {}, None) is not False
+    assert seen and seen[0] != loop_thread

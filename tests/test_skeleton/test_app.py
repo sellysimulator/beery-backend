@@ -325,3 +325,25 @@ def test_application_wraps_app_in_a_socketio_asgi_app():
 
     assert isinstance(application, socketio.ASGIApp)
     assert application.other_asgi_app is app
+
+
+def test_deep_health_reuses_its_answer_instead_of_probing_again(client, monkeypatch):
+    """`/health/deep` is public: uncached, every hit was a database
+    connection and a worker thread."""
+    from app.api.v1 import health as health_module
+
+    probes: list[int] = []
+
+    async def _db() -> bool:
+        probes.append(1)
+        return True
+
+    monkeypatch.setattr(health_module, "_database_reachable", _db)
+    monkeypatch.setattr(health_module.settings, "REDIS_ENABLED", False)
+
+    first = client.get("/api/v1/health/deep").json()
+    second = client.get("/api/v1/health/deep").json()
+
+    assert first == second
+    assert first["database"] is True
+    assert len(probes) == 1

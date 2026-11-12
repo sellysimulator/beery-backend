@@ -12,9 +12,11 @@ emit anything, and does not touch MySQL. See `09-state-service.md` §4.8, §7.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import random
+import re
 import secrets
 from datetime import datetime, timezone
 
@@ -119,6 +121,22 @@ def next_free_alias(room: dict) -> str:
     return f"P{n}"
 
 
+_ROOM_CODE_RE = re.compile(f"[{ROOM_CODE_ALPHABET}]{{{ROOM_CODE_LENGTH}}}")
+
+
+def is_room_code(value: object) -> bool:
+    """True when `value` could be a code `generate_room_code` minted.
+
+    Case-insensitive, as `_room_key` is. Checked before any lock or read, so
+    a client-supplied string that cannot name a room never reaches the store.
+    """
+    return (
+        isinstance(value, str)
+        and len(value) == ROOM_CODE_LENGTH
+        and _ROOM_CODE_RE.fullmatch(value.upper()) is not None
+    )
+
+
 def _room_key(room_code: str) -> str:
     return _ROOM_KEY_PREFIX + room_code.upper()
 
@@ -156,8 +174,11 @@ class StateService:
 
         A document whose `schema_version` is absent or not equal to
         `SCHEMA_VERSION` is discarded rather than migrated in place
-        (`09-state-service.md` §2, `[HARD-WON]`).
+        (`09-state-service.md` §2, `[HARD-WON]`). A malformed code is None
+        without touching the store.
         """
+        if not is_room_code(room_code):
+            return None
         key = _room_key(room_code)
         raw = await redis_client.get(key)
         if raw is None:
@@ -189,7 +210,12 @@ class StateService:
         `LOCK_TIMEOUT_SECONDS` is a deadlock escape hatch, not a normal path
         -- no operation inside a lock may take seconds, and the lock must
         never be held across a database write.
+
+        A malformed code gets a no-op lock and no lock entry: every caller
+        reads `get_room` next, which is None for it, so nothing is mutated.
         """
+        if not is_room_code(room_code):
+            return contextlib.nullcontext()
         return redis_client.lock(
             f"{_LOCK_KEY_PREFIX}{room_code.upper()}", timeout=LOCK_TIMEOUT_SECONDS
         )

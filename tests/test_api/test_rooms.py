@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
 
 import pytest
 
@@ -115,20 +116,21 @@ def test_ac5_two_creates_return_different_codes_and_secrets(client, fake_redis):
 # --- AC 6 ----------------------------------------------------------------
 
 
+def _stored_host_name(fake_redis, room_code: str) -> str:
+    """The sanitised name as stored -- `/status` no longer echoes it."""
+    return json.loads(fake_redis._store[f"room:{room_code}"])["host_display_name"]
+
+
 def test_ac6_a_200_character_display_name_is_truncated_to_24(client, fake_redis):
     room_code, _secret = create_room(client, host_display_name="a" * 200)
 
-    status = client.get(status_url(room_code)).json()
-
-    assert status["host_display_name"] == "a" * 24
+    assert _stored_host_name(fake_redis, room_code) == "a" * 24
 
 
 def test_ac6_a_whitespace_only_display_name_becomes_the_fallback(client, fake_redis):
     room_code, _secret = create_room(client, host_display_name="   ")
 
-    status = client.get(status_url(room_code)).json()
-
-    assert status["host_display_name"] == "Host"
+    assert _stored_host_name(fake_redis, room_code) == "Host"
 
 
 def test_ac6_control_characters_are_stripped_not_left_in_place(client, fake_redis):
@@ -138,9 +140,18 @@ def test_ac6_control_characters_are_stripped_not_left_in_place(client, fake_redi
     """
     room_code, _secret = create_room(client, host_display_name="Ana\x00\nSmith")
 
+    assert _stored_host_name(fake_redis, room_code) == "Ana Smith"
+
+
+def test_status_never_names_the_host(client, fake_redis):
+    """The route is public, so it must not hand out the host's name to
+    anyone guessing codes; the field stays in the shape, always null."""
+    room_code, _secret = create_room(client, host_display_name="Ana")
+
     status = client.get(status_url(room_code)).json()
 
-    assert status["host_display_name"] == "Ana Smith"
+    assert status["ok"] is True
+    assert status["host_display_name"] is None
 
 
 # --- AC 7 ----------------------------------------------------------------
@@ -392,3 +403,22 @@ def test_fm2_host_secret_authorisation_uses_hmac_compare_digest():
         "app/api/v1/rooms.py must authorise host_secret via "
         "hmac.compare_digest(...), not a plain `==`"
     )
+
+
+def test_create_is_a_503_with_a_string_detail_when_the_store_is_full(
+    client, fake_redis, monkeypatch
+):
+    from app.services.state_backend import StoreFullError
+    from app.services.state_service import get_state_service
+
+    async def _full(*args, **kwargs):
+        raise StoreFullError("500 live rooms already held.")
+
+    monkeypatch.setattr(get_state_service(), "create_room", _full)
+
+    response = client.post(CREATE, json={})
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": "The server is at its room limit. Please try again later."
+    }

@@ -94,6 +94,15 @@ the process can detect from the inside:
 The app logs which backend is active at every boot, at WARNING for the
 in-memory one.
 
+The abuse limits (`README.md`, "Abuse limits") are counted in the same
+process memory, so they share constraint 1: at N instances each becomes N
+times looser. They key on `CF-Connecting-IP`, else the **rightmost**
+`X-Forwarded-For` entry, which assumes Render's edge sets the first or is the
+last hop appending the second. If the service is ever reachable without that
+edge, `CF-Connecting-IP` becomes client-chosen; if a second proxy is put in
+front, every visitor shares one budget. Revisit
+`app/core/abuse.py::client_ip` in the same change.
+
 **`REDIS_ENABLED=true`.** Set `REDIS_URL` in the same change; the two are
 required together. Room state moves to Redis and the Socket.IO client manager
 becomes `AsyncRedisManager`, which is what makes cross-instance fan-out work

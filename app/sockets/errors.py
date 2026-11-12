@@ -27,6 +27,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from ..core.abuse import RATE_LIMITED_MESSAGE, socket_event_allowed
 from .manager import socket_manager
 
 __all__ = ["SERVER_ERROR_MESSAGE", "guarded"]
@@ -56,22 +57,30 @@ def guarded(event: str = "error") -> Callable[[Handler], Handler]:
         async def submit_order(sid, data=None): ...
     """
 
+    async def report(sid: str, message: str, code: str) -> None:
+        payload: dict[str, str] = {"message": message}
+        if event == "error":
+            payload["code"] = code
+        try:
+            await socket_manager.emit_to_sid(sid, event, payload)
+        except Exception:  # pragma: no cover - the socket is gone
+            logger.exception("Could not report the failure to sid %s.", sid)
+
     def decorate(fn: Handler) -> Handler:
         @functools.wraps(fn)
         async def wrapper(sid: str, *args: Any, **kwargs: Any) -> Any:
+            # The one per-event rate check (`app/core/abuse.py`): every
+            # handler wears this decorator, so none repeats it.
+            if not socket_event_allowed(sid, fn.__name__):
+                await report(sid, RATE_LIMITED_MESSAGE, "RATE_LIMITED")
+                return None
             try:
                 return await fn(sid, *args, **kwargs)
             except Exception:
                 # The event name, never the payload: a payload may carry a
                 # `host_secret` or a `session_token` (`00-conventions.md §2`).
                 logger.exception("Handler %r failed for sid %s.", fn.__name__, sid)
-                payload: dict[str, str] = {"message": SERVER_ERROR_MESSAGE}
-                if event == "error":
-                    payload["code"] = "SERVER_ERROR"
-                try:
-                    await socket_manager.emit_to_sid(sid, event, payload)
-                except Exception:  # pragma: no cover - the socket is gone
-                    logger.exception("Could not report the failure to sid %s.", sid)
+                await report(sid, SERVER_ERROR_MESSAGE, "SERVER_ERROR")
                 return None
 
         return wrapper
