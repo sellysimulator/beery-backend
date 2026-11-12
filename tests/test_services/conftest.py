@@ -47,6 +47,7 @@ from app.core.config_models import (
 )
 from app.core.enums import ROLE_ORDER, Role
 from app.core.game_engine import GameEngine, GamePhase
+from app.services.state_service import ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH
 
 # Reused wholesale from section 13's suite (00-conventions.md §5 / this
 # section's own instructions): the container, the migration, the engine,
@@ -86,7 +87,16 @@ _counter = itertools.count(1)
 
 
 def unique_room_code() -> str:
-    return f"R{next(_counter):06d}"[:8]
+    """A distinct code `is_room_code` accepts: six characters from
+    `ROOM_CODE_ALPHABET`, so `StateService.get_room` reads it rather than
+    refusing it as malformed."""
+    n = next(_counter)
+    base = len(ROOM_CODE_ALPHABET)
+    chars = []
+    for _ in range(ROOM_CODE_LENGTH):
+        n, digit = divmod(n, base)
+        chars.append(ROOM_CODE_ALPHABET[digit])
+    return "".join(reversed(chars))
 
 
 # ---------------------------------------------------------------------------
