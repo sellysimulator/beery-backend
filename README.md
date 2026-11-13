@@ -64,6 +64,8 @@ Every router under `app/api/v1/` is auto-discovered, so this table is the whole 
 | `GET` | `/api/v1/health` | none | `{"status": "ok"}` — liveness; touches neither backing service |
 | `GET` | `/api/v1/health/deep` | none | `{status, database, redis, state_backend}`, always HTTP 200; the answer is reused for 15 s |
 | `POST` | `/api/v1/rooms/create` | none (D3) | A new room: `room_code`, the `host_secret` (returned exactly once), `state`, `config` |
+| `POST` | `/api/v1/rooms/batch-create` | none (D3) | The multi-game dashboard's create: `{count, preset?, config?, host_display_name?}` → `{rooms: [...]}`, each shaped like `/create`'s answer with its own `host_secret`. `count` is `Limits.min_batch_rooms`–`max_batch_rooms` (2–10). `config` is a patch over the preset, merged and validated once like `PUT /config`; an unknown preset (400) or a refused config (422 naming the field) creates nothing. A store that fills part-way deletes the rooms the batch made and answers 503 |
+| `POST` | `/api/v1/rooms/summary` | host secret per room, in the body | `{rooms: [{room_code, host_secret}]}` (1–10) → one `{room_code, exists, state, seats_taken, seats_total, week, duration_weeks, finished, can_start, start_blocked_reason}` per entry, in order. A missing room and a wrong secret both answer `exists: false` with every other field `null`. Read-only (no lock, no save, no TTL refresh); never carries a secret |
 | `GET` | `/api/v1/rooms/presets` | none | The three presets with their full configs, for the host UI; each `description`'s figures are written from the preset's own config (`scenario_summary`) |
 | `GET` | `/api/v1/rooms/limits` | none | Every range the host form checks (`core.limits.Limits`); the frontend keeps no copy |
 | `POST` | `/api/v1/rooms/preview` | none | `{config}` → the `demand_series`, `demand_is_example` and per-role `lead_times` that draft plays, from the engine's own generator and lead-time function (`core.preview`); a refused draft is the same 422 as `PUT /config` |
@@ -97,13 +99,14 @@ peer. Every window is 60 s. The first request from each IP source logs `client i
 |---|---|---|
 | Any REST request except `/api/v1/health` | 1200 per address | `429 {"detail": "Too many requests. Please slow down and try again."}`, `Retry-After: 60` |
 | `POST /api/v1/rooms/create` | 30 per address | the same 429 |
+| `POST /api/v1/rooms/batch-create` | `count` against the same 30 rooms per address, all or nothing (`room_create_allowed`, charged by the route after validation; the middleware leaves it on the general limit) | the same 429; a refused batch, or one refused for its preset or config, is charged nothing |
 | `GET /api/v1/rooms/{code}/status` | 120 per address | the same 429 |
 | `POST /api/v1/rooms/preview` | 300 per address | the same 429 |
 | Open sockets | 200 per address | the handshake is refused (`connect_error`, message `Too many connections from your network. Try again in a minute.`; a failed ID token gets the generic refusal) |
 | Socket events | 120 per connection | `error {message, code: "RATE_LIMITED"}` (play) or `join_error {message}` (lobby); the handler does not run |
 | `join` + `join_waiting` | 300 per address | as above |
 | One socket message | 64 KB (`max_http_buffer_size`) | refused by Engine.IO |
-| Live rooms, in-memory backend | 500 (`MAX_ROOMS` in `state_backend.py`) | `POST /rooms/create` answers `503` |
+| Live rooms, in-memory backend | 500 (`MAX_ROOMS` in `state_backend.py`) | `POST /rooms/create` answers `503`; `POST /rooms/batch-create` deletes the rooms it already made, then answers the same `503` |
 
 The numbers are sized for a classroom of about forty people behind one NAT address. A room
 code that `generate_room_code` could not have minted is refused before any lock or read
@@ -310,7 +313,7 @@ app/
 │       ├── health.py           /health, /health/deep
 │       ├── users.py            /users/upsert, /users/me
 │       ├── user_games.py       /users/me/stats, /users/me/games[/{id}], /users/me/hosted-games/{public_id}
-│       ├── rooms.py            /rooms/create, /rooms/presets, /rooms/limits, /rooms/preview, /rooms/{code}/status|config
+│       ├── rooms.py            /rooms/create, /rooms/batch-create, /rooms/summary, /rooms/presets, /rooms/limits, /rooms/preview, /rooms/{code}/status|config
 │       └── games.py            /games/{code}|id/{public_id} results and export, /games/claim
 ├── core/                       pure domain logic — no I/O, no clock, no global RNG
 │   ├── enums.py                Role, RoomState, DemandKind, Distribution, …

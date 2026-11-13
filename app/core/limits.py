@@ -60,6 +60,13 @@ class Limits(BaseModel):
     # The bot's theta, alpha and beta are weights in [0, max_bot_weight].
     max_bot_weight: float = 1.0
     max_target_stock_multiplier: float = 10.0
+    # How many rooms one `POST /rooms/batch-create` makes (the multi-game host
+    # dashboard). Not a game setting: it bounds the batch's `count`, and the
+    # setup page builds its count field from it like every other range here.
+    # Each room still counts against the per-address room-create limit
+    # (`app/core/abuse.py`), so one batch cannot spend a classroom's budget.
+    min_batch_rooms: int = 2
+    max_batch_rooms: int = 10
 
 
 DEFAULT_LIMITS: Limits = Limits()

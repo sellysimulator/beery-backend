@@ -13,10 +13,11 @@ from __future__ import annotations
 import hmac
 import logging
 
-from fastapi import APIRouter, Header, HTTPException, status
+from fastapi import APIRouter, Header, HTTPException, Request, status
 
+from ...core import abuse
 from ...core.config_models import ConfigValidationError, GameConfig
-from ...core.enums import RoomState
+from ...core.enums import ROLE_ORDER, RoomState
 from ...core.limits import DEFAULT_LIMITS, Limits
 from ...core.presets import get_preset, preset_names, scenario_summary
 from ...core.preview import preview_config
@@ -27,12 +28,18 @@ from ...schemas.room import (
     ConfigUpdateRequest,
     PresetListResponse,
     PresetSummary,
+    RoomBatchCreateRequest,
+    RoomBatchCreateResponse,
     RoomCreateRequest,
     RoomCreateResponse,
     RoomStatusResponse,
+    RoomSummary,
+    RoomSummaryRequest,
+    RoomSummaryResponse,
 )
 from ...services.config_merge import merge_config_patch
 from ...services.display_name import sanitise_display_name
+from ...services.room_service import RoomService
 from ...services.state_backend import StoreFullError
 from ...services.state_service import get_state_service
 
@@ -47,6 +54,10 @@ _FORBIDDEN_DETAIL = "Invalid host secret."
 _STARTED_DETAIL = "Cannot change configuration after the game has started."
 _ROOMS_FULL_DETAIL = "The server is at its room limit. Please try again later."
 _DEFAULT_PRESET = "CLASSIC_MIT"
+_SEATS_TOTAL = len(ROLE_ORDER)
+_OVER_STATES = {RoomState.FINISHED.value, RoomState.ABANDONED.value}
+
+_room_service = RoomService()
 
 # Human copy for the host UI's preset picker (10-rooms-rest-api.md §3.5): a
 # label and a tagline, and no figure. The figures are written out of each
@@ -98,6 +109,51 @@ def _check_host_secret(room: dict, provided: str | None) -> None:
 _merge_config = merge_config_patch
 
 
+def _preset_config(name: str | None) -> GameConfig:
+    """The named preset, or the default one; a 400 for a name that is none.
+
+    One reading of `preset` for `/create` and `/batch-create`, so the two
+    cannot disagree about what an absent or unknown name means.
+    """
+    if name is None:
+        return get_preset(_DEFAULT_PRESET)
+    try:
+        return get_preset(name)
+    except KeyError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_UNKNOWN_PRESET_DETAIL,
+        ) from None
+
+
+def _validated_config(stored: dict, patch: dict) -> GameConfig:
+    """`patch` merged over `stored` and checked as a host's save is checked.
+
+    The merge and the 422 naming the field are the config PUT's own, so a
+    batch's config is refused exactly where a host saving it in one room's
+    lobby would be.
+    """
+    merged = _merge_config(stored, patch)
+    try:
+        return GameConfig.from_host_input(merged, DEFAULT_LIMITS)
+    except ConfigValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"{exc.field}: {exc}",
+        ) from None
+
+
+def _created(room: dict) -> RoomCreateResponse:
+    """The answer for a room just made, its `host_secret` included. Only the
+    two create routes call this: the secret goes to the creator, once."""
+    return RoomCreateResponse(
+        room_code=room["room_code"],
+        host_secret=room["host_secret"],
+        state=RoomState(room["state"]),
+        config=room["config"],
+    )
+
+
 @router.post("/create", response_model=RoomCreateResponse)
 async def create_room(payload: RoomCreateRequest | None = None) -> RoomCreateResponse:
     """Create a room. No authentication required (D3).
@@ -108,16 +164,7 @@ async def create_room(payload: RoomCreateRequest | None = None) -> RoomCreateRes
     """
     body = payload or RoomCreateRequest()
 
-    if body.preset is not None:
-        try:
-            config = get_preset(body.preset)
-        except KeyError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=_UNKNOWN_PRESET_DETAIL,
-            ) from None
-    else:
-        config = get_preset(_DEFAULT_PRESET)
+    config = _preset_config(body.preset)
 
     host_display_name = sanitise_display_name(body.host_display_name, fallback="Host")
 
@@ -138,12 +185,135 @@ async def create_room(payload: RoomCreateRequest | None = None) -> RoomCreateRes
             detail=_INTERNAL_ERROR_DETAIL,
         ) from None
 
-    return RoomCreateResponse(
-        room_code=room["room_code"],
-        host_secret=room["host_secret"],
-        state=RoomState(room["state"]),
-        config=room["config"],
+    return _created(room)
+
+
+@router.post("/batch-create", response_model=RoomBatchCreateResponse)
+async def create_room_batch(
+    payload: RoomBatchCreateRequest, request: Request
+) -> RoomBatchCreateResponse:
+    """Create `count` rooms that all start with one config (`10 §3.5c`).
+
+    The multi-game host dashboard's create button. No authentication, like
+    `/create`. In order, and nothing is created until every check has passed:
+
+    1. `preset` resolves as on `/create` (400 for an unknown name);
+    2. `config` is merged over it and validated once, as a config save is
+       (422 naming the field);
+    3. the room-create budget is charged `count` hits, all or nothing (429
+       with `Retry-After`; a refused batch is charged nothing).
+
+    The rooms are then made one at a time. If the store fills part-way
+    (`StoreFullError`), the rooms this batch already made are deleted and the
+    answer is the 503 `/create` gives: a batch is whole or absent, never a
+    handful of rooms whose secrets nobody received.
+    """
+    config = _preset_config(payload.preset)
+    if payload.config:
+        config = _validated_config(config.to_payload(), payload.config)
+
+    if not abuse.room_create_allowed(request.scope, payload.count):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=abuse.RATE_LIMITED_MESSAGE,
+            headers={"Retry-After": str(int(abuse.WINDOW_SECONDS))},
+        )
+
+    host_display_name = sanitise_display_name(
+        payload.host_display_name, fallback="Host"
     )
+    state_svc = get_state_service()
+    made: list[dict] = []
+    try:
+        for _ in range(payload.count):
+            made.append(await state_svc.create_room(config, host_display_name))
+    except Exception as exc:
+        for room in made:
+            try:
+                await state_svc.delete_room(room["room_code"])
+            except Exception:
+                logger.exception("Could not roll back a room of a failed batch.")
+        if isinstance(exc, StoreFullError):
+            logger.warning("Refusing a room batch: the in-memory store is full.")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=_ROOMS_FULL_DETAIL,
+            ) from None
+        logger.exception("Failed to create a room batch.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=_INTERNAL_ERROR_DETAIL,
+        ) from None
+
+    return RoomBatchCreateResponse(rooms=[_created(room) for room in made])
+
+
+def _secret_matches(room: dict, supplied: str) -> bool:
+    """Timing-safe, and closed on an empty side.
+
+    Compared as bytes: `hmac.compare_digest` raises `TypeError` on a str with
+    a non-ASCII character, and a caller's typo must be a mismatch, not a 500.
+    """
+    stored = room.get("host_secret")
+    if not isinstance(stored, str) or not stored or not supplied:
+        return False
+    return hmac.compare_digest(stored.encode("utf-8"), supplied.encode("utf-8"))
+
+
+def _summary(room_code: str, room: dict) -> RoomSummary:
+    can_start, reason = _room_service.can_start(room)
+    try:
+        engine = get_state_service().load_engine(room)
+    except Exception:  # noqa: BLE001 - a broken engine leaves `week` unknown
+        logger.warning("Room %s has an engine that will not load.", room_code)
+        engine = None
+    try:
+        duration_weeks: int | None = GameConfig.from_payload(
+            room["config"]
+        ).duration_weeks
+    except (ValueError, TypeError, KeyError):
+        duration_weeks = None
+    return RoomSummary(
+        room_code=room_code,
+        exists=True,
+        state=RoomState(room["state"]),
+        seats_taken=_room_service.seats_taken(room),
+        seats_total=_SEATS_TOTAL,
+        week=engine.week if engine is not None else None,
+        duration_weeks=duration_weeks,
+        finished=room["state"] in _OVER_STATES,
+        can_start=can_start,
+        start_blocked_reason=reason,
+    )
+
+
+@router.post("/summary", response_model=RoomSummaryResponse)
+async def summarise_rooms(payload: RoomSummaryRequest) -> RoomSummaryResponse:
+    """State, seats, week and `can_start` for each room the caller hosts
+    (`10 §3.5d`). One answer per entry, in order.
+
+    The multi-game dashboard polls this. Read-only: no lock, no save, so
+    polling never extends a room's TTL. A room that is not there and a wrong
+    secret get the same answer, `exists: false` with every other field null,
+    so the route is no oracle for live codes. No secret is ever in the answer.
+    A POST so the secrets travel in the body, never in a URL.
+    """
+    state_svc = get_state_service()
+    out: list[RoomSummary] = []
+    try:
+        for hosted in payload.rooms:
+            room = await state_svc.get_room(hosted.room_code)
+            if room is None or not _secret_matches(room, hosted.host_secret):
+                out.append(RoomSummary(room_code=hosted.room_code, exists=False))
+            else:
+                out.append(_summary(hosted.room_code, room))
+    except Exception:
+        logger.exception("Failed to summarise rooms.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=_INTERNAL_ERROR_DETAIL,
+        ) from None
+    return RoomSummaryResponse(rooms=out)
 
 
 @router.get("/{room_code}/status", response_model=RoomStatusResponse)
@@ -213,14 +383,7 @@ async def update_config(
                     status_code=status.HTTP_400_BAD_REQUEST, detail=_STARTED_DETAIL
                 )
 
-            merged = _merge_config(room["config"], payload.config)
-            try:
-                config = GameConfig.from_host_input(merged, DEFAULT_LIMITS)
-            except ConfigValidationError as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=f"{exc.field}: {exc}",
-                ) from None
+            config = _validated_config(room["config"], payload.config)
 
             room["config"] = config.to_payload()
             if room["state"] == RoomState.LOBBY.value:

@@ -37,6 +37,35 @@ def test_the_limiter_allows_the_limit_then_refuses(clock) -> None:
     assert limiter.allow("b") is True
 
 
+def test_the_limiter_charges_a_cost_all_or_nothing(clock) -> None:
+    # POST /rooms/batch-create charges one hit per room it makes.
+    limiter = RateLimiter(5, window=60)
+
+    assert limiter.allow("a", cost=3) is True
+    # 3 + 3 > 5: refused, and the refused call is not counted...
+    assert limiter.allow("a", cost=3) is False
+    # ...so the 2 that are left can still be used.
+    assert limiter.allow("a", cost=2) is True
+    assert limiter.allow("a") is False
+
+
+def test_the_limiter_refuses_a_cost_bigger_than_the_limit(clock) -> None:
+    limiter = RateLimiter(5, window=60)
+    assert limiter.allow("a", cost=6) is False
+    assert len(limiter) == 0
+    assert limiter.allow("a", cost=5) is True
+
+
+def test_room_create_allowed_shares_the_create_budget(clock, monkeypatch) -> None:
+    monkeypatch.setattr(abuse, "_room_create", RateLimiter(3))
+    scope = _scope(xff="203.0.113.9")
+
+    assert abuse.room_create_allowed(scope, 2) is True
+    assert abuse.room_create_allowed(scope, 2) is False
+    assert abuse.room_create_allowed(scope, 1) is True
+    assert abuse.room_create_allowed(_scope(xff="203.0.113.10"), 3) is True
+
+
 def test_the_limiter_opens_again_when_the_window_ends(clock) -> None:
     limiter = RateLimiter(1, window=60)
     assert limiter.allow("a") is True

@@ -219,7 +219,8 @@ mount in the image, so a source change needs a rebuild.
 - **API/socket contract with the frontend.** REST: `/api/v1/health`, `/health/deep`,
   `/users/upsert`, `/users/me`, `/users/me/stats`, `/users/me/games`,
   `/users/me/games/{game_id}`, `/rooms/create`, `/rooms/presets`, `/rooms/limits`,
-  `POST /rooms/preview`, `/rooms/{code}/status`,
+  `POST /rooms/preview`, `POST /rooms/batch-create`, `POST /rooms/summary`,
+  `/rooms/{code}/status`,
   `GET|PUT /rooms/{code}/config`, `/games/{code}/results`, `/games/{code}/export`,
   `POST /games/claim`.
   Socket in: `connect`, `disconnect`, `join_waiting`, `join`, `leave`, `config_update`,
@@ -245,7 +246,11 @@ mount in the image, so a source change needs a rebuild.
   *under* `@sio.event` — `guarded("error")` for play (`{message, code}`), `guarded("join_error")`
   for the lobby (`{message}`). It logs the traceback and the event name, never the payload.
   It is also the one place socket events are rate-limited (`core/abuse.py`, code
-  `RATE_LIMITED`): never add a per-handler limit. The first request from each IP source logs `client ip source: …` (never the IP), so the deployment's header can be checked in Render's logs.
+  `RATE_LIMITED`): never add a per-handler limit. REST is limited by
+  `RateLimitMiddleware`, with one exception: `POST /rooms/batch-create` charges the
+  room-create budget itself, `abuse.room_create_allowed(scope, count)` (all or nothing,
+  `RateLimiter.allow(key, cost)`), after its preset and config have validated, so the
+  middleware leaves that path on the general limit. The first request from each IP source logs `client ip source: …` (never the IP), so the deployment's header can be checked in Render's logs.
 - **Startup never hard-fails on a missing credential.** An unset
   `FIREBASE_SERVICE_ACCOUNT_JSON` logs CRITICAL and guest play still works; the state-backend
   check logs the in-memory constraint at WARNING. A check that raises is logged and does not
@@ -295,6 +300,19 @@ mount in the image, so a source change needs a rebuild.
     target is 3× opening stock, it has no desired-supply-line term and its supply line is
     shipments in transit only. Don't let a docstring or label promise otherwise
     (`test_bot.py::test_ac14a_…`).
+- **Multi-game hosting** (`10 §3.5c`, `§3.5d`) is two REST routes over the ordinary room,
+  nothing more: the rooms are plain rooms, and each is still claimed and run from its own
+  host screen. `POST /rooms/batch-create` resolves the preset with `/create`'s
+  `_preset_config` and validates the patch with the config PUT's `_validated_config`
+  (`merge_config_patch` + `GameConfig.from_host_input`), **before** it charges the limiter or
+  makes a room; a `StoreFullError` part-way is rolled back with `state_svc.delete_room` for
+  every room already made, then answered 503. `POST /rooms/summary` must stay read-only (no
+  `lock`, no `save_room`: polling must not refresh the 24 h TTL) and must answer a missing
+  room and a wrong secret identically; its `can_start` is `RoomService.can_start`, never a
+  copy. The batch bounds are `Limits.min_batch_rooms` / `max_batch_rooms`, served by
+  `/rooms/limits`. The dashboard's "Start all" is the ordinary `start_game` emit:
+  `start_game` is authorised by `host_secret` alone, and its `host_state` goes to
+  `host_sid` (the claimed host tab) or, when none is claimed, to the caller.
 - **No screen shows a single "week cost".** `WeekRecord.total_week_cost` (and the
   `weeks.total_week_cost` column, the export's `total_week_cost`) is holding + backlog + order
   cost; `player_view` sends `week_holding_backlog_cost` and `week_order_cost` (`null` until the

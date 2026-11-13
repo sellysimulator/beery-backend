@@ -8,9 +8,12 @@ Everything is counted in this process's memory, which matches the single
 instance ``REDIS_ENABLED=false`` already requires. At N instances every limit
 becomes N times looser, never tighter.
 
-It is wired in at three single points and nowhere else:
+It is wired in at four single points and nowhere else:
 
 * ``RateLimitMiddleware`` -- added once in ``app/main.py``; every REST route.
+* ``room_create_allowed`` -- ``POST /api/v1/rooms/batch-create`` charges the
+  room-create budget one hit per room it makes, from inside the route, because
+  only the route knows the count once the body has been validated.
 * ``socket_connect`` / ``socket_disconnect`` -- the handshake in
   ``app/sockets/handlers/connection.py``.
 * ``socket_event_allowed`` -- inside ``@guarded`` (``app/sockets/errors.py``),
@@ -38,6 +41,7 @@ __all__ = [
     "RateLimiter",
     "client_ip",
     "reset",
+    "room_create_allowed",
     "socket_connect",
     "socket_disconnect",
     "socket_event_allowed",
@@ -106,17 +110,23 @@ class RateLimiter:
         self._hits: dict[str, tuple[float, int]] = {}
         self._pruned_at = float("-inf")
 
-    def allow(self, key: str) -> bool:
-        """Count one hit for ``key``; False once it is over the limit."""
+    def allow(self, key: str, cost: int = 1) -> bool:
+        """Count ``cost`` hits for ``key``; False when they would take it over
+        the limit.
+
+        All or nothing: a refused call counts nothing, so a batch too big for
+        what is left of the window (``POST /rooms/batch-create`` costs one hit
+        per room) does not use up the rest of it.
+        """
         now = time.monotonic()
         started, count = self._hits.get(key, (now, 0))
         if now - started >= self.window:
             started, count = now, 0
-        if count >= self.limit:
+        if count + cost > self.limit:
             return False
         if key not in self._hits and len(self._hits) >= self.max_keys:
             self._make_room(now)
-        self._hits[key] = (started, count + 1)
+        self._hits[key] = (started, count + cost)
         return True
 
     def forget(self, key: str) -> None:
@@ -200,7 +210,13 @@ _room_preview = RateLimiter(ROOM_PREVIEW_LIMIT_PER_IP)
 
 
 def _route_limiter(method: str, path: str) -> RateLimiter | None:
-    """The stricter limiter for this route, if it has one."""
+    """The stricter limiter for this route, if it has one.
+
+    ``POST /api/v1/rooms/batch-create`` is deliberately absent: the route
+    charges ``_room_create`` itself, one hit per room (``room_create_allowed``),
+    so here it counts against the general REST budget only. Charging it here
+    as well would bill a batch one room more than it made.
+    """
     if method == "POST" and path == "/api/v1/rooms/create":
         return _room_create
     if method == "POST" and path == "/api/v1/rooms/preview":
@@ -208,6 +224,17 @@ def _route_limiter(method: str, path: str) -> RateLimiter | None:
     if method == "GET" and path.startswith(_ROOMS_PREFIX) and path.endswith("/status"):
         return _room_status
     return None
+
+
+def room_create_allowed(scope: Mapping[str, Any], rooms: int) -> bool:
+    """Charge ``rooms`` room creations to the caller's address, all or nothing.
+
+    The batch route's half of the room-create budget: ``POST /rooms/create``
+    and ``POST /rooms/batch-create`` share ``ROOM_CREATE_LIMIT_PER_IP``, so a
+    batch of ten is ten creates. A refusal charges nothing. The caller answers
+    a refusal with the same 429 the middleware sends.
+    """
+    return _room_create.allow(client_ip(scope), cost=rooms)
 
 
 async def _too_many_requests(send: Send) -> None:
