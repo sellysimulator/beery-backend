@@ -200,8 +200,9 @@ async def create_room_batch(
     1. `preset` resolves as on `/create` (400 for an unknown name);
     2. `config` is merged over it and validated once, as a config save is
        (422 naming the field);
-    3. the room-create budget is charged `count` hits, all or nothing (429
-       with `Retry-After`; a refused batch is charged nothing).
+    3. the room-create budget (30 rooms an hour per address, shared with
+       `/create`) is charged `count` hits, all or nothing (429 with
+       `Retry-After`; a refused batch is charged nothing).
 
     The rooms are then made one at a time. If the store fills part-way
     (`StoreFullError`), the rooms this batch already made are deleted and the
@@ -216,7 +217,7 @@ async def create_room_batch(
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=abuse.RATE_LIMITED_MESSAGE,
-            headers={"Retry-After": str(int(abuse.WINDOW_SECONDS))},
+            headers={"Retry-After": str(abuse.room_create_retry_after(request.scope))},
         )
 
     host_display_name = sanitise_display_name(

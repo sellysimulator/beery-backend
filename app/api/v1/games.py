@@ -41,7 +41,8 @@ from ...schemas.results import (
     RoleResult,
 )
 from ...services.claim_service import ClaimService
-from ...services.export_service import ExportService
+from ...services.export_cache import CachedExport, export_cache
+from ...services.export_service import ExportService, seat_alias
 from ...services.state_service import get_state_service
 from ..deps import get_current_firebase_user, get_optional_firebase_user
 
@@ -214,6 +215,9 @@ def build_week_export_rows(db: Session, game: Game) -> list[dict]:
     """One dict per `(week, role)`, keyed exactly per
     `export_service.WEEK_EXPORT_COLUMNS`, for both export formats.
 
+    `display_name` holds the seat's `P<N>` (`export_service.seat_alias`), not
+    the player's chosen name: the export carries no name anyone typed.
+
     Ordered `week` ascending, then `ROLE_ORDER` within a week (`§3.2`) --
     frozen so two exports of the same finished game are byte-identical.
     """
@@ -250,7 +254,10 @@ def build_week_export_rows(db: Session, game: Game) -> list[dict]:
                 "room_code": game.room_code,
                 "week": row.week,
                 "role": row.role,
-                "display_name": participant.display_name if participant else "",
+                # The seat's `P<N>`, never the name the player chose
+                # (2026-11-14, `15 §11`): the screens show names, the file
+                # does not.
+                "display_name": seat_alias(row.role),
                 "is_bot": bool(participant.is_bot) if participant else True,
                 "was_bot": row.was_bot,
                 "was_forced": row.was_forced,
@@ -399,6 +406,8 @@ async def export_game(
     Unlike `export_game_by_public_id`, this stays closed: a room code is six
     characters and reissued once its room expires, so an open export by code
     would let anyone walk the code space and download every finished game.
+    Once the caller is authorised it shares the export cache, keyed by the
+    game's `public_id` (`§11`).
     """
     try:
         game = find_latest_finished_game(db, room_code)
@@ -413,8 +422,9 @@ async def export_game(
         room = await get_state_service().get_room(room_code)
         _resolve_export_authority(db, room, game, x_host_secret, authorization)
 
-        results = build_results_response(db, game)
-        weeks = build_week_export_rows(db, game)
+        cached = export_cache.get((game.public_id, format))
+        if cached is None:
+            cached = _render_export(db, game, format)
     except HTTPException:
         raise
     except Exception:
@@ -424,7 +434,7 @@ async def export_game(
             detail=_INTERNAL_ERROR_DETAIL,
         ) from None
 
-    return _export_response(game, format, results, weeks)
+    return _cached_response(cached)
 
 
 @router.get("/id/{public_id}/export")
@@ -439,24 +449,26 @@ def export_game_by_public_id(
     Anyone who can open a finished game's results screen may download its
     raw data: a host may be a guest with no account to fall back on once the
     room and the tab are gone, so the export is not bound to the host. The
-    export carries what the results screen shows -- display names, seats,
-    figures -- and no account or credential (`build_week_export_rows`).
+    export carries the figures the results screen shows and no name anyone
+    typed: every player is their seat's `P<N>` (`§11`), and there is no
+    account or credential in it.
 
-    The guard against draining compute is `core.abuse`'s hourly per-address
-    export budget (429 with `Retry-After`), applied by the middleware before
-    this runs. Only the `public_id` route is open: a room code is short and
-    reissued, so an open export by code could be enumerated, and
-    `export_game` stays host-only.
+    A repeat download is served from the in-process export cache
+    (`services/export_cache.py`) without touching the database: a finished
+    game never changes. The guard against draining compute is `core.abuse`'s
+    hourly per-address export budget (429 with `Retry-After`), charged by the
+    middleware before this runs, cached or not. Only the `public_id` route is
+    open: a room code is short and reissued, so `export_game` stays host-only.
     """
     try:
-        game = find_game_by_public_id(db, public_id)
-        if game is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail=_NO_GAME_DETAIL
-            )
-
-        results = build_results_response(db, game)
-        weeks = build_week_export_rows(db, game)
+        cached = export_cache.get((public_id, format))
+        if cached is None:
+            game = find_game_by_public_id(db, public_id)
+            if game is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail=_NO_GAME_DETAIL
+                )
+            cached = _render_export(db, game, format)
     except HTTPException:
         raise
     except Exception:
@@ -466,24 +478,38 @@ def export_game_by_public_id(
             detail=_INTERNAL_ERROR_DETAIL,
         ) from None
 
-    return _export_response(game, format, results, weeks)
+    return _cached_response(cached)
 
 
-def _export_response(
-    game: Game,
-    format: Literal["csv", "json"],
-    results: ResultsResponse,
-    weeks: list[dict],
-) -> Response:
+def _render_export(
+    db: Session, game: Game, format: Literal["csv", "json"]
+) -> CachedExport:
+    """Build one export from the database and keep it in the export cache.
+
+    Only a finished, found game reaches this, so only a 200 is ever cached.
+    """
+    results = build_results_response(db, game)
+    weeks = build_week_export_rows(db, game)
     if format == "json":
-        return JSONResponse(content=_export_service.to_json(results, weeks))
+        rendered = CachedExport(
+            body=JSONResponse(content=_export_service.to_json(results, weeks)).body,
+            media_type="application/json",
+            headers={},
+        )
+    else:
+        filename = f"beery-{game.room_code}-{game.finished_at:%Y%m%d}.csv"
+        rendered = CachedExport(
+            body=_export_service.to_csv(weeks).encode("utf-8"),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    export_cache.put((game.public_id, format), rendered)
+    return rendered
 
-    filename = f"beery-{game.room_code}-{game.finished_at:%Y%m%d}.csv"
-    csv_text = _export_service.to_csv(weeks)
+
+def _cached_response(entry: CachedExport) -> Response:
     return Response(
-        content=csv_text,
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        content=entry.body, media_type=entry.media_type, headers=dict(entry.headers)
     )
 
 

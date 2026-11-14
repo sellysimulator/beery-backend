@@ -662,7 +662,7 @@ async def test_bot_fill_refuses_while_a_person_has_no_role_and_names_them(
     assert stored["engine"] is None
     assert not any(p["is_bot"] for p in stored["participants"].values())
     assert fake_socket_manager.emits_for("sid-host") == [
-        ("join_error", {"message": expected})
+        ("join_error", {"message": expected, "room_code": room["room_code"]})
     ]
     assert "game_started" not in fake_socket_manager.events_for(room["room_code"])
 
@@ -792,3 +792,83 @@ async def test_bot_fill_off_keeps_the_unfilled_roles_reason(
         False,
         "One role is still empty. Assign them, or turn on bot fill.",
     )
+
+
+# --- every start_game refusal names its room (2026-11-14) ------------------------------------- #
+# The multi-game dashboard starts several rooms from one socket, so each refusal carries the
+# `room_code` it was for, next to `message`, to land on that game's card. Additive: `message`
+# is unchanged.
+
+
+async def test_a_refused_start_carries_the_room_code_next_to_the_message(
+    make_room, connect_identity, fake_socket_manager
+):
+    room = await _seat_named(
+        make_room, connect_identity, ["Ana"], bot_fill_empty_roles=False
+    )
+    fake_socket_manager.clear()
+
+    await start_game("sid-host", _host(room))
+
+    emits = fake_socket_manager.emits_for("sid-host")
+    assert len(emits) == 1
+    event, payload = emits[0]
+    assert event == "join_error"
+    assert set(payload) == {"message", "room_code"}
+    assert payload["room_code"] == room["room_code"]
+    assert isinstance(payload["message"], str) and payload["message"]
+
+
+async def test_a_wrong_secret_refusal_names_the_room_and_never_the_secret(
+    make_room, connect_identity, fake_socket_manager
+):
+    room = await _seat_named(make_room, connect_identity, ["Ana"])
+    fake_socket_manager.clear()
+
+    await start_game("sid-host", {"room_id": room["room_code"], "host_secret": "wrong"})
+
+    [(event, payload)] = fake_socket_manager.emits_for("sid-host")
+    assert event == "join_error"
+    assert payload["room_code"] == room["room_code"]
+    assert "wrong" not in payload.values()
+    assert room["host_secret"] not in payload.values()
+
+
+async def test_a_start_for_a_missing_room_echoes_the_code_asked_for(
+    connect_identity, fake_socket_manager
+):
+    await connect_identity("sid-host", new_guest())
+
+    await start_game("sid-host", {"room_id": "ZZZZZZ", "host_secret": "x"})
+
+    [(event, payload)] = fake_socket_manager.emits_for("sid-host")
+    assert event == "join_error"
+    assert payload["room_code"] == "ZZZZZZ"
+
+
+async def test_a_rate_limited_start_still_names_its_room(
+    connect_identity, fake_socket_manager, monkeypatch
+):
+    from app.core.abuse import RATE_LIMITED_MESSAGE
+    from app.sockets import errors
+
+    await connect_identity("sid-host", new_guest())
+    monkeypatch.setattr(errors, "socket_event_allowed", lambda sid, event: False)
+
+    await start_game("sid-host", {"room_id": "ABCDEF", "host_secret": "x"})
+
+    assert fake_socket_manager.emits_for("sid-host") == [
+        ("join_error", {"message": RATE_LIMITED_MESSAGE, "room_code": "ABCDEF"})
+    ]
+
+
+async def test_an_unbounded_room_id_is_not_echoed(
+    connect_identity, fake_socket_manager
+):
+    await connect_identity("sid-host", new_guest())
+
+    await start_game("sid-host", {"room_id": "X" * 500, "host_secret": "x"})
+
+    [(event, payload)] = fake_socket_manager.emits_for("sid-host")
+    assert event == "join_error"
+    assert "room_code" not in payload

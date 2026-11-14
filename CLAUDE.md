@@ -149,7 +149,7 @@ cp .env.example .env
 ./venv/bin/uvicorn app.main:application --reload          # local iteration
 
 # tests
-./venv/bin/python -m pytest -m "not dbschema"             # 1907 passed, 1 skipped (verified 2026-11-14)
+./venv/bin/python -m pytest -m "not dbschema"             # 1926 passed, 1 skipped (2026-11-14); -m dbschema: 134 passed
 ./venv/bin/python -m pytest tests/test_core               # one area
 ./venv/bin/python -m pytest -m dbschema                   # needs a Docker daemon (mysql:8.4)
 BEERY_DOCKER_BUILD_TEST=1 ./venv/bin/python -m pytest -k docker   # the opt-in image build
@@ -250,7 +250,10 @@ mount in the image, so a source change needs a rebuild.
   `RateLimitMiddleware`, with one exception: `POST /rooms/batch-create` charges the
   room-create budget itself, `abuse.room_create_allowed(scope, count)` (all or nothing,
   `RateLimiter.allow(key, cost)`), after its preset and config have validated, so the
-  middleware leaves that path on the general limit. Both export routes share an **hourly**
+  middleware leaves that path on the general limit. The room-create budget is **30 rooms per
+  address per hour** (`ROOM_CREATE_WINDOW_SECONDS`, 2026-11-14, the standard across the Novus
+  games), shared by `/create` and `/batch-create` (≤ 10 a request): three full batches, then
+  429. Both export routes share an **hourly**
   per-address budget (`GAME_EXPORT_LIMIT_PER_IP = 100` per `GAME_EXPORT_WINDOW_SECONDS`,
   CSV and JSON together), applied by the middleware; its 429's `Retry-After` is the seconds
   left in that hour (`RateLimiter.retry_after`). A classroom shares one address: never lower
@@ -320,7 +323,11 @@ mount in the image, so a source change needs a rebuild.
   copy. The batch bounds are `Limits.min_batch_rooms` / `max_batch_rooms`, served by
   `/rooms/limits`. The dashboard's "Start all" is the ordinary `start_game` emit:
   `start_game` is authorised by `host_secret` alone, and its `host_state` goes to
-  `host_sid` (the claimed host tab) or, when none is claimed, to the caller.
+  `host_sid` (the claimed host tab) or, when none is claimed, to the caller. **Every refusal
+  of `start_game` names its room** (2026-11-14, identical in every Novus game): `join_error`
+  `{message, room_code}` (`_reject_start`, and `@guarded("join_error", echo_room_code=True)`
+  for its rate-limit and server-error replies), so the dashboard puts it on that game's card.
+  Additive: listeners reading `message` are unaffected.
 - **The export is open by `public_id`, host-only by room code** (2026-11-14, `15 §10`).
   Anyone who can open a finished game's results may download it: a guest host has no account
   to fall back on. `GET /games/id/{public_id}/export` takes no credential (404 for an unknown
@@ -330,7 +337,14 @@ mount in the image, so a source change needs a rebuild.
   screen shows: never add a uid, email, `user_id`, guest identity, session token or secret to
   `build_week_export_rows` or `ResultsResponse` (`tests/test_api/test_export_open.py` checks
   both formats without Docker). The frontend's once-per-session download button is UX only;
-  the hourly budget above is the guard.
+  the hourly budget above is the guard. **No chosen name is in the file** (`15 §11`): every
+  player is their seat's `P<N>` (`export_service.seat_alias`, Retailer `P1` … Factory `P4`)
+  in `display_name`, rows and the JSON's `per_role` alike; the screens keep the names. **A
+  finished export is cached** in `services/export_cache.py`: an in-process LRU of 64 files
+  keyed by `(public_id, format)`, final bytes, no expiry (a stored game never changes), 200s
+  only. No Redis or DB, so it is per instance and empty after a restart. The rate limit is
+  charged by the middleware before the route, so a cached download still counts. The
+  room-code route uses the cache only after `_resolve_export_authority` has passed.
 - **No screen shows a single "week cost".** `WeekRecord.total_week_cost` (and the
   `weeks.total_week_cost` column, the export's `total_week_cost`) is holding + backlog + order
   cost; `player_view` sends `week_holding_backlog_cost` and `week_order_cost` (`null` until the

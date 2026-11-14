@@ -41,11 +41,14 @@ __all__ = [
     "GAME_EXPORT_WINDOW_SECONDS",
     "MAX_SOCKETS_PER_IP",
     "RATE_LIMITED_MESSAGE",
+    "ROOM_CREATE_LIMIT_PER_IP",
+    "ROOM_CREATE_WINDOW_SECONDS",
     "RateLimitMiddleware",
     "RateLimiter",
     "client_ip",
     "reset",
     "room_create_allowed",
+    "room_create_retry_after",
     "socket_connect",
     "socket_disconnect",
     "socket_event_allowed",
@@ -55,9 +58,14 @@ __all__ = [
 WINDOW_SECONDS = 60.0
 #: All REST requests from one address per window.
 REST_LIMIT_PER_IP = 1200
-#: ``POST /api/v1/rooms/create`` per address per window. Unauthenticated, and
-#: each one is a room held in memory for 24 h.
+#: Rooms created per address per ``ROOM_CREATE_WINDOW_SECONDS``, shared by
+#: ``POST /api/v1/rooms/create`` (one each) and ``POST /api/v1/rooms/batch-create``
+#: (one per room, at most ``max_batch_rooms`` = 10 a request). Unauthenticated,
+#: and each one is a room held in memory for 24 h. The standard across every
+#: Novus game (2026-11-14): 30 an hour, so three full batches.
 ROOM_CREATE_LIMIT_PER_IP = 30
+#: The room-create budget's window: an hour, not ``WINDOW_SECONDS``.
+ROOM_CREATE_WINDOW_SECONDS = 3600.0
 #: ``GET /api/v1/rooms/{code}/status`` per address per window. Unauthenticated
 #: and answers for any code -- the REST half of room-code guessing.
 ROOM_STATUS_LIMIT_PER_IP = 120
@@ -225,7 +233,7 @@ def client_ip(scope: Mapping[str, Any]) -> str:
 # --- REST ------------------------------------------------------------------ #
 
 _rest = RateLimiter(REST_LIMIT_PER_IP)
-_room_create = RateLimiter(ROOM_CREATE_LIMIT_PER_IP)
+_room_create = RateLimiter(ROOM_CREATE_LIMIT_PER_IP, window=ROOM_CREATE_WINDOW_SECONDS)
 _room_status = RateLimiter(ROOM_STATUS_LIMIT_PER_IP)
 _room_preview = RateLimiter(ROOM_PREVIEW_LIMIT_PER_IP)
 _game_export = RateLimiter(GAME_EXPORT_LIMIT_PER_IP, window=GAME_EXPORT_WINDOW_SECONDS)
@@ -259,6 +267,12 @@ def room_create_allowed(scope: Mapping[str, Any], rooms: int) -> bool:
     a refusal with the same 429 the middleware sends.
     """
     return _room_create.allow(client_ip(scope), cost=rooms)
+
+
+def room_create_retry_after(scope: Mapping[str, Any]) -> int:
+    """Seconds until the caller's room-create window ends, for the batch
+    route's 429 ``Retry-After`` (the middleware computes its own)."""
+    return _room_create.retry_after(client_ip(scope))
 
 
 async def _too_many_requests(send: Send, retry_after: int) -> None:

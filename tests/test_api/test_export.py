@@ -173,7 +173,10 @@ def test_ac10_ac11_ac12_csv_row_count_header_and_customer_demand(
     # newline in UNICODE_NAME makes the physical line count larger than the
     # true row count once it is correctly quoted.
     assert len(data_rows) == 8 * 4
-    assert response.text.count("\n") > len(data_rows)  # the trap is real
+    # Since 2026-11-14 the file carries no chosen name (`15 §11`), so the
+    # embedded-newline name no longer reaches it; the count above is still
+    # taken with csv.reader, never splitlines().
+    assert "\nZ" not in response.text
 
     # AC 12
     demand_series = game["engine"].demand_series
@@ -649,9 +652,12 @@ def test_fm2_no_identity_leak_in_csv_or_json_export(
 # ---------------------------------------------------------------------------
 
 
-def test_fm9_csv_injection_display_name_is_sanitised(
+def test_fm9_a_formula_like_display_name_never_reaches_the_csv(
     api_client, session_factory, firebase_tokens, fake_redis
 ):
+    """Superseded 2026-11-14 (`15 §11`): the export names every player by
+    seat, so the injection-shaped name is not defused but absent; the
+    Wholesaler's cell is its `P<N>`."""
     game = _persist_export_game(session_factory, firebase_tokens, seed=32)
 
     response = api_client.get(
@@ -665,8 +671,9 @@ def test_fm9_csv_injection_display_name_is_sanitised(
     wholesaler_names = {
         row[name_index] for row in rows[1:] if row[role_index] == Role.WHOLESALER.value
     }
-    assert wholesaler_names == {SANITISED_INJECTION_NAME}
-    assert INJECTION_NAME not in wholesaler_names
+    assert wholesaler_names == {"P2"}
+    assert "cmd|" not in response.text
+    assert SANITISED_INJECTION_NAME not in response.text
 
 
 # ---------------------------------------------------------------------------
@@ -674,9 +681,12 @@ def test_fm9_csv_injection_display_name_is_sanitised(
 # ---------------------------------------------------------------------------
 
 
-def test_fm10_unicode_display_name_round_trips_through_csv_reader(
+def test_fm10_a_unicode_display_name_never_reaches_the_csv(
     api_client, session_factory, firebase_tokens, fake_redis
 ):
+    """Superseded 2026-11-14 (`15 §11`): the Retailer's comma, quote, newline
+    and non-ASCII name is not in the file; its rows read `P1` and the file
+    still parses one row per `(week, role)`."""
     game = _persist_export_game(session_factory, firebase_tokens, seed=39)
 
     response = api_client.get(
@@ -690,4 +700,6 @@ def test_fm10_unicode_display_name_round_trips_through_csv_reader(
     retailer_names = {
         row[name_index] for row in rows[1:] if row[role_index] == Role.RETAILER.value
     }
-    assert retailer_names == {UNICODE_NAME}
+    assert retailer_names == {"P1"}
+    assert "é" not in response.text
+    assert len(rows) - 1 == 8 * 4

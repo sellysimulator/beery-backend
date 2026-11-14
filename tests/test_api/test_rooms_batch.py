@@ -157,6 +157,35 @@ def test_each_room_counts_against_the_create_limit(client, fake_redis, monkeypat
     assert client.post(CREATE, json={}).status_code == 429
 
 
+def test_thirty_rooms_an_hour_then_batch_and_single_create_are_429(client, fake_redis):
+    """The real budget, not a monkeypatched one (2026-11-14): 30 rooms per
+    address per hour, the standard across the Novus games. Three full batches
+    of 10 use it up; the next batch and the next single create are both
+    refused, with a Retry-After inside the hour."""
+    assert abuse.ROOM_CREATE_LIMIT_PER_IP == 30
+    assert abuse.ROOM_CREATE_WINDOW_SECONDS == 3600
+
+    for _ in range(3):
+        assert _batch(client, count=10).status_code == 200
+    assert len(_stored_rooms(fake_redis)) == 30
+
+    refused_batch = _batch(client, count=2)
+    assert refused_batch.status_code == 429
+    assert refused_batch.json() == {"detail": abuse.RATE_LIMITED_MESSAGE}
+    assert 3500 < int(refused_batch.headers["retry-after"]) <= 3600
+
+    refused_single = client.post(CREATE, json={})
+    assert refused_single.status_code == 429
+    assert refused_single.json() == {"detail": abuse.RATE_LIMITED_MESSAGE}
+    assert 3500 < int(refused_single.headers["retry-after"]) <= 3600
+    assert len(_stored_rooms(fake_redis)) == 30
+
+
+def test_a_batch_may_not_exceed_ten_rooms(client, fake_redis):
+    assert _batch(client, count=11).status_code == 422
+    assert _stored_rooms(fake_redis) == {}
+
+
 def test_single_creates_and_batches_share_one_budget(client, fake_redis, monkeypatch):
     monkeypatch.setattr(abuse, "_room_create", RateLimiter(3))
     assert client.post(CREATE, json={}).status_code == 200

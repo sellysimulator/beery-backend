@@ -73,16 +73,15 @@ Every router under `app/api/v1/` is auto-discovered, so this table is the whole 
 | `PUT` | `/api/v1/rooms/{code}/config` | host secret | Applies a config patch while the room is still configurable |
 | `GET` | `/api/v1/rooms/{code}/config` | host secret | The current config |
 | `GET` | `/api/v1/games/{code}/results` | none | The full results payload for the latest finished game in that room — a results URL is shareable |
-| `GET` | `/api/v1/games/{code}/export` | host secret *or* the host's Firebase identity | The complete week-by-week record, `?format=csv` (default) or `json`. Stays host-only: room codes are short and reissued, so an open export by code could be enumerated |
+| `GET` | `/api/v1/games/{code}/export` | host secret *or* the host's Firebase identity | The complete week-by-week record, `?format=csv` (default) or `json`, with every player as their seat's `P<N>`. Stays host-only: room codes are short and reissued, so an open export by code could be enumerated. Once authorised it shares the export cache below |
 | `GET` | `/api/v1/games/id/{public_id}/results` | none | The same results payload, by the game's permanent id |
-| `GET` | `/api/v1/games/id/{public_id}/export` | none | The same export by permanent id, open to anyone who can see the results (2026-11-14): a guest host has no account to fall back on. It carries what the results screen shows and no uid, email, user id, guest id, session token or secret. 404 for an unknown id. Limited to 100 an hour per address (below) |
+| `GET` | `/api/v1/games/id/{public_id}/export` | none | The same export by permanent id, open to anyone who can see the results (2026-11-14): a guest host has no account to fall back on. It carries the results screen's figures and no uid, email, user id, guest id, session token, secret **or chosen name**: every player is their seat's `P<N>` (Retailer `P1` … Factory `P4`), in CSV and JSON alike. 404 for an unknown id. Limited to 100 an hour per address (below). A finished export is kept in an in-process LRU (64 files, keyed by `(public_id, format)`, no expiry, 200s only), so a repeat download reads nothing from the database; the cache is per instance and empty after a restart |
 | `POST` | `/api/v1/games/claim` | Firebase | Attributes a guest's finished games to the signed-in caller |
 | `POST` | `/api/v1/users/upsert` | Firebase | Creates or refreshes the caller's profile. The uid comes from the token, never the body |
 | `GET` | `/api/v1/users/me` | Firebase | The caller's profile, or 404 if it was never upserted |
 | `GET` | `/api/v1/users/me/stats` | Firebase | Aggregate statistics; a caller with no history gets a zero-filled 200, not a 404 |
 | `GET` | `/api/v1/users/me/games` | Firebase | Match history, newest first, `?page` / `?page_size` (clamped to 1–100) |
 | `GET` | `/api/v1/users/me/games/{game_id}` | Firebase | One of the caller's own games in full; 404 — never 403 — if they did not play in it |
-| `GET` | `/api/v1/users/me/hosted-games/{public_id}` | Firebase | 204 if the caller hosted that game, else 404; hosted games are never in the match history |
 
 In `/health/deep`, `status` is `"ok"` only when every backing service in use is reachable;
 otherwise `"degraded"`. With `REDIS_ENABLED=false` the unused Redis is not probed and is not
@@ -93,13 +92,13 @@ a reason to degrade, and `state_backend` reports `"memory"` rather than `"redis"
 `app/core/abuse.py` holds every limit as a module constant (none is a setting), counted in
 this process's memory per client address: `CF-Connecting-IP` when present, else the
 **rightmost** non-empty `X-Forwarded-For` entry (Render's proxy appends it), else the TCP
-peer. Every window is 60 s except the export's, which is an hour. The first request from each IP source logs `client ip source: …` (never the IP), so the deployment's header can be checked in Render's logs.
+peer. Every window is 60 s except room creation's and the export's, which are an hour. The first request from each IP source logs `client ip source: …` (never the IP), so the deployment's header can be checked in Render's logs.
 
 | What | Limit | Over it |
 |---|---|---|
 | Any REST request except `/api/v1/health` | 1200 per address | `429 {"detail": "Too many requests. Please slow down and try again."}`, `Retry-After` = seconds left in the window (60 at most) |
-| `POST /api/v1/rooms/create` | 30 per address | the same 429 |
-| `POST /api/v1/rooms/batch-create` | `count` against the same 30 rooms per address, all or nothing (`room_create_allowed`, charged by the route after validation; the middleware leaves it on the general limit) | the same 429; a refused batch, or one refused for its preset or config, is charged nothing |
+| `POST /api/v1/rooms/create` | 30 rooms per address per **hour** (`ROOM_CREATE_LIMIT_PER_IP`, `ROOM_CREATE_WINDOW_SECONDS`; the standard across the Novus games, 2026-11-14) | the same 429, `Retry-After` = seconds left in that hour |
+| `POST /api/v1/rooms/batch-create` | `count` (at most 10) against the same 30 rooms per address per hour, all or nothing (`room_create_allowed`, charged by the route after validation; the middleware leaves it on the general limit): three full batches, then the next batch or single create is refused | the same 429; a refused batch, or one refused for its preset or config, is charged nothing |
 | `GET /api/v1/rooms/{code}/status` | 120 per address | the same 429 |
 | `POST /api/v1/rooms/preview` | 300 per address | the same 429 |
 | `GET /api/v1/games/…/export` (by `public_id` and by room code, CSV and JSON together) | 100 per address per **hour** (`GAME_EXPORT_LIMIT_PER_IP`, `GAME_EXPORT_WINDOW_SECONDS`). The export by `public_id` is open, so this is its compute guard; a classroom shares one address, so never lower it | the same 429, `Retry-After` = seconds left in that hour |
@@ -152,7 +151,7 @@ stages. Check that file and `00-decisions.md` §3 before "adding" one.
 ## Tests
 
 ```bash
-./venv/bin/python -m pytest -m "not dbschema"   # 1907 passed, 1 skipped, 136 deselected (2026-11-14)
+./venv/bin/python -m pytest -m "not dbschema"   # 1926 passed, 1 skipped (2026-11-14); -m dbschema: 134 passed
 ./venv/bin/python -m pytest tests/test_core     # one area
 ```
 
@@ -313,7 +312,7 @@ app/
 │       ├── __init__.py         all_routers(): every module's `router`, in module-name order
 │       ├── health.py           /health, /health/deep
 │       ├── users.py            /users/upsert, /users/me
-│       ├── user_games.py       /users/me/stats, /users/me/games[/{id}], /users/me/hosted-games/{public_id}
+│       ├── user_games.py       /users/me/stats, /users/me/games[/{id}]
 │       ├── rooms.py            /rooms/create, /rooms/batch-create, /rooms/summary, /rooms/presets, /rooms/limits, /rooms/preview, /rooms/{code}/status|config
 │       └── games.py            /games/{code}|id/{public_id} results and export, /games/claim
 ├── core/                       pure domain logic — no I/O, no clock, no global RNG
