@@ -129,3 +129,76 @@ def test_preset_descriptions_are_written_from_each_presets_config(client):
         "36 weeks, 12 units on hand, 2-week delays, demand steps from 4 to 8 at week 5, "
         "$0.50 holding and $1.00 backlog a unit a week."
     )
+
+
+# --- the multi-game setup form's draft (2026-11-14) -------------------------
+
+
+def test_the_preview_answers_with_the_validated_config(client):
+    draft = classic_payload(random_seed=5)
+
+    body = client.post(PREVIEW, json={"config": draft}).json()
+
+    assert (
+        body["config"] == GameConfig.from_host_input(draft, DEFAULT_LIMITS).to_payload()
+    )
+
+
+def test_a_patch_is_merged_over_the_draft_as_a_config_save_merges_it(client):
+    """Deep for roles: one Retailer field leaves the other three roles and the
+    Retailer's other fields as they were."""
+    draft = classic_payload()
+
+    body = client.post(
+        PREVIEW,
+        json={
+            "config": draft,
+            "patch": {"roles": {"RETAILER": {"initial_inventory": 20}}},
+        },
+    ).json()
+
+    roles = body["config"]["roles"]
+    assert roles["RETAILER"]["initial_inventory"] == 20
+    assert (
+        roles["RETAILER"]["holding_cost_per_unit_week"]
+        == draft["roles"]["RETAILER"]["holding_cost_per_unit_week"]
+    )
+    assert roles["FACTORY"] == draft["roles"]["FACTORY"]
+
+
+def test_a_patch_changing_the_demand_kind_gets_that_kinds_defaults(client):
+    """A kind change replaces the demand block, and the server fills the new
+    kind's defaults, so a form with no copy of them can show them."""
+    draft = classic_payload(duration_weeks=12)
+
+    body = client.post(
+        PREVIEW, json={"config": draft, "patch": {"demand": {"kind": "SEASONAL"}}}
+    ).json()
+
+    expected = GameConfig.from_host_input(
+        classic_payload(duration_weeks=12, demand={"kind": "SEASONAL"}),
+        DEFAULT_LIMITS,
+    ).to_payload()
+    assert body["config"]["demand"] == expected["demand"]
+    assert "step_week" not in body["config"]["demand"]
+    assert body["demand_series"] == [8, 10, 11, 12, 11, 10, 8, 6, 5, 4, 5, 6]
+
+
+def test_a_refused_patch_is_the_same_422_naming_the_field(client):
+    response = client.post(
+        PREVIEW,
+        json={"config": classic_payload(), "patch": {"duration_weeks": 500}},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"].startswith("duration_weeks: ")
+
+
+def test_exactly_one_preset_is_the_default_the_create_routes_use(client):
+    presets = client.get(PRESETS).json()["presets"]
+
+    assert [entry["name"] for entry in presets if entry["is_default"]] == [
+        "CLASSIC_MIT"
+    ]
+    created = client.post("/api/v1/rooms/create", json={}).json()
+    assert created["config"]["preset_name"] == "CLASSIC_MIT"

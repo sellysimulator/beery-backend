@@ -178,6 +178,57 @@ def test_room_preview_answers_429_past_its_limit(client, fake_redis, monkeypatch
     assert response.json() == {"detail": abuse.RATE_LIMITED_MESSAGE}
 
 
+def test_game_export_has_an_hourly_budget_shared_by_both_formats(client, monkeypatch):
+    """Open by public_id, so the export carries its own per-address budget:
+    CSV and JSON draw on one count, and the 429 says when the hour ends."""
+    monkeypatch.setattr(
+        abuse,
+        "_game_export",
+        RateLimiter(2, window=abuse.GAME_EXPORT_WINDOW_SECONDS),
+    )
+    url = "/api/v1/games/id/" + "0" * 32 + "/export"
+
+    # Not 429: the route ran (and found no database behind it in this suite).
+    assert client.get(url, params={"format": "csv"}).status_code != 429
+    assert client.get(url, params={"format": "json"}).status_code != 429
+    response = client.get(url, params={"format": "csv"})
+
+    assert response.status_code == 429
+    assert response.json() == {"detail": abuse.RATE_LIMITED_MESSAGE}
+    retry_after = int(response.headers["retry-after"])
+    assert 3500 < retry_after <= 3600
+
+
+def test_the_export_by_room_code_draws_on_the_same_budget(client, monkeypatch):
+    monkeypatch.setattr(abuse, "_game_export", RateLimiter(1, window=3600.0))
+
+    assert client.get("/api/v1/games/ABC234/export").status_code != 429
+    assert client.get("/api/v1/games/id/" + "0" * 32 + "/export").status_code == 429
+
+
+def test_the_export_budget_is_one_hundred_an_hour() -> None:
+    """A classroom shares one address: never lower than this."""
+    assert abuse.GAME_EXPORT_LIMIT_PER_IP == 100
+    assert abuse.GAME_EXPORT_WINDOW_SECONDS == 3600
+    assert abuse._game_export.limit == 100
+    assert abuse._game_export.window == 3600
+
+
+def test_retry_after_counts_down_the_window(clock) -> None:
+    limiter = RateLimiter(1, window=3600.0)
+    assert limiter.allow("a") is True
+    clock[0] += 600.0
+
+    assert limiter.allow("a") is False
+    assert limiter.retry_after("a") == 3000
+
+
+def test_the_results_route_is_not_on_the_export_budget(client, monkeypatch):
+    monkeypatch.setattr(abuse, "_game_export", RateLimiter(0, window=3600.0))
+
+    assert client.get("/api/v1/games/id/" + "0" * 32 + "/results").status_code != 429
+
+
 def test_each_forwarded_address_has_its_own_budget(client, fake_redis, monkeypatch):
     monkeypatch.setattr(abuse, "_room_status", RateLimiter(1))
     url = "/api/v1/rooms/ZZZZZZ/status"

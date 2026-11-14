@@ -10,7 +10,8 @@ becomes N times looser, never tighter.
 
 It is wired in at four single points and nowhere else:
 
-* ``RateLimitMiddleware`` -- added once in ``app/main.py``; every REST route.
+* ``RateLimitMiddleware`` -- added once in ``app/main.py``; every REST route,
+  including the hourly game-export budget (``GAME_EXPORT_LIMIT_PER_IP``).
 * ``room_create_allowed`` -- ``POST /api/v1/rooms/batch-create`` charges the
   room-create budget one hit per room it makes, from inside the route, because
   only the route knows the count once the body has been validated.
@@ -28,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from collections.abc import Awaitable, Callable, Mapping, MutableMapping
 from typing import Any
@@ -35,6 +37,8 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "GAME_EXPORT_LIMIT_PER_IP",
+    "GAME_EXPORT_WINDOW_SECONDS",
     "MAX_SOCKETS_PER_IP",
     "RATE_LIMITED_MESSAGE",
     "RateLimitMiddleware",
@@ -61,6 +65,15 @@ ROOM_STATUS_LIMIT_PER_IP = 120
 #: each one builds a config and draws a demand series. The host form debounces
 #: edits at 300 ms, so one teacher typing flat out stays under 200 a minute.
 ROOM_PREVIEW_LIMIT_PER_IP = 300
+#: ``GET /api/v1/games/.../export`` (both routes, CSV and JSON alike) per
+#: address per ``GAME_EXPORT_WINDOW_SECONDS``. The export by ``public_id`` is
+#: open to anyone who can see the game's results, and each one rebuilds the
+#: whole record from MySQL, so this is the compute guard; the results screen's
+#: once-per-session download button is only a courtesy. A classroom shares
+#: one address, so never lower it below a download per student per format.
+GAME_EXPORT_LIMIT_PER_IP = 100
+#: The export budget's window: an hour, not ``WINDOW_SECONDS``.
+GAME_EXPORT_WINDOW_SECONDS = 3600.0
 #: Sockets open at once from one address.
 MAX_SOCKETS_PER_IP = 200
 #: Socket events per connection per window. The host form debounces config
@@ -79,6 +92,7 @@ RATE_LIMITED_MESSAGE = "Too many requests. Please slow down and try again."
 _EXEMPT_PATHS = frozenset({"/api/v1/health"})
 _JOIN_EVENTS = frozenset({"join", "join_waiting"})
 _ROOMS_PREFIX = "/api/v1/rooms/"
+_GAMES_PREFIX = "/api/v1/games/"
 _MAX_IP_LENGTH = 64
 
 Scope = MutableMapping[str, Any]
@@ -128,6 +142,13 @@ class RateLimiter:
             self._make_room(now)
         self._hits[key] = (started, count + cost)
         return True
+
+    def retry_after(self, key: str) -> int:
+        """Whole seconds until ``key``'s window ends (at least 1), for a 429's
+        ``Retry-After``."""
+        started, _count = self._hits.get(key, (time.monotonic(), 0))
+        left = self.window - (time.monotonic() - started)
+        return max(1, math.ceil(left))
 
     def forget(self, key: str) -> None:
         self._hits.pop(key, None)
@@ -207,6 +228,7 @@ _rest = RateLimiter(REST_LIMIT_PER_IP)
 _room_create = RateLimiter(ROOM_CREATE_LIMIT_PER_IP)
 _room_status = RateLimiter(ROOM_STATUS_LIMIT_PER_IP)
 _room_preview = RateLimiter(ROOM_PREVIEW_LIMIT_PER_IP)
+_game_export = RateLimiter(GAME_EXPORT_LIMIT_PER_IP, window=GAME_EXPORT_WINDOW_SECONDS)
 
 
 def _route_limiter(method: str, path: str) -> RateLimiter | None:
@@ -223,6 +245,8 @@ def _route_limiter(method: str, path: str) -> RateLimiter | None:
         return _room_preview
     if method == "GET" and path.startswith(_ROOMS_PREFIX) and path.endswith("/status"):
         return _room_status
+    if method == "GET" and path.startswith(_GAMES_PREFIX) and path.endswith("/export"):
+        return _game_export
     return None
 
 
@@ -237,9 +261,10 @@ def room_create_allowed(scope: Mapping[str, Any], rooms: int) -> bool:
     return _room_create.allow(client_ip(scope), cost=rooms)
 
 
-async def _too_many_requests(send: Send) -> None:
+async def _too_many_requests(send: Send, retry_after: int) -> None:
     """A 429 whose body is FastAPI's ``{"detail": "<string>"}`` shape, which
-    the frontend's ``errorMessage`` helper already renders."""
+    the frontend's ``errorMessage`` helper already renders, and whose
+    ``Retry-After`` is the seconds left in the window that refused it."""
     body = json.dumps({"detail": RATE_LIMITED_MESSAGE}).encode("utf-8")
     await send(
         {
@@ -248,7 +273,7 @@ async def _too_many_requests(send: Send) -> None:
             "headers": [
                 (b"content-type", b"application/json"),
                 (b"content-length", str(len(body)).encode("ascii")),
-                (b"retry-after", str(int(WINDOW_SECONDS)).encode("ascii")),
+                (b"retry-after", str(retry_after).encode("ascii")),
             ],
         }
     )
@@ -272,8 +297,11 @@ class RateLimitMiddleware:
             return
         ip = client_ip(scope)
         strict = _route_limiter(scope["method"], scope["path"])
-        if not _rest.allow(ip) or (strict is not None and not strict.allow(ip)):
-            await _too_many_requests(send)
+        if not _rest.allow(ip):
+            await _too_many_requests(send, _rest.retry_after(ip))
+            return
+        if strict is not None and not strict.allow(ip):
+            await _too_many_requests(send, strict.retry_after(ip))
             return
         await self.app(scope, receive, send)
 
@@ -338,6 +366,7 @@ def reset() -> None:
         _room_create,
         _room_status,
         _room_preview,
+        _game_export,
         _socket_events,
         _socket_joins,
     ):

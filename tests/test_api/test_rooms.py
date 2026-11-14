@@ -334,12 +334,16 @@ def test_fm6_no_unauthenticated_route_can_return_config():
     themselves -- not a look at somebody else's room. The leak this failure
     mode names is a stranger reading a room's config, which only the *other*
     routes could ever do.
+
+    ``POST /rooms/preview`` is excluded for the same reason (2026-11-14): its
+    ``config`` is the caller's own draft (plus their own patch) after
+    validation, and it reads no room at all.
     """
     from app.api.v1.rooms import router
 
     checked_any = False
     for route in router.routes:
-        if route.path.endswith("/create"):
+        if route.path.endswith("/create") or route.path.endswith("/preview"):
             continue
         response_model = getattr(route, "response_model", None)
         fields = getattr(response_model, "model_fields", None)

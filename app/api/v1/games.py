@@ -12,7 +12,9 @@ games are ever written to MySQL (**D4**), any row found here is by
 definition a finished game -- there is no separate status filter.
 
 `GET /games/id/{public_id}/results` serves the same payload addressed by the
-game's permanent `public_id`, for links that must outlive the room code.
+game's permanent `public_id`, for links that must outlive the room code, and
+`GET /games/id/{public_id}/export` the export, open to anyone who has that
+id, as the results are (2026-11-14). The export by room code stays host-only.
 """
 
 from __future__ import annotations
@@ -391,7 +393,13 @@ async def export_game(
     x_host_secret: str = Header(default="", alias="X-Host-Secret"),
     authorization: str = Header(default=""),
 ) -> Response:
-    """CSV (default) or JSON of the complete record. Host-only (`§3.2`)."""
+    """CSV (default) or JSON of the complete record, by room code. Host-only
+    (`§3.2`): the live room's secret or the registered host's token.
+
+    Unlike `export_game_by_public_id`, this stays closed: a room code is six
+    characters and reissued once its room expires, so an open export by code
+    would let anyone walk the code space and download every finished game.
+    """
     try:
         game = find_latest_finished_game(db, room_code)
         if game is None:
@@ -424,24 +432,28 @@ def export_game_by_public_id(
     public_id: str,
     db: Annotated[Session, Depends(get_db)],
     format: Literal["csv", "json"] = "csv",
-    authorization: str = Header(default=""),
 ) -> Response:
-    """The same export, addressed by the game's permanent `public_id`, for
-    the registered host's own bearer token only (`15 §9`).
+    """The same export, addressed by the game's permanent `public_id`. No
+    authentication, like `get_results_by_public_id` (2026-11-14).
 
-    No `X-Host-Secret`: a room code is reissued once its room expires, so a
-    live room under this game's code may be another game's, and its secret
-    must not open this one.
+    Anyone who can open a finished game's results screen may download its
+    raw data: a host may be a guest with no account to fall back on once the
+    room and the tab are gone, so the export is not bound to the host. The
+    export carries what the results screen shows -- display names, seats,
+    figures -- and no account or credential (`build_week_export_rows`).
+
+    The guard against draining compute is `core.abuse`'s hourly per-address
+    export budget (429 with `Retry-After`), applied by the middleware before
+    this runs. Only the `public_id` route is open: a room code is short and
+    reissued, so an open export by code could be enumerated, and
+    `export_game` stays host-only.
     """
     try:
         game = find_game_by_public_id(db, public_id)
         if game is None:
-            # 403, not 404, for the same reason as `export_game`.
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, detail=_EXPORT_FORBIDDEN_DETAIL
+                status_code=status.HTTP_404_NOT_FOUND, detail=_NO_GAME_DETAIL
             )
-
-        _resolve_export_authority(db, None, game, "", authorization)
 
         results = build_results_response(db, game)
         weeks = build_week_export_rows(db, game)

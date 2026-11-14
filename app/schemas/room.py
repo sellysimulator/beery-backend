@@ -48,6 +48,12 @@ class ConfigResponse(BaseModel):
 
 class ConfigPreviewRequest(BaseModel):
     config: dict  # a whole draft config, validated exactly as a save is
+    # Optional: a host's partial edit, merged over `config` exactly as a
+    # config save merges it (`merge_config_patch`) before validation. The
+    # multi-game setup form edits a local draft with no room behind it, and
+    # this keeps the merge rule (a demand-kind change replaces the block, and
+    # the server fills that kind's defaults) on the server (2026-11-14).
+    patch: dict | None = None
 
 
 class ConfigPreviewResponse(BaseModel):
@@ -56,6 +62,11 @@ class ConfigPreviewResponse(BaseModel):
     demand_series: list[int]  # weeks 1..duration_weeks, index 0 = week 1
     demand_is_example: bool  # STOCHASTIC with no seed yet: an example draw
     lead_times: dict[str, int]  # role -> weeks from ordering to arrival
+    # The validated draft as a stored config would hold it (`to_payload()`):
+    # the patch merged in and every default filled. Additive (2026-11-14); the
+    # multi-game setup form keeps it as its draft, as the lobby keeps the
+    # stored config.
+    config: dict
 
 
 class PresetSummary(BaseModel):
@@ -64,6 +75,9 @@ class PresetSummary(BaseModel):
     # Figures written from the preset's own config, then a tagline (2026-11-03).
     description: str
     config: dict
+    # True for the preset `/create` and `/batch-create` use when none is named,
+    # so a form starting from "the default" needs no copy of its name.
+    is_default: bool = False
 
 
 class PresetListResponse(BaseModel):

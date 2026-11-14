@@ -149,7 +149,7 @@ cp .env.example .env
 ./venv/bin/uvicorn app.main:application --reload          # local iteration
 
 # tests
-./venv/bin/python -m pytest -m "not dbschema"             # 1858 passed, 1 skipped (verified 2026-11-10)
+./venv/bin/python -m pytest -m "not dbschema"             # 1907 passed, 1 skipped (verified 2026-11-14)
 ./venv/bin/python -m pytest tests/test_core               # one area
 ./venv/bin/python -m pytest -m dbschema                   # needs a Docker daemon (mysql:8.4)
 BEERY_DOCKER_BUILD_TEST=1 ./venv/bin/python -m pytest -k docker   # the opt-in image build
@@ -222,7 +222,7 @@ mount in the image, so a source change needs a rebuild.
   `POST /rooms/preview`, `POST /rooms/batch-create`, `POST /rooms/summary`,
   `/rooms/{code}/status`,
   `GET|PUT /rooms/{code}/config`, `/games/{code}/results`, `/games/{code}/export`,
-  `POST /games/claim`.
+  `/games/id/{public_id}/results`, `/games/id/{public_id}/export`, `POST /games/claim`.
   Socket in: `connect`, `disconnect`, `join_waiting`, `join`, `leave`, `config_update`,
   `set_role_mode`, `assign_role`, `claim_role`, `release_role`, `start_game`, `submit_order`,
   `pause_game`, `resume_game`, `force_close_week`, `substitute_bot`, `reclaim_seat`,
@@ -250,7 +250,11 @@ mount in the image, so a source change needs a rebuild.
   `RateLimitMiddleware`, with one exception: `POST /rooms/batch-create` charges the
   room-create budget itself, `abuse.room_create_allowed(scope, count)` (all or nothing,
   `RateLimiter.allow(key, cost)`), after its preset and config have validated, so the
-  middleware leaves that path on the general limit. The first request from each IP source logs `client ip source: …` (never the IP), so the deployment's header can be checked in Render's logs.
+  middleware leaves that path on the general limit. Both export routes share an **hourly**
+  per-address budget (`GAME_EXPORT_LIMIT_PER_IP = 100` per `GAME_EXPORT_WINDOW_SECONDS`,
+  CSV and JSON together), applied by the middleware; its 429's `Retry-After` is the seconds
+  left in that hour (`RateLimiter.retry_after`). A classroom shares one address: never lower
+  it. The first request from each IP source logs `client ip source: …` (never the IP), so the deployment's header can be checked in Render's logs.
 - **Startup never hard-fails on a missing credential.** An unset
   `FIREBASE_SERVICE_ACCOUNT_JSON` logs CRITICAL and guest play still works; the state-backend
   check logs the in-memory constraint at WARNING. A check that raises is logged and does not
@@ -287,7 +291,11 @@ mount in the image, so a source change needs a rebuild.
     (`generate_demand_series`, with the host's `random_seed` or `EXAMPLE_SEED`),
     `demand_is_example` (`demand.uses_seed` and no seed) and per-role `lead_times`
     (`GameConfig.order_arrival_lead_weeks`, which the engine's `_order_arrival_lead_weeks`
-    now delegates to). No auth, nothing stored; a refusal is the `PUT /config` 422.
+    now delegates to). No auth, nothing stored; a refusal is the `PUT /config` 422. It also
+    returns the validated `config`, and takes an optional `patch` merged first by
+    `merge_config_patch` (2026-11-14): that is how the multi-game setup form edits a draft no
+    room holds without copying the merge rule or a kind's defaults. `/rooms/presets` marks
+    the `/create` default with `is_default`.
   - `/rooms/presets` `description` = `scenario_summary(preset)` + a figure-free tagline.
   - A demand-kind change may send `{kind}` alone: `from_host_input` fills the defaults, so the
     form keeps none.
@@ -313,6 +321,16 @@ mount in the image, so a source change needs a rebuild.
   `/rooms/limits`. The dashboard's "Start all" is the ordinary `start_game` emit:
   `start_game` is authorised by `host_secret` alone, and its `host_state` goes to
   `host_sid` (the claimed host tab) or, when none is claimed, to the caller.
+- **The export is open by `public_id`, host-only by room code** (2026-11-14, `15 §10`).
+  Anyone who can open a finished game's results may download it: a guest host has no account
+  to fall back on. `GET /games/id/{public_id}/export` takes no credential (404 for an unknown
+  id, like its results) and the results screen uses it for everyone. `GET /games/{code}/export`
+  keeps `_resolve_export_authority` (secret or the host's token, 403 otherwise) because a
+  six-character, reissued code could be enumerated. The export may carry only what the results
+  screen shows: never add a uid, email, `user_id`, guest identity, session token or secret to
+  `build_week_export_rows` or `ResultsResponse` (`tests/test_api/test_export_open.py` checks
+  both formats without Docker). The frontend's once-per-session download button is UX only;
+  the hourly budget above is the guard.
 - **No screen shows a single "week cost".** `WeekRecord.total_week_cost` (and the
   `weeks.total_week_cost` column, the export's `total_week_cost`) is holding + backlog + order
   cost; `player_view` sends `week_holding_backlog_cost` and `week_order_cost` (`null` until the

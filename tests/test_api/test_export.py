@@ -1,4 +1,5 @@
-"""Black-box tests for ``GET /api/v1/games/{room_code}/export``.
+"""Black-box tests for ``GET /api/v1/games/{room_code}/export`` (host-only)
+and ``GET /api/v1/games/id/{public_id}/export`` (open, 2026-11-14).
 
 Covers ``15-results-and-export-api.md §4`` acceptance criteria 10-17 and
 ``11a`` and ``§5`` failure modes 2, 4, 9 and 10.
@@ -533,12 +534,14 @@ def test_a_guest_host_who_claims_their_results_may_export_with_their_token(
     assert api_client.get(url, headers=headers).status_code == 200
 
 
-def test_export_by_public_id_is_for_the_host_token_only(
+def test_export_by_public_id_is_open_to_anyone_who_has_the_id(
     api_client, session_factory, firebase_tokens, fake_redis
 ):
     """`GET /games/id/{public_id}/export` names the game exactly, so a
-    recycled room code cannot hand over a different game, and it takes the
-    host's bearer token only: a live room's secret does not open it."""
+    recycled room code cannot hand over a different game, and it is open like
+    the results by `public_id` (2026-11-14): no token, another account's token
+    and the host's own all get the same file. An unknown id is a 404, as its
+    results are. The export by room code stays host-only (AC 14-16 above)."""
     game = _persist_export_game(session_factory, firebase_tokens, seed=38)
     public_id = api_client.get(f"/api/v1/games/{game['room_code']}/results").json()[
         "public_id"
@@ -557,14 +560,14 @@ def test_export_by_public_id_is_for_the_host_token_only(
     other_headers = bearer_for(
         firebase_tokens, firebase_uid="uid-not-the-host", token="tok-other-992"
     )
-    assert api_client.get(url, headers=other_headers).status_code == 403
-    assert api_client.get(url).status_code == 403
-    assert (
-        api_client.get(
-            "/api/v1/games/id/" + "0" * 32 + "/export", headers=game["headers"]
-        ).status_code
-        == 403
-    )
+    other = api_client.get(url, params={"format": "csv"}, headers=other_headers)
+    anonymous = api_client.get(url, params={"format": "csv"})
+    assert other.status_code == anonymous.status_code == 200
+    assert other.text == anonymous.text == own.text
+    assert api_client.get(url, params={"format": "json"}).status_code == 200
+
+    assert api_client.get(EXPORT_URL(game["room_code"], "csv")).status_code == 403
+    assert api_client.get("/api/v1/games/id/" + "0" * 32 + "/export").status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -625,10 +628,20 @@ def test_fm2_no_identity_leak_in_csv_or_json_export(
         EXPORT_URL(game["room_code"], "json"), headers=game["headers"]
     )
 
-    for response in (csv_response, json_response):
+    public_id = api_client.get(f"/api/v1/games/{game['room_code']}/results").json()[
+        "public_id"
+    ]
+    open_url = f"/api/v1/games/id/{public_id}/export"
+    open_csv = api_client.get(open_url, params={"format": "csv"})
+    open_json = api_client.get(open_url, params={"format": "json"})
+
+    for response in (csv_response, json_response, open_csv, open_json):
+        assert response.status_code == 200
         assert registered_uid not in response.text
         assert game["host_uid"] not in response.text
         assert "guest_" not in response.text
+        assert "token-P" not in response.text  # make_participant's session tokens
+        assert "test-host-secret" not in response.text
 
 
 # ---------------------------------------------------------------------------

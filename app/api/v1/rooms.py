@@ -444,6 +444,7 @@ async def list_presets() -> PresetListResponse:
                 f"{scenario_summary(get_preset(name))} {_PRESET_META[name][1]}"
             ),
             config=get_preset(name).to_payload(),
+            is_default=name == _DEFAULT_PRESET,
         )
         for name in preset_names()
     ]
@@ -462,11 +463,20 @@ def preview_room_config(payload: ConfigPreviewRequest) -> ConfigPreviewResponse:
     Nothing is stored and no room is read, so the call needs no room code and
     no host secret: it is a pure function of the body, like `/limits`.
 
+    An optional `patch` is merged over `config` first, by the config save's
+    own `merge_config_patch`, and the answer carries the validated `config`
+    (2026-11-14). That is what lets the multi-game setup form edit a draft no
+    room holds: each edit is merged, defaulted and checked here, exactly as a
+    lobby save would be, and the form keeps the answer as its draft.
+
     A plain `def`, so the CPU work runs on the threadpool and never blocks the
     event loop; `core.abuse` gives it its own per-address limit.
     """
+    draft = payload.config
+    if payload.patch:
+        draft = _merge_config(draft, payload.patch)
     try:
-        config = GameConfig.from_host_input(payload.config, DEFAULT_LIMITS)
+        config = GameConfig.from_host_input(draft, DEFAULT_LIMITS)
     except ConfigValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -484,6 +494,7 @@ def preview_room_config(payload: ConfigPreviewRequest) -> ConfigPreviewResponse:
         demand_series=preview.demand_series,
         demand_is_example=preview.demand_is_example,
         lead_times={role.value: weeks for role, weeks in preview.lead_times.items()},
+        config=config.to_payload(),
     )
 
 
