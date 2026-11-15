@@ -37,6 +37,35 @@ def test_the_limiter_allows_the_limit_then_refuses(clock) -> None:
     assert limiter.allow("b") is True
 
 
+def test_the_limiter_charges_a_cost_all_or_nothing(clock) -> None:
+    # POST /rooms/batch-create charges one hit per room it makes.
+    limiter = RateLimiter(5, window=60)
+
+    assert limiter.allow("a", cost=3) is True
+    # 3 + 3 > 5: refused, and the refused call is not counted...
+    assert limiter.allow("a", cost=3) is False
+    # ...so the 2 that are left can still be used.
+    assert limiter.allow("a", cost=2) is True
+    assert limiter.allow("a") is False
+
+
+def test_the_limiter_refuses_a_cost_bigger_than_the_limit(clock) -> None:
+    limiter = RateLimiter(5, window=60)
+    assert limiter.allow("a", cost=6) is False
+    assert len(limiter) == 0
+    assert limiter.allow("a", cost=5) is True
+
+
+def test_room_create_allowed_shares_the_create_budget(clock, monkeypatch) -> None:
+    monkeypatch.setattr(abuse, "_room_create", RateLimiter(3))
+    scope = _scope(xff="203.0.113.9")
+
+    assert abuse.room_create_allowed(scope, 2) is True
+    assert abuse.room_create_allowed(scope, 2) is False
+    assert abuse.room_create_allowed(scope, 1) is True
+    assert abuse.room_create_allowed(_scope(xff="203.0.113.10"), 3) is True
+
+
 def test_the_limiter_opens_again_when_the_window_ends(clock) -> None:
     limiter = RateLimiter(1, window=60)
     assert limiter.allow("a") is True
@@ -147,6 +176,57 @@ def test_room_preview_answers_429_past_its_limit(client, fake_redis, monkeypatch
 
     assert response.status_code == 429
     assert response.json() == {"detail": abuse.RATE_LIMITED_MESSAGE}
+
+
+def test_game_export_has_an_hourly_budget_shared_by_both_formats(client, monkeypatch):
+    """Open by public_id, so the export carries its own per-address budget:
+    CSV and JSON draw on one count, and the 429 says when the hour ends."""
+    monkeypatch.setattr(
+        abuse,
+        "_game_export",
+        RateLimiter(2, window=abuse.GAME_EXPORT_WINDOW_SECONDS),
+    )
+    url = "/api/v1/games/id/" + "0" * 32 + "/export"
+
+    # Not 429: the route ran (and found no database behind it in this suite).
+    assert client.get(url, params={"format": "csv"}).status_code != 429
+    assert client.get(url, params={"format": "json"}).status_code != 429
+    response = client.get(url, params={"format": "csv"})
+
+    assert response.status_code == 429
+    assert response.json() == {"detail": abuse.RATE_LIMITED_MESSAGE}
+    retry_after = int(response.headers["retry-after"])
+    assert 3500 < retry_after <= 3600
+
+
+def test_the_export_by_room_code_draws_on_the_same_budget(client, monkeypatch):
+    monkeypatch.setattr(abuse, "_game_export", RateLimiter(1, window=3600.0))
+
+    assert client.get("/api/v1/games/ABC234/export").status_code != 429
+    assert client.get("/api/v1/games/id/" + "0" * 32 + "/export").status_code == 429
+
+
+def test_the_export_budget_is_one_hundred_an_hour() -> None:
+    """A classroom shares one address: never lower than this."""
+    assert abuse.GAME_EXPORT_LIMIT_PER_IP == 100
+    assert abuse.GAME_EXPORT_WINDOW_SECONDS == 3600
+    assert abuse._game_export.limit == 100
+    assert abuse._game_export.window == 3600
+
+
+def test_retry_after_counts_down_the_window(clock) -> None:
+    limiter = RateLimiter(1, window=3600.0)
+    assert limiter.allow("a") is True
+    clock[0] += 600.0
+
+    assert limiter.allow("a") is False
+    assert limiter.retry_after("a") == 3000
+
+
+def test_the_results_route_is_not_on_the_export_budget(client, monkeypatch):
+    monkeypatch.setattr(abuse, "_game_export", RateLimiter(0, window=3600.0))
+
+    assert client.get("/api/v1/games/id/" + "0" * 32 + "/results").status_code != 429
 
 
 def test_each_forwarded_address_has_its_own_budget(client, fake_redis, monkeypatch):

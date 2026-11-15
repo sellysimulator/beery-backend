@@ -211,6 +211,9 @@ def _reset_process_caches():
     abuse = sys.modules.get("app.core.abuse")
     if abuse is not None:
         abuse.reset()
+    export_cache = sys.modules.get("app.services.export_cache")
+    if export_cache is not None:
+        export_cache.export_cache.clear()
     yield
 
 

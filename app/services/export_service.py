@@ -1,4 +1,10 @@
-"""Pure formatting for the host export (``15-results-and-export-api.md`` §3.2).
+"""Pure formatting for the export (``15-results-and-export-api.md`` §3.2).
+
+**No chosen name leaves in the file** (2026-11-14, ``§11``). Players keep
+their usernames on every screen, but the export names each one by seat only:
+``display_name`` holds ``P<N>`` (``seat_alias``: Retailer ``P1`` through
+Factory ``P4``, ``ROLE_ORDER``), the same in every row and in the JSON's
+``per_role``, beside the ``role`` column. The host's name is in neither format.
 
 ``ExportService`` does no database access and takes no ``Session``. The route
 (``app/api/v1/games.py``) assembles ``weeks`` -- one already-joined,
@@ -14,9 +20,21 @@ import csv
 import io
 from typing import Any
 
+from ..core.enums import ROLE_ORDER, Role
 from ..schemas.results import ResultsResponse
 
-__all__ = ["WEEK_EXPORT_COLUMNS", "ExportService"]
+__all__ = ["WEEK_EXPORT_COLUMNS", "ExportService", "seat_alias"]
+
+
+def seat_alias(role: Role | str) -> str:
+    """The export's name for whoever held `role`: `P<N>` by seat, `ROLE_ORDER`.
+
+    By seat, not by join order: it is the same for every game, survives a
+    `substitute_bot` or a `reclaim_seat` unchanged, and gives a bot seat a
+    number like any other.
+    """
+    return f"P{ROLE_ORDER.index(Role(role)) + 1}"
+
 
 # The exact column order from §3.2. `is_bot` is the *seat* attribution from
 # `participants` (who holds the role as the game ended); `was_bot` is
@@ -123,7 +141,11 @@ class ExportService:
         cells to defuse.
         """
         payload = results.model_dump(mode="json")
-        payload["weeks"] = weeks
+        for entry in payload["per_role"]:
+            entry["display_name"] = seat_alias(entry["role"])
+        payload["weeks"] = [
+            {**row, "display_name": seat_alias(row["role"])} for row in weeks
+        ]
         return payload
 
     def to_csv(self, weeks: list[dict]) -> str:
@@ -138,7 +160,8 @@ class ExportService:
         writer = csv.writer(buffer)
         writer.writerow(WEEK_EXPORT_COLUMNS)
         for row in weeks:
+            named = {**row, "display_name": seat_alias(row["role"])}
             writer.writerow(
-                [_csv_cell(column, row.get(column)) for column in WEEK_EXPORT_COLUMNS]
+                [_csv_cell(column, named.get(column)) for column in WEEK_EXPORT_COLUMNS]
             )
         return buffer.getvalue()

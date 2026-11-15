@@ -30,7 +30,7 @@ from typing import Any
 from ..core.abuse import RATE_LIMITED_MESSAGE, socket_event_allowed
 from .manager import socket_manager
 
-__all__ = ["SERVER_ERROR_MESSAGE", "guarded"]
+__all__ = ["SERVER_ERROR_MESSAGE", "guarded", "requested_room_code"]
 
 logger = logging.getLogger(__name__)
 
@@ -43,12 +43,36 @@ Handler = Callable[..., Awaitable[Any]]
 SERVER_ERROR_MESSAGE = "Something went wrong on the server. Please try again."
 
 
-def guarded(event: str = "error") -> Callable[[Handler], Handler]:
+def requested_room_code(data: Any) -> str | None:
+    """The `room_id` a payload asked for, echoed back as `room_code` on a
+    refusal of `start_game` (2026-11-14). It is the caller's own input, so
+    echoing it reveals nothing; it is bounded so a refusal cannot be made to
+    carry an arbitrary blob."""
+    if not isinstance(data, dict):
+        return None
+    room_id = data.get("room_id")
+    if isinstance(room_id, str) and 0 < len(room_id) <= _MAX_ECHOED_ROOM_CODE:
+        return room_id
+    return None
+
+
+_MAX_ECHOED_ROOM_CODE = 64
+
+
+def guarded(
+    event: str = "error", *, echo_room_code: bool = False
+) -> Callable[[Handler], Handler]:
     """Report an unhandled handler exception to the caller, then continue.
 
     `event` is `"error"` for the play loop, whose payload carries a `code`
     (`12 §2`), and `"join_error"` for the lobby, whose payload is `{message}`
     only (`11 §2`). Both frozen shapes are respected.
+
+    With `echo_room_code`, the refusal also carries the `room_code` the payload
+    asked for (`requested_room_code`), next to `message`. `start_game` wears
+    it, so the multi-game dashboard can put a "Start all" refusal on that
+    game's card (2026-11-14). Additive: a listener that reads `message` only
+    is unaffected.
 
     Apply it *under* `@sio.event`, so Socket.IO registers the wrapper:
 
@@ -57,10 +81,14 @@ def guarded(event: str = "error") -> Callable[[Handler], Handler]:
         async def submit_order(sid, data=None): ...
     """
 
-    async def report(sid: str, message: str, code: str) -> None:
+    async def report(sid: str, message: str, code: str, data: Any = None) -> None:
         payload: dict[str, str] = {"message": message}
         if event == "error":
             payload["code"] = code
+        if echo_room_code:
+            room_code = requested_room_code(data)
+            if room_code is not None:
+                payload["room_code"] = room_code
         try:
             await socket_manager.emit_to_sid(sid, event, payload)
         except Exception:  # pragma: no cover - the socket is gone
@@ -71,8 +99,9 @@ def guarded(event: str = "error") -> Callable[[Handler], Handler]:
         async def wrapper(sid: str, *args: Any, **kwargs: Any) -> Any:
             # The one per-event rate check (`app/core/abuse.py`): every
             # handler wears this decorator, so none repeats it.
+            data = args[0] if args else kwargs.get("data")
             if not socket_event_allowed(sid, fn.__name__):
-                await report(sid, RATE_LIMITED_MESSAGE, "RATE_LIMITED")
+                await report(sid, RATE_LIMITED_MESSAGE, "RATE_LIMITED", data)
                 return None
             try:
                 return await fn(sid, *args, **kwargs)
@@ -80,7 +109,7 @@ def guarded(event: str = "error") -> Callable[[Handler], Handler]:
                 # The event name, never the payload: a payload may carry a
                 # `host_secret` or a `session_token` (`00-conventions.md §2`).
                 logger.exception("Handler %r failed for sid %s.", fn.__name__, sid)
-                await report(sid, SERVER_ERROR_MESSAGE, "SERVER_ERROR")
+                await report(sid, SERVER_ERROR_MESSAGE, "SERVER_ERROR", data)
                 return None
 
         return wrapper

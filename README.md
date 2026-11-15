@@ -64,23 +64,24 @@ Every router under `app/api/v1/` is auto-discovered, so this table is the whole 
 | `GET` | `/api/v1/health` | none | `{"status": "ok"}` — liveness; touches neither backing service |
 | `GET` | `/api/v1/health/deep` | none | `{status, database, redis, state_backend}`, always HTTP 200; the answer is reused for 15 s |
 | `POST` | `/api/v1/rooms/create` | none (D3) | A new room: `room_code`, the `host_secret` (returned exactly once), `state`, `config` |
-| `GET` | `/api/v1/rooms/presets` | none | The three presets with their full configs, for the host UI; each `description`'s figures are written from the preset's own config (`scenario_summary`) |
+| `POST` | `/api/v1/rooms/batch-create` | none (D3) | The multi-game dashboard's create: `{count, preset?, config?, host_display_name?}` → `{rooms: [...]}`, each shaped like `/create`'s answer with its own `host_secret`. `count` is `Limits.min_batch_rooms`–`max_batch_rooms` (2–10). `config` is a patch over the preset, merged and validated once like `PUT /config`; an unknown preset (400) or a refused config (422 naming the field) creates nothing. A store that fills part-way deletes the rooms the batch made and answers 503 |
+| `POST` | `/api/v1/rooms/summary` | host secret per room, in the body | `{rooms: [{room_code, host_secret}]}` (1–10) → one `{room_code, exists, state, seats_taken, seats_total, week, duration_weeks, finished, can_start, start_blocked_reason}` per entry, in order. A missing room and a wrong secret both answer `exists: false` with every other field `null`. Read-only (no lock, no save, no TTL refresh); never carries a secret |
+| `GET` | `/api/v1/rooms/presets` | none | The three presets with their full configs, for the host UI; each `description`'s figures are written from the preset's own config (`scenario_summary`), and `is_default` marks the one `/create` uses when none is named |
 | `GET` | `/api/v1/rooms/limits` | none | Every range the host form checks (`core.limits.Limits`); the frontend keeps no copy |
-| `POST` | `/api/v1/rooms/preview` | none | `{config}` → the `demand_series`, `demand_is_example` and per-role `lead_times` that draft plays, from the engine's own generator and lead-time function (`core.preview`); a refused draft is the same 422 as `PUT /config` |
+| `POST` | `/api/v1/rooms/preview` | none | `{config, patch?}` → the `demand_series`, `demand_is_example` and per-role `lead_times` that draft plays, from the engine's own generator and lead-time function (`core.preview`), plus the validated `config`. A `patch` is merged over `config` first by `merge_config_patch`, as a config save merges it (the multi-game setup form edits its local draft this way); a refused draft is the same 422 as `PUT /config` |
 | `GET` | `/api/v1/rooms/{code}/status` | none | Is this room joinable? Always HTTP 200 — a 404 would be a room-code oracle. `host_display_name` is always `null` |
 | `PUT` | `/api/v1/rooms/{code}/config` | host secret | Applies a config patch while the room is still configurable |
 | `GET` | `/api/v1/rooms/{code}/config` | host secret | The current config |
 | `GET` | `/api/v1/games/{code}/results` | none | The full results payload for the latest finished game in that room — a results URL is shareable |
-| `GET` | `/api/v1/games/{code}/export` | host secret *or* the host's Firebase identity | The complete week-by-week record, `?format=csv` (default) or `json` |
+| `GET` | `/api/v1/games/{code}/export` | host secret *or* the host's Firebase identity | The complete week-by-week record, `?format=csv` (default) or `json`, with every player as their seat's `P<N>`. Stays host-only: room codes are short and reissued, so an open export by code could be enumerated. Once authorised it shares the export cache below |
 | `GET` | `/api/v1/games/id/{public_id}/results` | none | The same results payload, by the game's permanent id |
-| `GET` | `/api/v1/games/id/{public_id}/export` | the host's Firebase identity | The export by permanent id; no host secret, since room codes are reissued |
+| `GET` | `/api/v1/games/id/{public_id}/export` | none | The same export by permanent id, open to anyone who can see the results (2026-11-14): a guest host has no account to fall back on. It carries the results screen's figures and no uid, email, user id, guest id, session token, secret **or chosen name**: every player is their seat's `P<N>` (Retailer `P1` … Factory `P4`), in CSV and JSON alike. 404 for an unknown id. Limited to 100 an hour per address (below). A finished export is kept in an in-process LRU (64 files, keyed by `(public_id, format)`, no expiry, 200s only), so a repeat download reads nothing from the database; the cache is per instance and empty after a restart |
 | `POST` | `/api/v1/games/claim` | Firebase | Attributes a guest's finished games to the signed-in caller |
 | `POST` | `/api/v1/users/upsert` | Firebase | Creates or refreshes the caller's profile. The uid comes from the token, never the body |
 | `GET` | `/api/v1/users/me` | Firebase | The caller's profile, or 404 if it was never upserted |
 | `GET` | `/api/v1/users/me/stats` | Firebase | Aggregate statistics; a caller with no history gets a zero-filled 200, not a 404 |
 | `GET` | `/api/v1/users/me/games` | Firebase | Match history, newest first, `?page` / `?page_size` (clamped to 1–100) |
 | `GET` | `/api/v1/users/me/games/{game_id}` | Firebase | One of the caller's own games in full; 404 — never 403 — if they did not play in it |
-| `GET` | `/api/v1/users/me/hosted-games/{public_id}` | Firebase | 204 if the caller hosted that game, else 404; hosted games are never in the match history |
 
 In `/health/deep`, `status` is `"ok"` only when every backing service in use is reachable;
 otherwise `"degraded"`. With `REDIS_ENABLED=false` the unused Redis is not probed and is not
@@ -91,19 +92,21 @@ a reason to degrade, and `state_backend` reports `"memory"` rather than `"redis"
 `app/core/abuse.py` holds every limit as a module constant (none is a setting), counted in
 this process's memory per client address: `CF-Connecting-IP` when present, else the
 **rightmost** non-empty `X-Forwarded-For` entry (Render's proxy appends it), else the TCP
-peer. Every window is 60 s. The first request from each IP source logs `client ip source: …` (never the IP), so the deployment's header can be checked in Render's logs.
+peer. Every window is 60 s except room creation's and the export's, which are an hour. The first request from each IP source logs `client ip source: …` (never the IP), so the deployment's header can be checked in Render's logs.
 
 | What | Limit | Over it |
 |---|---|---|
-| Any REST request except `/api/v1/health` | 1200 per address | `429 {"detail": "Too many requests. Please slow down and try again."}`, `Retry-After: 60` |
-| `POST /api/v1/rooms/create` | 30 per address | the same 429 |
+| Any REST request except `/api/v1/health` | 1200 per address | `429 {"detail": "Too many requests. Please slow down and try again."}`, `Retry-After` = seconds left in the window (60 at most) |
+| `POST /api/v1/rooms/create` | 30 rooms per address per **hour** (`ROOM_CREATE_LIMIT_PER_IP`, `ROOM_CREATE_WINDOW_SECONDS`; the standard across the Novus games, 2026-11-14) | the same 429, `Retry-After` = seconds left in that hour |
+| `POST /api/v1/rooms/batch-create` | `count` (at most 10) against the same 30 rooms per address per hour, all or nothing (`room_create_allowed`, charged by the route after validation; the middleware leaves it on the general limit): three full batches, then the next batch or single create is refused | the same 429; a refused batch, or one refused for its preset or config, is charged nothing |
 | `GET /api/v1/rooms/{code}/status` | 120 per address | the same 429 |
 | `POST /api/v1/rooms/preview` | 300 per address | the same 429 |
+| `GET /api/v1/games/…/export` (by `public_id` and by room code, CSV and JSON together) | 100 per address per **hour** (`GAME_EXPORT_LIMIT_PER_IP`, `GAME_EXPORT_WINDOW_SECONDS`). The export by `public_id` is open, so this is its compute guard; a classroom shares one address, so never lower it | the same 429, `Retry-After` = seconds left in that hour |
 | Open sockets | 200 per address | the handshake is refused (`connect_error`, message `Too many connections from your network. Try again in a minute.`; a failed ID token gets the generic refusal) |
 | Socket events | 120 per connection | `error {message, code: "RATE_LIMITED"}` (play) or `join_error {message}` (lobby); the handler does not run |
 | `join` + `join_waiting` | 300 per address | as above |
 | One socket message | 64 KB (`max_http_buffer_size`) | refused by Engine.IO |
-| Live rooms, in-memory backend | 500 (`MAX_ROOMS` in `state_backend.py`) | `POST /rooms/create` answers `503` |
+| Live rooms, in-memory backend | 500 (`MAX_ROOMS` in `state_backend.py`) | `POST /rooms/create` answers `503`; `POST /rooms/batch-create` deletes the rooms it already made, then answers the same `503` |
 
 The numbers are sized for a classroom of about forty people behind one NAT address. A room
 code that `generate_room_code` could not have minted is refused before any lock or read
@@ -148,7 +151,7 @@ stages. Check that file and `00-decisions.md` §3 before "adding" one.
 ## Tests
 
 ```bash
-./venv/bin/python -m pytest -m "not dbschema"   # 1858 passed, 1 skipped, 136 deselected (2026-11-10)
+./venv/bin/python -m pytest -m "not dbschema"   # 1926 passed, 1 skipped (2026-11-14); -m dbschema: 134 passed
 ./venv/bin/python -m pytest tests/test_core     # one area
 ```
 
@@ -309,8 +312,8 @@ app/
 │       ├── __init__.py         all_routers(): every module's `router`, in module-name order
 │       ├── health.py           /health, /health/deep
 │       ├── users.py            /users/upsert, /users/me
-│       ├── user_games.py       /users/me/stats, /users/me/games[/{id}], /users/me/hosted-games/{public_id}
-│       ├── rooms.py            /rooms/create, /rooms/presets, /rooms/limits, /rooms/preview, /rooms/{code}/status|config
+│       ├── user_games.py       /users/me/stats, /users/me/games[/{id}]
+│       ├── rooms.py            /rooms/create, /rooms/batch-create, /rooms/summary, /rooms/presets, /rooms/limits, /rooms/preview, /rooms/{code}/status|config
 │       └── games.py            /games/{code}|id/{public_id} results and export, /games/claim
 ├── core/                       pure domain logic — no I/O, no clock, no global RNG
 │   ├── enums.py                Role, RoomState, DemandKind, Distribution, …

@@ -35,7 +35,7 @@ from ...core.limits import DEFAULT_LIMITS
 from ...services.game_service import get_game_service
 from ...services.room_service import RoomService, merge_config_patch
 from ...services.state_service import get_state_service, next_free_alias
-from ..errors import guarded
+from ..errors import guarded, requested_room_code
 from ..manager import sio, socket_manager
 
 logger = logging.getLogger(__name__)
@@ -739,8 +739,22 @@ async def release_role(sid: str, data: dict | None = None) -> None:
 # --- start_game ------------------------------------------------------------------------------- #
 
 
+async def _reject_start(sid: str, message: str, room_code: str | None) -> None:
+    """A refusal of ``start_game``: ``join_error`` ``{message, room_code}``.
+
+    ``room_code`` is additive (2026-11-14): the room the caller asked to
+    start, so the multi-game dashboard, which starts several rooms from one
+    socket, can show the refusal on that game's card. A listener reading
+    ``message`` alone is unaffected.
+    """
+    payload: dict[str, str] = {"message": message}
+    if room_code is not None:
+        payload["room_code"] = room_code
+    await socket_manager.emit_to_sid(sid, "join_error", payload)
+
+
 @sio.event
-@guarded("join_error")
+@guarded("join_error", echo_room_code=True)
 async def start_game(sid: str, data: dict | None = None) -> None:
     """Host authority. ``can_start`` is the whole gate (``§2.2``, ``§3.6``):
     the invalid-config case, the already-running case, the unfilled-roles
@@ -750,7 +764,7 @@ async def start_game(sid: str, data: dict | None = None) -> None:
     data = _payload(data)
     room_id = _room_id_of(data)
     if room_id is None:
-        await _reject(sid, _ROOM_NOT_FOUND)
+        await _reject_start(sid, _ROOM_NOT_FOUND, requested_room_code(data))
         return
 
     state_svc = get_state_service()
@@ -764,13 +778,13 @@ async def start_game(sid: str, data: dict | None = None) -> None:
     async with state_svc.lock(room_id):
         room = await state_svc.get_room(room_id)
         if room is None:
-            await _reject(sid, _ROOM_NOT_FOUND)
+            await _reject_start(sid, _ROOM_NOT_FOUND, requested_room_code(data))
             return
         room_code = room["room_code"]
         host_target = _host_target(room, sid)
 
         if not _room_service.check_host_secret(room, data):
-            await _reject(sid, _INVALID_HOST_SECRET)
+            await _reject_start(sid, _INVALID_HOST_SECRET, room_code)
             return
 
         try:
@@ -804,7 +818,7 @@ async def start_game(sid: str, data: dict | None = None) -> None:
                 # `can_start` remains the only rule, and nothing is mutated or
                 # saved either way (§3.6 step 4, AC 31).
                 return
-            await _reject(sid, reason or _INVALID_HOST_SECRET)
+            await _reject_start(sid, reason or _INVALID_HOST_SECRET, room_code)
             return
 
         assert config is not None  # can_start already parsed it successfully

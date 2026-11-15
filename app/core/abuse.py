@@ -8,9 +8,13 @@ Everything is counted in this process's memory, which matches the single
 instance ``REDIS_ENABLED=false`` already requires. At N instances every limit
 becomes N times looser, never tighter.
 
-It is wired in at three single points and nowhere else:
+It is wired in at four single points and nowhere else:
 
-* ``RateLimitMiddleware`` -- added once in ``app/main.py``; every REST route.
+* ``RateLimitMiddleware`` -- added once in ``app/main.py``; every REST route,
+  including the hourly game-export budget (``GAME_EXPORT_LIMIT_PER_IP``).
+* ``room_create_allowed`` -- ``POST /api/v1/rooms/batch-create`` charges the
+  room-create budget one hit per room it makes, from inside the route, because
+  only the route knows the count once the body has been validated.
 * ``socket_connect`` / ``socket_disconnect`` -- the handshake in
   ``app/sockets/handlers/connection.py``.
 * ``socket_event_allowed`` -- inside ``@guarded`` (``app/sockets/errors.py``),
@@ -25,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from collections.abc import Awaitable, Callable, Mapping, MutableMapping
 from typing import Any
@@ -32,12 +37,18 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "GAME_EXPORT_LIMIT_PER_IP",
+    "GAME_EXPORT_WINDOW_SECONDS",
     "MAX_SOCKETS_PER_IP",
     "RATE_LIMITED_MESSAGE",
+    "ROOM_CREATE_LIMIT_PER_IP",
+    "ROOM_CREATE_WINDOW_SECONDS",
     "RateLimitMiddleware",
     "RateLimiter",
     "client_ip",
     "reset",
+    "room_create_allowed",
+    "room_create_retry_after",
     "socket_connect",
     "socket_disconnect",
     "socket_event_allowed",
@@ -47,9 +58,14 @@ __all__ = [
 WINDOW_SECONDS = 60.0
 #: All REST requests from one address per window.
 REST_LIMIT_PER_IP = 1200
-#: ``POST /api/v1/rooms/create`` per address per window. Unauthenticated, and
-#: each one is a room held in memory for 24 h.
+#: Rooms created per address per ``ROOM_CREATE_WINDOW_SECONDS``, shared by
+#: ``POST /api/v1/rooms/create`` (one each) and ``POST /api/v1/rooms/batch-create``
+#: (one per room, at most ``max_batch_rooms`` = 10 a request). Unauthenticated,
+#: and each one is a room held in memory for 24 h. The standard across every
+#: Novus game (2026-11-14): 30 an hour, so three full batches.
 ROOM_CREATE_LIMIT_PER_IP = 30
+#: The room-create budget's window: an hour, not ``WINDOW_SECONDS``.
+ROOM_CREATE_WINDOW_SECONDS = 3600.0
 #: ``GET /api/v1/rooms/{code}/status`` per address per window. Unauthenticated
 #: and answers for any code -- the REST half of room-code guessing.
 ROOM_STATUS_LIMIT_PER_IP = 120
@@ -57,6 +73,15 @@ ROOM_STATUS_LIMIT_PER_IP = 120
 #: each one builds a config and draws a demand series. The host form debounces
 #: edits at 300 ms, so one teacher typing flat out stays under 200 a minute.
 ROOM_PREVIEW_LIMIT_PER_IP = 300
+#: ``GET /api/v1/games/.../export`` (both routes, CSV and JSON alike) per
+#: address per ``GAME_EXPORT_WINDOW_SECONDS``. The export by ``public_id`` is
+#: open to anyone who can see the game's results, and each one rebuilds the
+#: whole record from MySQL, so this is the compute guard; the results screen's
+#: once-per-session download button is only a courtesy. A classroom shares
+#: one address, so never lower it below a download per student per format.
+GAME_EXPORT_LIMIT_PER_IP = 100
+#: The export budget's window: an hour, not ``WINDOW_SECONDS``.
+GAME_EXPORT_WINDOW_SECONDS = 3600.0
 #: Sockets open at once from one address.
 MAX_SOCKETS_PER_IP = 200
 #: Socket events per connection per window. The host form debounces config
@@ -75,6 +100,7 @@ RATE_LIMITED_MESSAGE = "Too many requests. Please slow down and try again."
 _EXEMPT_PATHS = frozenset({"/api/v1/health"})
 _JOIN_EVENTS = frozenset({"join", "join_waiting"})
 _ROOMS_PREFIX = "/api/v1/rooms/"
+_GAMES_PREFIX = "/api/v1/games/"
 _MAX_IP_LENGTH = 64
 
 Scope = MutableMapping[str, Any]
@@ -106,18 +132,31 @@ class RateLimiter:
         self._hits: dict[str, tuple[float, int]] = {}
         self._pruned_at = float("-inf")
 
-    def allow(self, key: str) -> bool:
-        """Count one hit for ``key``; False once it is over the limit."""
+    def allow(self, key: str, cost: int = 1) -> bool:
+        """Count ``cost`` hits for ``key``; False when they would take it over
+        the limit.
+
+        All or nothing: a refused call counts nothing, so a batch too big for
+        what is left of the window (``POST /rooms/batch-create`` costs one hit
+        per room) does not use up the rest of it.
+        """
         now = time.monotonic()
         started, count = self._hits.get(key, (now, 0))
         if now - started >= self.window:
             started, count = now, 0
-        if count >= self.limit:
+        if count + cost > self.limit:
             return False
         if key not in self._hits and len(self._hits) >= self.max_keys:
             self._make_room(now)
-        self._hits[key] = (started, count + 1)
+        self._hits[key] = (started, count + cost)
         return True
+
+    def retry_after(self, key: str) -> int:
+        """Whole seconds until ``key``'s window ends (at least 1), for a 429's
+        ``Retry-After``."""
+        started, _count = self._hits.get(key, (time.monotonic(), 0))
+        left = self.window - (time.monotonic() - started)
+        return max(1, math.ceil(left))
 
     def forget(self, key: str) -> None:
         self._hits.pop(key, None)
@@ -194,25 +233,52 @@ def client_ip(scope: Mapping[str, Any]) -> str:
 # --- REST ------------------------------------------------------------------ #
 
 _rest = RateLimiter(REST_LIMIT_PER_IP)
-_room_create = RateLimiter(ROOM_CREATE_LIMIT_PER_IP)
+_room_create = RateLimiter(ROOM_CREATE_LIMIT_PER_IP, window=ROOM_CREATE_WINDOW_SECONDS)
 _room_status = RateLimiter(ROOM_STATUS_LIMIT_PER_IP)
 _room_preview = RateLimiter(ROOM_PREVIEW_LIMIT_PER_IP)
+_game_export = RateLimiter(GAME_EXPORT_LIMIT_PER_IP, window=GAME_EXPORT_WINDOW_SECONDS)
 
 
 def _route_limiter(method: str, path: str) -> RateLimiter | None:
-    """The stricter limiter for this route, if it has one."""
+    """The stricter limiter for this route, if it has one.
+
+    ``POST /api/v1/rooms/batch-create`` is deliberately absent: the route
+    charges ``_room_create`` itself, one hit per room (``room_create_allowed``),
+    so here it counts against the general REST budget only. Charging it here
+    as well would bill a batch one room more than it made.
+    """
     if method == "POST" and path == "/api/v1/rooms/create":
         return _room_create
     if method == "POST" and path == "/api/v1/rooms/preview":
         return _room_preview
     if method == "GET" and path.startswith(_ROOMS_PREFIX) and path.endswith("/status"):
         return _room_status
+    if method == "GET" and path.startswith(_GAMES_PREFIX) and path.endswith("/export"):
+        return _game_export
     return None
 
 
-async def _too_many_requests(send: Send) -> None:
+def room_create_allowed(scope: Mapping[str, Any], rooms: int) -> bool:
+    """Charge ``rooms`` room creations to the caller's address, all or nothing.
+
+    The batch route's half of the room-create budget: ``POST /rooms/create``
+    and ``POST /rooms/batch-create`` share ``ROOM_CREATE_LIMIT_PER_IP``, so a
+    batch of ten is ten creates. A refusal charges nothing. The caller answers
+    a refusal with the same 429 the middleware sends.
+    """
+    return _room_create.allow(client_ip(scope), cost=rooms)
+
+
+def room_create_retry_after(scope: Mapping[str, Any]) -> int:
+    """Seconds until the caller's room-create window ends, for the batch
+    route's 429 ``Retry-After`` (the middleware computes its own)."""
+    return _room_create.retry_after(client_ip(scope))
+
+
+async def _too_many_requests(send: Send, retry_after: int) -> None:
     """A 429 whose body is FastAPI's ``{"detail": "<string>"}`` shape, which
-    the frontend's ``errorMessage`` helper already renders."""
+    the frontend's ``errorMessage`` helper already renders, and whose
+    ``Retry-After`` is the seconds left in the window that refused it."""
     body = json.dumps({"detail": RATE_LIMITED_MESSAGE}).encode("utf-8")
     await send(
         {
@@ -221,7 +287,7 @@ async def _too_many_requests(send: Send) -> None:
             "headers": [
                 (b"content-type", b"application/json"),
                 (b"content-length", str(len(body)).encode("ascii")),
-                (b"retry-after", str(int(WINDOW_SECONDS)).encode("ascii")),
+                (b"retry-after", str(retry_after).encode("ascii")),
             ],
         }
     )
@@ -245,8 +311,11 @@ class RateLimitMiddleware:
             return
         ip = client_ip(scope)
         strict = _route_limiter(scope["method"], scope["path"])
-        if not _rest.allow(ip) or (strict is not None and not strict.allow(ip)):
-            await _too_many_requests(send)
+        if not _rest.allow(ip):
+            await _too_many_requests(send, _rest.retry_after(ip))
+            return
+        if strict is not None and not strict.allow(ip):
+            await _too_many_requests(send, strict.retry_after(ip))
             return
         await self.app(scope, receive, send)
 
@@ -311,6 +380,7 @@ def reset() -> None:
         _room_create,
         _room_status,
         _room_preview,
+        _game_export,
         _socket_events,
         _socket_joins,
     ):
