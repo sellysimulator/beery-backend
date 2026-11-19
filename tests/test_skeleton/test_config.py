@@ -354,7 +354,7 @@ def test_transport_and_service_defaults(monkeypatch):
     assert s.DB_PORT == 5432
     assert s.DB_USER == "postgres"
     assert s.DB_PASSWORD == ""
-    assert s.DB_DATABASE == "beery"
+    assert s.DB_DATABASE == "beerydb"
     assert s.DB_REQUIRE_SSL is True
     assert s.DB_SSL_CA == ""
     assert s.REDIS_ENABLED is False

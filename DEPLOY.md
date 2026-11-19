@@ -1,7 +1,7 @@
 # Deploying Beery_Backend
 
 Mirrors the Tequila Game (`00-decisions.md` D17): a Docker container on
-Render, the database `beery` on the Aiven PostgreSQL service all four Novus games share, and — **optionally** — a managed Redis
+Render, the database `beerydb` on the Aiven PostgreSQL service all four Novus games share, and — **optionally** — a managed Redis
 instance. See `docs/plan/23-deployment-and-ci.md` for the full specification
 this file implements, and the D4/D17 amendment notes in
 `docs/plan/00-decisions.md` for why Redis stopped being mandatory.
@@ -63,7 +63,7 @@ FIREBASE_SERVICE_ACCOUNT_JSON=
   ever printed or pasted anywhere.
 - `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_DATABASE` are the
   connection details of the shared Novus Aiven PostgreSQL service, with
-  Beery's own role and its database `beery` (Aiven's port, not 5432, is
+  Beery's own role and its database `beerydb` (Aiven's port, not 5432, is
   usual). Credentials may hold any character: the app percent-encodes them
   into `postgresql+psycopg://…`.
 - `DB_REQUIRE_SSL=true` with `DB_SSL_CA` set is the production setting: the
@@ -130,7 +130,7 @@ setting. Turn it on before the first moment there is a second instance.
 
 ## Managed PostgreSQL version
 
-The database is `beery` on the **Aiven PostgreSQL 17** service that all four
+The database is `beerydb` on the **Aiven PostgreSQL 17** service that all four
 Novus games (Selly, Lemony, Pulky, Beery) share: each game has its own
 database on it and its own login role that owns that database, and one CA
 certificate serves all four. It **must run PostgreSQL 17**:

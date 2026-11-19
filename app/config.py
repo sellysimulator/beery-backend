@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     DB_PORT: int = 5432
     DB_USER: str = "postgres"
     DB_PASSWORD: str = ""
-    DB_DATABASE: str = "beery"
+    DB_DATABASE: str = "beerydb"
     # TLS to PostgreSQL is required unless switched off (local Postgres without
     # TLS). DB_SSL_CA is the CA certificate of the shared Novus Aiven
     # PostgreSQL service (the same file for all four games) -- the PEM text

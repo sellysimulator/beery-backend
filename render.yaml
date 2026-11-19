@@ -2,7 +2,7 @@
 # 23-deployment-and-ci.md §3). One web service, built from the committed
 # Dockerfile -- plain uvicorn, no gunicorn (game_stack.md §3).
 #
-# The database is NOT declared here: it is the database `beery` on the Aiven
+# The database is NOT declared here: it is the database `beerydb` on the Aiven
 # PostgreSQL service all four Novus games share (each game its own database
 # and role), provisioned outside Render and wired in through the DB_*
 # environment variables below, set on the platform, never committed. See
