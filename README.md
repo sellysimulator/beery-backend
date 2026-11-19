@@ -1,7 +1,7 @@
 # Beery — Backend
 
-FastAPI + Socket.IO server for the Beer Distribution Game. Python 3.11, MySQL for the durable
-record, and an optional Redis for live room state.
+FastAPI + Socket.IO server for the Beer Distribution Game. Python 3.11, PostgreSQL 17 (psycopg 3)
+for the durable record, and an optional Redis for live room state.
 
 Built section by section against `../docs/plan/`. Each section document is the contract; the
 plan's `BUILD-LOG.md` records what is done and every specification defect found along the way.
@@ -15,10 +15,12 @@ plan's `BUILD-LOG.md` records what is done and every specification defect found 
   different interpreter than `python:3.11-slim` runs.
 - **Docker**, for the `dbschema` schema and migration suite (Testcontainers) and the image
   build test. Not needed to run the app.
-- **MySQL** is needed for anything that finishes a game or reads a profile: the durable
-  record is written when a game ends, and `/api/v1/users/*` and `/api/v1/games/*` read it.
-  Lobbies, configuration and play itself run without it. `alembic upgrade head` builds the
-  schema; there is no `create_all()`.
+- **PostgreSQL 17** is needed for anything that finishes a game or reads a profile: the
+  durable record is written when a game ends, and `/api/v1/users/*` and `/api/v1/games/*` read
+  it. Lobbies, configuration and play itself run without it. Locally,
+  `docker run --rm -e POSTGRES_PASSWORD=… -p 127.0.0.1:5432:5432 postgres:17` is enough
+  (`DB_REQUIRE_SSL=false`). `alembic upgrade head` builds the schema; there is no
+  `create_all()`.
 - **Redis is optional and off by default** (`REDIS_ENABLED=false`) — live room state then
   lives in this process. See *Room state and Redis* below before changing that.
 - Neither is needed to run the **tests**: the suite fakes the state store and never opens a
@@ -47,7 +49,7 @@ Port 8080 is what the frontend's dev proxy expects (`vite.config.ts`).
 To run without touching the database and Redis your `.env` points at:
 
 ```bash
-DB_HOST=127.0.0.1 DB_PORT=13306 REDIS_URL=redis://127.0.0.1:16379/0 \
+DB_HOST=127.0.0.1 DB_PORT=15432 DB_REQUIRE_SSL=false DB_SSL_CA= REDIS_URL=redis://127.0.0.1:16379/0 \
   ./venv/bin/uvicorn app.main:application --host 127.0.0.1 --port 8080 --http h11 --proxy-headers
 ```
 
@@ -86,6 +88,11 @@ Every router under `app/api/v1/` is auto-discovered, so this table is the whole 
 In `/health/deep`, `status` is `"ok"` only when every backing service in use is reachable;
 otherwise `"degraded"`. With `REDIS_ENABLED=false` the unused Redis is not probed and is not
 a reason to degrade, and `state_backend` reports `"memory"` rather than `"redis"`.
+
+Every timestamp in a response or a JSON export (`started_at`, `finished_at`) is ISO-8601 UTC
+with a `Z` suffix (`2026-11-18T14:00:00Z`, `app/schemas/types.py::UtcDateTime`), and money is
+a JSON number, never a string. A `{code}` in a games route is case-insensitive: the code is
+upper-cased before the lookup, as the live room lookup does.
 
 ### Abuse limits
 
@@ -145,18 +152,20 @@ field the live frontend reads: then the frontend ships first (see `DEPLOY.md`).
 ### Not built here
 
 Deliberately out of v1 and listed in `../docs/plan/99-phase-2-backlog.md`: spectators, turn
-timers, chat, `clone_room`, per-week write-through to MySQL, and chains that are not four
+timers, chat, `clone_room`, per-week write-through to PostgreSQL, and chains that are not four
 stages. Check that file and `00-decisions.md` §3 before "adding" one.
 
 ## Tests
 
 ```bash
-./venv/bin/python -m pytest -m "not dbschema"   # 1926 passed, 1 skipped (2026-11-14); -m dbschema: 134 passed
+./venv/bin/python -m pytest -m "not dbschema"   # everyday run, no Docker needed
 ./venv/bin/python -m pytest tests/test_core     # one area
 ```
 
 `-m "not dbschema"` is the everyday run. The deselected tests are the schema and migration
-suite, which needs a Docker daemon because it starts a real `mysql:8.4` with Testcontainers:
+suite (the migrations, `db/schema.postgres.sql`, the models-match check and the persistence
+round trips), which needs a Docker daemon because it starts a real `postgres:17` with
+Testcontainers:
 
 ```bash
 ./venv/bin/python -m pytest -m dbschema
@@ -192,7 +201,9 @@ reads is there, and nothing that is not read is declared.
 
 | Variable | Notes |
 |---|---|
-| `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_DATABASE` | MySQL. `DB_REQUIRE_SSL` and `DB_SSL_CA` for managed instances. |
+| `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_DATABASE` | PostgreSQL (default port 5432, user `postgres`); built into `postgresql+psycopg://…` with the credentials percent-encoded. Every session runs in UTC (`options=-c timezone=UTC`). |
+| `DB_REQUIRE_SSL`, `DB_SSL_CA` | TLS. `DB_REQUIRE_SSL=true` alone is `sslmode=require` (encrypted, server not verified); `DB_SSL_CA` — the CA of the shared Novus Aiven PostgreSQL service (the same for all four games), as PEM text or a path — is `sslmode=verify-full`. The boot log states which. |
+| `DB_POOL_SIZE`, `DB_MAX_OVERFLOW` | Connection pool per process, default 2 + 1 = 3: Beery's share of the Aiven Free service (20 connections) the four Novus games share (budget in `DEPLOY.md`). Raise both only on a bigger plan. |
 | `REDIS_ENABLED` | **`false` by default.** When false, live room state is held in this process and there is no Redis dependency at all. See *Room state and Redis* below. |
 | `REDIS_URL` | Only read when `REDIS_ENABLED` is true. Live room state, and the Socket.IO client manager. |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | The **entire** service account JSON on one line. |
@@ -218,7 +229,7 @@ CRITICAL line rather than silence.
 ## Room state and Redis
 
 Live room state — lobbies, seating, the running `GameEngine` — is authoritative in a key-value
-store, and MySQL is written only when a game finishes (`00-decisions.md` **D4**). Which store
+store, and PostgreSQL is written only when a game finishes (`00-decisions.md` **D4**). Which store
 holds it is a one-line switch.
 
 **`REDIS_ENABLED` is `false` by default**, so out of the box the app has no Redis dependency:
@@ -234,7 +245,7 @@ process can detect from the inside:
    room land on different processes and never see each other — no error, no log, just a lobby
    that will not fill. If you scale past one instance, or add `--workers`, you must turn Redis
    on in the same change.
-2. **Restarting the process ends every game in progress.** A game reaches MySQL only when it
+2. **Restarting the process ends every game in progress.** A game reaches PostgreSQL only when it
    finishes, so a deploy or a crash mid-session loses the rooms. Redis survives an app restart;
    it does not survive its own restart or eviction, so this is a narrowing of the window rather
    than a guarantee.
@@ -341,8 +352,8 @@ app/
 │   ├── base.py                 Base, TimestampMixin, utcnow()
 │   ├── user.py                 users, user_stats
 │   └── game.py                 games, configs, participants, weeks
-├── schemas/                    Pydantic request and response models (user, room, results)
-├── services/                   the stateful layer over the state store and MySQL
+├── schemas/                    Pydantic request and response models (user, room, results; types.UtcDateTime)
+├── services/                   the stateful layer over the state store and PostgreSQL
 │   ├── state_backend.py        the REDIS_ENABLED switch and the in-memory backend
 │   ├── state_service.py        room documents, the lock, TTL
 │   ├── room_service.py         lobby and seating rules
@@ -363,7 +374,8 @@ app/
         ├── lobby.py            joining, seating, config, start_game
         └── play.py             orders, pause/resume, bots, ending a game
 
-alembic/                        env.py reads settings.db_url; versions 0001 to 0005 (head)
+alembic/                        env.py reads settings.db_url; versions/0001_postgres_baseline (head)
+db/schema.postgres.sql          the generated DDL of head (`Novus/scripts/db/gen_ddl.py`)
 tests/
 ├── conftest.py                 FakeRedis, firebase_tokens, FakeSocketManager, the env pinning
 ├── test_skeleton/              the app, config, packaging and assembly

@@ -1,8 +1,8 @@
-"""The live schema, asserted against a real MySQL 8.4.
+"""The live schema, asserted against a real PostgreSQL 17.
 
 Covers ``13-db-models-and-migrations.md §5`` criteria 1, 5 to 18 and §6
 failure modes 1, 2, 4 to 11.  Criteria 2, 3 and 4 and failure mode 3 are
-``test_migration.py``'s.
+``test_migration.py``'s, with the DDL snapshot and models-match checks.
 
 Everything here reads the **database**: ``information_schema``, raw SQL,
 real inserts and real deletes.  Nothing imports ``app/models/game.py`` --
@@ -13,13 +13,12 @@ against a migration that never ran.
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from decimal import Decimal
 from typing import Any
 
 import pytest
-from sqlalchemy import Connection, create_engine, text
-from sqlalchemy.engine import make_url
+from sqlalchemy import Connection, text
 from sqlalchemy.exc import DatabaseError, IntegrityError
 
 from app.core.enums import DemandKind, Role, RoleAssignmentMode
@@ -27,8 +26,6 @@ from app.core.enums import DemandKind, Role, RoleAssignmentMode
 from .conftest import (
     EXPECTED_TABLES,
     FORBIDDEN_COLUMN_NAMES,
-    PROBE_DATABASE,
-    STRICT_SQL_MODE,
     TIMESTAMP_TABLES,
     DockerUnavailableWarning,
     columns,
@@ -37,6 +34,7 @@ from .conftest import (
     insert_game,
     insert_row,
     insert_user,
+    is_autoincrement,
     is_reserved_word_error,
     require_docker,
     table_names,
@@ -45,7 +43,7 @@ from .conftest import (
 
 pytestmark = pytest.mark.dbschema
 
-#: §2.2, §2.4, §2.8, §2.9 -- everything the plan types ``DECIMAL(12, 2)``.
+#: §2.2, §2.4, §2.8, §2.9 -- everything the plan types ``NUMERIC(12, 2)``.
 MONEY_COLUMNS = (
     ("games", "chain_total_cost"),
     ("role_configs", "holding_cost_per_unit_week"),
@@ -103,8 +101,8 @@ def test_timestamp_columns_have_a_server_default(db: Connection, table: str) -> 
         assert name in spec, f"{table}.{name} is missing"
         default = spec[name]["COLUMN_DEFAULT"]
         assert default is not None, f"{table}.{name} has no server_default"
-        # MySQL 8 reports an expression default verbatim -- `now()` for
-        # `server_default=func.now()`, `CURRENT_TIMESTAMP` for the literal.
+        # PostgreSQL reports `server_default=func.now()` as `now()`, and a
+        # `CURRENT_TIMESTAMP` literal as `CURRENT_TIMESTAMP`.
         rendered = str(default).upper()
         assert (
             "CURRENT_TIMESTAMP" in rendered or "NOW()" in rendered
@@ -117,9 +115,9 @@ def test_raw_insert_naming_neither_timestamp_succeeds(
 ) -> None:
     """AC 5 and failure mode 1 -- the insert section 14 actually performs.
 
-    Without ``server_default`` this raises ``Field 'created_at' doesn't have a
-    default value`` under ``STRICT_ALL_TABLES``, section 14 swallows it, and
-    every completed game is silently dropped  ``[HARD-WON]``.
+    Without ``server_default`` this raises PostgreSQL's ``null value in column
+    "created_at" ... violates not-null constraint``, section 14 swallows it,
+    and every completed game is silently dropped  ``[HARD-WON]``.
     """
     parents = _parent_columns(db, table)
     row_id = insert_row(db, table, **parents)
@@ -136,6 +134,20 @@ def test_raw_insert_naming_neither_timestamp_succeeds(
     assert stored.updated_at is not None
 
 
+def test_no_fact_column_has_a_database_default(db: Connection) -> None:
+    """Only ``created_at``/``updated_at`` (``now()``) and the serial ids carry
+    a default in the migrated schema: every fact is written by the app."""
+    offenders = [
+        f"{table}.{name} DEFAULT {spec['COLUMN_DEFAULT']}"
+        for table in sorted(EXPECTED_TABLES)
+        for name, spec in columns(db, table).items()
+        if spec["COLUMN_DEFAULT"] is not None
+        and not is_autoincrement(spec)
+        and name not in {"created_at", "updated_at"}
+    ]
+    assert offenders == []
+
+
 def test_timestamp_free_tables_really_have_none(db: Connection) -> None:
     """§2.7 and §2.8 -- bulk tables carry no timestamp columns."""
     for table in ("demand_series", "weeks"):
@@ -148,7 +160,8 @@ def test_timestamp_free_tables_really_have_none(db: Connection) -> None:
 
 
 def test_no_column_is_named_after_a_reserved_word(db: Connection) -> None:
-    """AC 13 -- not ``order``, ``min``, ``max``, ``key``, ``rank``..."""
+    """AC 13 -- not ``order``, ``user``, ``group``, ``limit``, ``end``, nor
+    ``min``, ``max``, ``key``, ``rank``..."""
     offenders = [
         f"{table}.{name}"
         for table in sorted(EXPECTED_TABLES)
@@ -161,14 +174,16 @@ def test_no_column_is_named_after_a_reserved_word(db: Connection) -> None:
 def test_every_column_parses_unquoted(db: Connection) -> None:
     """AC 13, the general case, asked of the server rather than a word list.
 
-    A reserved identifier fails to parse without backticks, which is a
-    permanent tax on every raw query section 14 and 15 write.
+    A reserved identifier fails to parse without double quotes, which is a
+    permanent tax on every raw query section 14 and 15 write.  Each probe runs
+    in a savepoint: a failed statement aborts a PostgreSQL transaction.
     """
     offenders = []
     for table in sorted(EXPECTED_TABLES):
         for name in columns(db, table):
             try:
-                db.execute(text(f"SELECT {name} FROM {table} WHERE 1 = 0"))
+                with db.begin_nested():
+                    db.execute(text(f"SELECT {name} FROM {table} WHERE 1 = 0"))
             except DatabaseError as exc:
                 if is_reserved_word_error(exc):
                     offenders.append(f"{table}.{name}")
@@ -388,20 +403,20 @@ def test_participants_accepts_a_guest_and_a_bot(db: Connection) -> None:
 
 
 @pytest.mark.parametrize(("table", "column"), MONEY_COLUMNS)
-def test_money_columns_are_decimal_12_2(
+def test_money_columns_are_numeric_12_2(
     db: Connection, table: str, column: str
 ) -> None:
-    """AC 16 -- ``DECIMAL(12, 2)`` throughout (§4.5)."""
+    """AC 16 -- ``NUMERIC(12, 2)`` throughout (§4.5)."""
     spec = columns(db, table)[column]
-    assert spec["DATA_TYPE"] == "decimal"
+    assert spec["DATA_TYPE"] == "numeric"
     assert (spec["NUMERIC_PRECISION"], spec["NUMERIC_SCALE"]) == (12, 2)
 
 
 def test_no_decimal_column_lost_its_scale(db: Connection) -> None:
-    """Failure mode 6, generalised -- a ``DECIMAL(12, 0)`` typo anywhere."""
+    """Failure mode 6, generalised -- a ``NUMERIC(12, 0)`` typo anywhere."""
     for table in sorted(EXPECTED_TABLES):
         for name, spec in columns(db, table).items():
-            if spec["DATA_TYPE"] == "decimal":
+            if spec["DATA_TYPE"] == "numeric":
                 assert spec["NUMERIC_SCALE"] >= 2, f"{table}.{name} has scale 0"
 
 
@@ -410,7 +425,7 @@ def test_money_rounds_to_two_places_and_never_to_an_integer(
 ) -> None:
     """AC 16 and failure mode 6 -- ``0.50`` reads back as ``0.50``.
 
-    A ``DECIMAL(12, 0)`` typo is invisible until a debrief shows every cost
+    A ``NUMERIC(12, 0)`` typo is invisible until a debrief shows every cost
     as a whole number.
     """
     game_id = insert_game(db)
@@ -432,7 +447,7 @@ def test_money_rounds_to_two_places_and_never_to_an_integer(
 
 
 def test_bot_and_bullwhip_precision(db: Connection) -> None:
-    """§4.5 -- ``DECIMAL(6, 4)`` for bot parameters, ``DECIMAL(10, 4)`` for
+    """§4.5 -- ``NUMERIC(6, 4)`` for bot parameters, ``NUMERIC(10, 4)`` for
     ``bullwhip_avg``, which is a ratio and needs precision, not range."""
     config_spec = columns(db, "game_configs")
     for name in BOT_COLUMNS:
@@ -518,7 +533,7 @@ def test_enum_columns_are_varchar_wide_enough_for_every_member(
     longest_role = max(len(role.value) for role in Role)
     for table in ("role_configs", "weeks", "participants"):
         spec = columns(db, table)["role"]
-        assert spec["DATA_TYPE"] == "varchar"
+        assert spec["DATA_TYPE"] == "character varying"
         assert spec["CHARACTER_MAXIMUM_LENGTH"] == 16 >= longest_role
 
     participant_type = columns(db, "participants")["participant_type"]
@@ -611,8 +626,12 @@ def test_room_code_is_indexed_but_not_unique_on_its_own(db: Connection) -> None:
 
     # Two games may share a room code, so long as they did not start in the
     # same second -- which two real games in one room never do.
-    first = insert_game(db, room_code="BEER01", started_at="2026-01-02 03:04:05")
-    second = insert_game(db, room_code="BEER01", started_at="2026-01-09 03:04:05")
+    first = insert_game(
+        db, room_code="BEER01", started_at=datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+    )
+    second = insert_game(
+        db, room_code="BEER01", started_at=datetime(2026, 1, 9, 3, 4, 5, tzinfo=UTC)
+    )
     assert first != second
     assert (
         db.execute(
@@ -628,16 +647,13 @@ def test_room_code_is_indexed_but_not_unique_on_its_own(db: Connection) -> None:
 def test_timestamps_round_trip_as_utc(app_connection: Connection) -> None:
     """Failure mode 9 -- no timezone drift.
 
-    Uses section 01's own engine, because the ``SET time_zone = '+00:00'``
-    listener registered there is what makes this pass.  MySQL ``DATETIME``
-    carries no offset, so a value read back over raw SQL is naive; what is
-    assertable -- and what the listener is for -- is that the wall clock is
-    UTC at both ends.
+    Uses section 01's own engine, because the ``options=-c timezone=UTC``
+    connect argument ``app/config.py`` gives it is what makes the session
+    UTC.  The columns are ``timestamptz``, so a value reads back
+    timezone-aware, and its offset must be zero whatever the server's own
+    ``TimeZone`` is.
     """
-    assert (
-        app_connection.execute(text("SELECT @@session.time_zone")).scalar_one()
-        == "+00:00"
-    )
+    assert app_connection.execute(text("SHOW TimeZone")).scalar_one() == "UTC"
 
     written = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
     game_id = insert_game(app_connection, started_at=written, finished_at=written)
@@ -647,16 +663,26 @@ def test_timestamps_round_trip_as_utc(app_connection: Connection) -> None:
     ).one()
 
     started = read_back.started_at
-    if started.tzinfo is None:
-        started = started.replace(tzinfo=timezone.utc)
+    assert started.tzinfo is not None, "timestamptz must read back aware"
     assert started.utcoffset() == timezone.utc.utcoffset(None)
     assert started == written
 
     created = read_back.created_at
-    if created.tzinfo is None:
-        created = created.replace(tzinfo=timezone.utc)
+    assert created.tzinfo is not None
+    assert created.utcoffset() == timezone.utc.utcoffset(None)
     drift = abs((created - datetime.now(timezone.utc)).total_seconds())
     assert drift < 300, f"server_default timestamp is {drift:.0f}s off UTC"
+
+
+def test_timestamp_columns_are_timestamptz(db: Connection) -> None:
+    """Every stored time is ``timestamp with time zone``: a naive
+    ``timestamp`` would silently take the session's zone on the way in."""
+    for table in sorted(EXPECTED_TABLES):
+        for name, spec in columns(db, table).items():
+            if "timestamp" in spec["DATA_TYPE"]:
+                assert (
+                    spec["DATA_TYPE"] == "timestamp with time zone"
+                ), f"{table}.{name} is {spec['DATA_TYPE']}"
 
 
 # --- failure mode 10 -------------------------------------------------------
@@ -706,68 +732,24 @@ def test_every_module_in_this_suite_is_marked() -> None:
 
 # --- failure mode 11 -------------------------------------------------------
 
-_PROBE_DDL = (
-    "CREATE TABLE missing_default_probe ("
-    "  id INT NOT NULL PRIMARY KEY,"
-    "  created_at DATETIME NOT NULL"  # the bug: NOT NULL, no server_default
-    ")"
-)
-_PROBE_INSERT = "INSERT INTO missing_default_probe (id) VALUES (1)"
 
+def test_a_missing_server_default_is_rejected_not_filled_in(db: Connection) -> None:
+    """Failure mode 11 -- the raw-insert test (failure mode 1) can only catch
+    a missing ``server_default`` because the server refuses the insert.
 
-def test_strict_mode_is_what_detects_a_missing_server_default(
-    admin_engine: Any, mysql_url: str, non_strict_mysql_url: str
-) -> None:
-    """Failure mode 11 -- proof that §3.1 rule 2 is load-bearing.
-
-    The same table with the same bug: under ``STRICT_ALL_TABLES`` the insert
-    fails and failure mode 1 catches the bug; on a server whose strictness is
-    switched off the insert succeeds and the bug ships.
-
-    Note that MySQL 8.4's *default* ``sql_mode`` already contains
-    ``STRICT_TRANS_TABLES``, which is strict for InnoDB, so the permissive
-    server has to be started with strictness explicitly cleared -- merely
-    omitting the flag would leave it strict.
+    PostgreSQL has no permissive mode that would quietly fill a ``NOT NULL``
+    column with a zero value, so this proves the detector works on the same
+    server the suite runs against: the same bug, in a throwaway temporary
+    table, is a ``not_null_violation`` (SQLSTATE ``23502``).
     """
-    with admin_engine.connect() as admin:
-        admin.execute(text(f"DROP DATABASE IF EXISTS {PROBE_DATABASE}"))
-        admin.execute(text(f"CREATE DATABASE {PROBE_DATABASE}"))
-    strict_url = (
-        make_url(mysql_url)
-        .set(database=PROBE_DATABASE)
-        .render_as_string(hide_password=False)
+    db.execute(
+        text(
+            "CREATE TEMPORARY TABLE missing_default_probe ("
+            "  id INTEGER NOT NULL PRIMARY KEY,"
+            "  created_at TIMESTAMPTZ NOT NULL"  # the bug: no server_default
+            ")"
+        )
     )
-    strict_engine = create_engine(strict_url, future=True)
-
-    try:
-        with strict_engine.begin() as strict:
-            assert (
-                STRICT_SQL_MODE
-                in strict.execute(text("SELECT @@session.sql_mode")).scalar_one()
-            )
-            strict.execute(text(_PROBE_DDL))
-            with pytest.raises(DatabaseError) as caught:
-                strict.execute(text(_PROBE_INSERT))
-            assert "1364" in str(caught.value) or "default value" in str(caught.value)
-    finally:
-        strict_engine.dispose()
-        with admin_engine.connect() as admin:
-            admin.execute(text(f"DROP DATABASE IF EXISTS {PROBE_DATABASE}"))
-
-    loose_engine = create_engine(non_strict_mysql_url, future=True)
-    try:
-        with loose_engine.begin() as loose:
-            sql_mode = loose.execute(text("SELECT @@session.sql_mode")).scalar_one()
-            assert "STRICT" not in sql_mode
-            loose.execute(text("DROP TABLE IF EXISTS missing_default_probe"))
-            loose.execute(text(_PROBE_DDL))
-            loose.execute(text(_PROBE_INSERT))
-            assert (
-                loose.execute(
-                    text("SELECT COUNT(*) FROM missing_default_probe")
-                ).scalar_one()
-                == 1
-            ), "the permissive server rejected the insert too"
-            loose.execute(text("DROP TABLE missing_default_probe"))
-    finally:
-        loose_engine.dispose()
+    with pytest.raises(IntegrityError) as caught, db.begin_nested():
+        db.execute(text("INSERT INTO missing_default_probe (id) VALUES (1)"))
+    assert getattr(caught.value.orig, "sqlstate", None) == "23502"

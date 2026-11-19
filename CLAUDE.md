@@ -28,7 +28,7 @@ measures.
 - Games are 8–104 weeks (default 36), with three presets: `CLASSIC_MIT`, `FAST_GAME`,
   `CHAOS`.
 
-This repo is the **backend**: FastAPI + Socket.IO on Python 3.11, MySQL for the durable
+This repo is the **backend**: FastAPI + Socket.IO on Python 3.11, PostgreSQL 17 for the durable
 record, an optional Redis for live room state.
 
 ### Where it sits in the Novus stack
@@ -64,7 +64,7 @@ production the frontend's `VITE_SOCKET_URL` points directly at the Render host.
   is current.
 - **`DEPLOY.md` (here)** — production topology diagram, platform env vars, **"Redis is
   optional"** (what `REDIS_ENABLED=false` costs and when it stops being allowed), the
-  managed MySQL 8.4 requirement, the "ship frontend and backend together" rule, a pre-class
+  managed PostgreSQL 17 requirement (Aiven, TLS, DDL snapshot), the "ship frontend and backend together" rule, a pre-class
   deploy checklist, and what CI runs.
 - **`../docs/plan/`** — the build plan this code was written against. Open when you need
   the *why*:
@@ -99,12 +99,13 @@ app/
   db/                base.py (re-export of Base), session.py (engine, SessionLocal, get_db)
   models/            SQLAlchemy 2.0 models; package __init__ auto-imports every module
   schemas/           Pydantic request/response models (user, room, results)
-  services/          stateful/impure layer over the state store and MySQL
+  services/          stateful/impure layer over the state store and PostgreSQL
   sockets/
     manager.py       AsyncServer `sio` + `socket_manager` (sid → room/alias/identity)
     errors.py        `@guarded(...)` decorator
     handlers/        auto-discovered: connection.py, lobby.py, play.py
-alembic/             env.py reads the URL from settings; versions/0001 … 0005
+alembic/             env.py reads the URL from settings; versions/0001_postgres_baseline
+db/                  schema.postgres.sql — generated DDL of head (scripts/db/gen_ddl.py)
 tests/               test_skeleton, test_auth, test_core, test_services, test_api,
                      test_sockets, test_models (dbschema), test_deploy
 ```
@@ -125,14 +126,14 @@ do not edit it to register one.
 | Concern | Where |
 |---|---|
 | Settings | `app/config.py` → `settings`. `SettingsConfigDict(env_file=".env", case_sensitive=True, extra="ignore")`. |
-| Env vars | `.env.example` is the complete list and is kept complete: `DEBUG HOST PORT CORS_ORIGINS DB_HOST DB_PORT DB_USER DB_PASSWORD DB_DATABASE DB_REQUIRE_SSL DB_SSL_CA REDIS_ENABLED REDIS_URL FIREBASE_SERVICE_ACCOUNT_JSON`, plus `MAX_DISPLAY_NAME_LENGTH`, `APP_NAME` and `VERSION` which have sane defaults. Every `Settings` field is read somewhere — do not add one that is not. |
-| DB connection | `settings.db_url` → `mysql+pymysql://...`, credentials percent-encoded with `quote(..., safe="")`. Engine in `app/db/session.py`: `pool_pre_ping`, `pool_recycle=3600`, `pool_size=10`, `max_overflow=20`, and a `connect` listener forcing `SET time_zone='+00:00'`. |
+| Env vars | `.env.example` is the complete list and is kept complete: `DEBUG HOST PORT CORS_ORIGINS DB_HOST DB_PORT DB_USER DB_PASSWORD DB_DATABASE DB_REQUIRE_SSL DB_SSL_CA DB_POOL_SIZE DB_MAX_OVERFLOW REDIS_ENABLED REDIS_URL FIREBASE_SERVICE_ACCOUNT_JSON`, plus `MAX_DISPLAY_NAME_LENGTH`, `APP_NAME` and `VERSION` which have sane defaults. Every `Settings` field is read somewhere — do not add one that is not. |
+| DB connection | `settings.db_url` → `postgresql+psycopg://...` (psycopg 3), credentials percent-encoded with `quote(..., safe="")`. `settings.db_connect_args`: always `options=-c timezone=UTC` (every session is UTC); `DB_SSL_CA` (the CA of the Aiven PostgreSQL service the four Novus games share, PEM text or path; PEM text is written once to a temp file because libpq reads `sslrootcert` from a file) → `sslmode=verify-full`, else `DB_REQUIRE_SSL` → `sslmode=require`; `{}` for a non-Postgres URL. Engine in `app/db/session.py`: `pool_pre_ping`, `pool_recycle=3600`, `pool_size=settings.DB_POOL_SIZE` (2), `max_overflow=settings.DB_MAX_OVERFLOW` (1), `pool_timeout=10`: 3 per instance, Beery's share of the shared Aiven Free service's 20 (budget in `DEPLOY.md`; deploy one game at a time). |
 | Auth | Firebase Admin only. `app/core/firebase.py::init_firebase()` returns `None` (never raises) when unconfigured. `app/api/deps.py::verify_firebase_id_token` is the **one** verifier, shared by REST and the socket handshake. No JWTs are minted here. |
 | CORS | `app/main.py` sets `allow_credentials=True`, so `Settings` **rejects `"*"` in `CORS_ORIGINS` at load**. `sockets/manager.py` passes the same list to `cors_allowed_origins`. |
-| Alembic | `alembic.ini` has **no `sqlalchemy.url`** — `alembic/env.py` reads `settings.db_url` and imports `app.models` so `Base.metadata` is populated. Head is `0005` (2026-11-02: `weeks.week_cost` renamed `total_week_cost`, `game_configs.allow_negative_orders` dropped). |
-| Deployment | `render.yaml`: one Docker web service, `healthCheckPath: /api/v1/health`, `preDeployCommand: alembic upgrade head`, `REDIS_ENABLED=false`. MySQL is **not** declared there — provisioned externally and wired in via env. Redis is **optional** and likewise not declared; with the flag off the deployment has no Redis at all, which is only valid at exactly one instance. |
+| Alembic | `alembic.ini` has **no `sqlalchemy.url`** — `alembic/env.py` reads `settings.db_url` and imports `app.models` so `Base.metadata` is populated. One baseline, `0001_postgres_baseline` (autogenerated from the models against an empty PostgreSQL 17, hand-reviewed), builds the whole schema; later revisions chain from it. `Base.metadata` has a naming convention, so unnamed constraints/indexes get deterministic names. The DDL of head is committed as `db/schema.postgres.sql`, regenerated with `python3 scripts/db/gen_ddl.py --backend Beery/Beery_Backend` (from `Novus/`) in the same change as any migration; the `dbschema` suite fails on drift (`test_ddl_snapshot_matches_migrations`, `test_models_match_migrations`). |
+| Deployment | `render.yaml`: one Docker web service, `healthCheckPath: /api/v1/health`, `preDeployCommand: alembic upgrade head`, `REDIS_ENABLED=false`. The database is **not** declared there — the database `beery` (own role) on the Aiven PostgreSQL 17 service all four Novus games share, wired in via the `DB_*` env vars. Redis is **optional** and likewise not declared; with the flag off the deployment has no Redis at all, which is only valid at exactly one instance. |
 | Docker | `python:3.11-slim`, plain uvicorn (no gunicorn), `--http h11 --proxy-headers`, `CMD` binds `${PORT:-8080}`. `.dockerignore` excludes `.env`, `tests/`, `venv/`, `.git/`. |
-| CI | `.github/workflows/ci.yml`, runs at repo root (this repo IS `Beery_Backend`; no `working-directory`). jobs: `test` (ruff + black + mypy app/core + pytest `-m "not dbschema"` at ≥80% + `app/core` at ≥95% + docker build), `dbschema` (Testcontainers MySQL, fails if nothing passed). No deploy job: Render auto-deploys `main` after checks pass (`autoDeployTrigger: checksPass`). |
+| CI | `.github/workflows/ci.yml`, runs at repo root (this repo IS `Beery_Backend`; no `working-directory`). jobs: `test` (ruff + black + mypy app/core + pytest `-m "not dbschema"` at ≥80% + `app/core` at ≥95% + docker build), `dbschema` (Testcontainers `postgres:17`, fails if nothing passed). No deploy job: Render auto-deploys `main` after checks pass (`autoDeployTrigger: checksPass`). |
 
 ## Commands
 
@@ -149,9 +150,9 @@ cp .env.example .env
 ./venv/bin/uvicorn app.main:application --reload          # local iteration
 
 # tests
-./venv/bin/python -m pytest -m "not dbschema"             # 1926 passed, 1 skipped (2026-11-14); -m dbschema: 134 passed
+./venv/bin/python -m pytest -m "not dbschema"             # everyday run, no Docker
 ./venv/bin/python -m pytest tests/test_core               # one area
-./venv/bin/python -m pytest -m dbschema                   # needs a Docker daemon (mysql:8.4)
+./venv/bin/python -m pytest -m dbschema                   # needs a Docker daemon (postgres:17)
 BEERY_DOCKER_BUILD_TEST=1 ./venv/bin/python -m pytest -k docker   # the opt-in image build
 
 # gates (all must be clean; CI runs them over `app tests`)
@@ -176,17 +177,30 @@ mount in the image, so a source change needs a rebuild.
 
 ## Architecture that matters
 
-- **MySQL + SQLAlchemy 2.0, fully synchronous.** `Mapped[...] / mapped_column(...)`
-  declarative style, `Session` via the `get_db` FastAPI dependency. PyMySQL, never
-  `mysql-connector-python` (it pins `protobuf<=4.21.12` and conflicts with `firebase-admin`).
-  There is **no `Base.metadata.create_all()` anywhere** — Alembic revision `0001` is the
-  only thing that builds the schema.
+- **PostgreSQL + SQLAlchemy 2.0, fully synchronous.** `Mapped[...] / mapped_column(...)`
+  declarative style, `Session` via the `get_db` FastAPI dependency. psycopg 3
+  (`psycopg[binary]`). There is **no `Base.metadata.create_all()` anywhere** — Alembic
+  (`0001_postgres_baseline` and its successors) is the only thing that builds the schema.
+- **PostgreSQL rules the code relies on.** Timestamps are `timestamptz`, written as aware UTC
+  and read back aware; every response serialises them through `schemas/types.py::UtcDateTime`
+  (ISO-8601 UTC with `Z`). `games.started_at` is still truncated to whole seconds in
+  `db_service._parse_timestamp`: `(room_code, started_at)` is the persistence idempotency key
+  (`uq_games_room_code_started_at`) and `timestamptz` would otherwise keep microseconds.
+  String comparison is case-sensitive, so a client-supplied room code is upper-cased before a
+  database lookup (`games.find_latest_finished_game`), never left to a collation. Raw SQL binds
+  Python `bool`s to boolean columns (no `0`/`1`), takes new ids with `RETURNING`, and upserts with
+  `ON CONFLICT ... DO UPDATE` (`stats_service`; SQLite parses the same statement). `order` is a
+  reserved word, hence `weeks.order_qty`; `min_value`/`max_value` likewise avoid aggregate
+  names. A failed statement aborts the transaction: catch inside `db.begin_nested()` if the
+  transaction must go on (as `user_service.get_or_create` does). `server_default` exists only on
+  `created_at`/`updated_at` (`now()`); every fact column (`ended_early`, `is_bot`, …) is written
+  explicitly by the app, and `test_db.py` / `test_schema.py` fail on any other default.
 - **Async/sync split.** Socket handlers, services over the state store, and the routes are
   `async def`; everything touching SQLAlchemy is sync and runs on the threadpool FastAPI
   gives a sync dependency. The deep-health DB ping explicitly uses
   `anyio.to_thread.run_sync`. Do not call a sync `Session` from inside an `async def` without
   that.
-- **D4 — the state store is authoritative for a live game; MySQL is written only when a
+- **D4 — the state store is authoritative for a live game; PostgreSQL is written only when a
   game finishes.** The room is a JSON document at `room:{CODE}` with a 24 h TTL. The
   `GameEngine` is rehydrated per operation (`to_payload`/`from_payload`), never held in
   process memory between handlers.
@@ -204,8 +218,9 @@ mount in the image, so a source change needs a rebuild.
   Pydantic only. The response shapes in `app/schemas/results.py` are **frozen** — the
   shipped frontend expects those exact names. Money fields there are declared `float`, never
   `Decimal`, because a `Decimal` on the wire breaks the frontend charts.
-- **Money.** `float` in the engine, in the room document and in payloads; `DECIMAL(12,2)`
-  in MySQL. Rounding (`ROUND_HALF_UP`) happens **only** at the persistence boundary, in
+- **Money.** `float` in the engine, in the room document and in payloads; `NUMERIC(12,2)`
+  in PostgreSQL (read back as `Decimal`, converted to `float` by the response schemas and
+  `games.py`'s export rows). Rounding (`ROUND_HALF_UP`) happens **only** at the persistence boundary, in
   `db_service.round_money`. Quantities are `int` everywhere.
 - **Purity of `app/core/`.** Domain modules import nothing from `app.config`,
   `app.services`, `app.db`, `app.sockets`, `app.api`; no I/O, no clock, no global `random`.

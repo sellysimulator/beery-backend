@@ -535,20 +535,24 @@ def test_ac14_schema_job_fails_when_every_test_in_it_skipped() -> None:
 
 
 def test_ac15_testcontainers_image_matches_the_documented_managed_engine() -> None:
-    """AC 15: the Testcontainers MySQL image tag matches the engine version
-    of the deployed managed instance."""
+    """AC 15: the Testcontainers PostgreSQL image tag matches the major
+    version of the deployed managed instance, as DEPLOY.md and render.yaml
+    both document it."""
     schema_conftest_source = _read(SCHEMA_CONFTEST)
-    match = re.search(r'MYSQL_IMAGE\s*=\s*"mysql:([\d.]+)"', schema_conftest_source)
-    assert match, "could not find MYSQL_IMAGE in tests/test_models/conftest.py"
+    match = re.search(r'POSTGRES_IMAGE\s*=\s*"postgres:(\d+)"', schema_conftest_source)
+    assert match, "could not find POSTGRES_IMAGE in tests/test_models/conftest.py"
     pinned_version = match.group(1)
 
-    deploy_text = _read(DEPLOY_MD)
-    render_text = _read(RENDER_YAML)
-    assert pinned_version in deploy_text or pinned_version in render_text, (
-        f"neither DEPLOY.md nor render.yaml documents the managed MySQL "
-        f"engine version ({pinned_version}) that the Testcontainers image "
-        "in tests/test_models/conftest.py is pinned to"
-    )
+    documented = re.compile(rf"PostgreSQL {pinned_version}\b")
+    for name, text in (
+        ("DEPLOY.md", _read(DEPLOY_MD)),
+        ("render.yaml", _read(RENDER_YAML)),
+    ):
+        assert documented.search(text), (
+            f"{name} does not document the managed PostgreSQL version "
+            f"({pinned_version}) that the Testcontainers image in "
+            "tests/test_models/conftest.py is pinned to"
+        )
 
 
 # --- AC 18 -----------------------------------------------------------------

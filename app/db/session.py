@@ -1,9 +1,8 @@
 """Synchronous SQLAlchemy engine, session factory and FastAPI dependency."""
 
 from collections.abc import Iterator
-from typing import Any
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..config import settings
@@ -12,22 +11,20 @@ engine = create_engine(
     settings.db_url,
     pool_pre_ping=True,
     pool_recycle=3600,
-    # Stated explicitly rather than inheriting QueuePool's 5 + 10, which is too
-    # small for a cloud database under a classroom's worth of concurrent rooms.
-    pool_size=10,
-    max_overflow=20,
+    # At most DB_POOL_SIZE + DB_MAX_OVERFLOW (2 + 1) connections per process,
+    # this game's share of the Aiven service all four Novus games use (budget
+    # in DEPLOY.md, "Managed PostgreSQL version"). Database
+    # work is short (one write per finished game, a few reads per results
+    # page); a request that cannot get a connection within 10 s fails rather
+    # than queueing forever.
+    pool_size=settings.DB_POOL_SIZE,
+    max_overflow=settings.DB_MAX_OVERFLOW,
+    pool_timeout=10,
     echo=settings.DEBUG,
+    # Includes `options=-c timezone=UTC`: every session reads and writes
+    # timestamptz in UTC (`app/config.py`).
     connect_args=settings.db_connect_args,
 )
-
-
-@event.listens_for(engine, "connect")
-def _set_utc_timezone(dbapi_connection: Any, connection_record: Any) -> None:
-    """Keep every timestamp the driver hands back in UTC."""
-    cursor = dbapi_connection.cursor()
-    cursor.execute("SET time_zone = '+00:00'")
-    cursor.close()
-
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

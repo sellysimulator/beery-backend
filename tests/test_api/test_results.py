@@ -16,7 +16,7 @@ test helpers, reused wholesale rather than reinvented
 ``app/api/v1/games.py``, ``app/api/v1/user_games.py``, ``app/schemas/
 results.py`` and ``app/services/export_service.py`` are never opened.
 
-The Testcontainers MySQL fixture chain, ``api_client``, and the
+The Testcontainers PostgreSQL fixture chain, ``api_client``, and the
 ``persist_full_game``/``register_user``/``bearer_for``/``write_live_redis_room``
 helpers ``test_export.py`` and ``test_profile.py`` also use all live in
 ``tests/test_api/conftest.py`` -- a conftest's fixtures resolve for every
@@ -224,6 +224,42 @@ def test_ac7_reused_room_code_returns_the_more_recent_game(
     assert len(payload["demand_series"]) == 9
 
 
+def test_room_code_lookup_is_case_insensitive(api_client, session_factory, fake_redis):
+    """Codes are stored upper-case and PostgreSQL compares strings
+    case-sensitively, so the route normalises the code from the URL: a
+    lower-case (or padded) link still finds the game, like the live room
+    lookup does."""
+    game = persist_full_game(session_factory, duration_weeks=8, seed=8)
+    code = game["room_code"]
+    assert code == code.upper()
+
+    upper = api_client.get(RESULTS_URL(code))
+    lower = api_client.get(RESULTS_URL(code.lower()))
+
+    assert upper.status_code == 200
+    assert lower.status_code == 200
+    assert lower.json()["public_id"] == upper.json()["public_id"]
+
+
+def test_timestamps_are_utc_with_a_z_suffix(api_client, session_factory, fake_redis):
+    """``started_at`` / ``finished_at`` are ISO-8601 UTC ending in ``Z`` --
+    never a naive string a browser would read as local time, and never
+    ``+00:00``."""
+    game = persist_full_game(
+        session_factory,
+        duration_weeks=8,
+        seed=9,
+        started_at=datetime(2026, 1, 1, 8, 0, 0, 750_000, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 1, 1, 10, 30, tzinfo=timezone.utc),
+    )
+
+    payload = api_client.get(RESULTS_URL(game["room_code"])).json()
+
+    # Truncated to whole seconds on the way in: the idempotency key.
+    assert payload["started_at"] == "2026-01-01T08:00:00Z"
+    assert payload["finished_at"] == "2026-01-01T10:30:00Z"
+
+
 # ---------------------------------------------------------------------------
 # Acceptance criterion 8
 # ---------------------------------------------------------------------------
@@ -369,7 +405,7 @@ def test_fm8_total_cost_is_a_json_number(api_client, session_factory, fake_redis
 # Failure mode 11
 # ---------------------------------------------------------------------------
 
-_LEAK_HOST = "leaky-mysql-host.example.invalid"
+_LEAK_HOST = "leaky-postgres-host.example.invalid"
 _LEAK_PORT = "45219"
 _LEAK_USER = "leaky_db_user_marker"
 
@@ -396,9 +432,10 @@ def broken_db_client():
                     "SELECT 1",
                     {},
                     Exception(
-                        '(pymysql.err.OperationalError) (1045, "Access denied '
-                        f"for user '{_LEAK_USER}'@'{_LEAK_HOST}:{_LEAK_PORT}' "
-                        '(using password: YES)")'
+                        "(psycopg.OperationalError) connection failed: "
+                        f'connection to server at "{_LEAK_HOST}", port '
+                        f"{_LEAK_PORT} failed: FATAL:  password authentication "
+                        f'failed for user "{_LEAK_USER}"'
                     ),
                 )
 
@@ -431,7 +468,7 @@ def test_fm11_driver_error_leaks_no_host_port_or_user(broken_db_client):
 async def test_fm12_unfinished_game_in_redis_is_404_not_a_partial_payload(
     api_client, fake_redis
 ):
-    """A room that is ``RUNNING`` live in Redis and has no row in MySQL yet
+    """A room that is ``RUNNING`` live in Redis and has no row in PostgreSQL yet
     must still be a plain 404 -- a wrong implementation that falls back to
     the live room document for a "quick" answer would instead return 200
     (or a half-filled payload) here."""

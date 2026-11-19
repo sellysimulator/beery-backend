@@ -99,7 +99,7 @@ def test_shallow_health_survives_an_unreachable_database(monkeypatch, client):
     """AC 3: "never touches DB or Redis" -- a slow database must not turn the
     liveness probe into an app that appears dead."""
     monkeypatch.setattr(settings, "DB_HOST", "10.255.255.1", raising=False)
-    monkeypatch.setattr(settings, "DB_PORT", 3306, raising=False)
+    monkeypatch.setattr(settings, "DB_PORT", 5432, raising=False)
     started = time.monotonic()
     response = client.get("/api/v1/health")
     elapsed = time.monotonic() - started
@@ -197,7 +197,7 @@ def _deep_health_with(**overrides) -> dict:
 
 def _container_class(module: str, name: str):
     """``testcontainers.<module>`` moved to ``testcontainers.community.<module>``;
-    the plan pins ``testcontainers[mysql]`` but not its version, so accept
+    the plan pins ``testcontainers[postgres]``; accept
     either layout rather than a DeprecationWarning per run."""
     import importlib
 
@@ -227,18 +227,19 @@ def live_redis_url() -> str:
 
 
 @pytest.fixture(scope="module")
-def live_mysql_env() -> dict:
+def live_postgres_env() -> dict:
     _require_docker()
-    MySqlContainer = _container_class("mysql", "MySqlContainer")
+    PostgresContainer = _container_class("postgres", "PostgresContainer")
 
-    with MySqlContainer("mysql:8.0") as container:
+    with PostgresContainer("postgres:17", driver="psycopg") as container:
         yield {
             "DB_HOST": container.get_container_host_ip(),
-            "DB_PORT": str(container.get_exposed_port(3306)),
+            "DB_PORT": str(container.get_exposed_port(5432)),
             "DB_USER": container.username,
             "DB_PASSWORD": container.password,
             "DB_DATABASE": container.dbname,
             "DB_REQUIRE_SSL": "False",
+            "DB_SSL_CA": "",
         }
 
 
@@ -252,18 +253,20 @@ def test_deep_health_is_degraded_when_only_redis_is_reachable(live_redis_url):
     assert body["status"] == "degraded"
 
 
-def test_deep_health_is_degraded_when_only_the_database_is_reachable(live_mysql_env):
+def test_deep_health_is_degraded_when_only_the_database_is_reachable(live_postgres_env):
     """AC 4 / §2: the mirror image of the case above."""
-    body = _deep_health_with(REDIS_ENABLED="true", **live_mysql_env)
+    body = _deep_health_with(REDIS_ENABLED="true", **live_postgres_env)
     assert body["database"] is True
     assert body["redis"] is False
     assert body["status"] == "degraded"
 
 
-def test_deep_health_is_ok_only_when_both_are_reachable(live_redis_url, live_mysql_env):
+def test_deep_health_is_ok_only_when_both_are_reachable(
+    live_redis_url, live_postgres_env
+):
     """AC 4 / §2: the positive half of the same rule."""
     body = _deep_health_with(
-        REDIS_ENABLED="true", REDIS_URL=live_redis_url, **live_mysql_env
+        REDIS_ENABLED="true", REDIS_URL=live_redis_url, **live_postgres_env
     )
     assert body["database"] is True
     assert body["redis"] is True

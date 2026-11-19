@@ -102,6 +102,35 @@ def test_ac12_recompute_after_one_game(db):
     assert row.games_as_wholesaler == 0
 
 
+def test_ac12_recompute_twice_updates_the_one_row_in_place(db):
+    """The upsert's second run takes the `ON CONFLICT (user_id) DO UPDATE`
+    branch: still one `user_stats` row, now carrying the new totals."""
+    user_id = insert_user(db.connection(), firebase_uid="uid-upsert-twice")
+    db.commit()
+    _persist_game_for_user(
+        db, user_identity="uid-upsert-twice", role=Role.FACTORY, seed=111
+    )
+    StatsService().recompute_user_stats(db, user_id)
+    db.commit()
+    first = db.get(UserStats, user_id)
+    assert first is not None and first.games_played == 1
+    first_created = first.created_at
+
+    _persist_game_for_user(
+        db, user_identity="uid-upsert-twice", role=Role.FACTORY, seed=112
+    )
+    StatsService().recompute_user_stats(db, user_id)
+    db.commit()
+    db.expire_all()
+
+    rows = db.query(UserStats).filter_by(user_id=user_id).all()
+    assert len(rows) == 1
+    assert rows[0].games_played == 2
+    assert rows[0].weeks_played == 20
+    assert rows[0].games_as_factory == 2
+    assert rows[0].created_at == first_created
+
+
 # ---------------------------------------------------------------------------
 # Acceptance criterion 13
 # ---------------------------------------------------------------------------

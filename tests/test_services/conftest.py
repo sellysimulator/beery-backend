@@ -10,11 +10,11 @@ from:
   §2) and 13 (``app/models/game.py``, ``app/models/user.py``);
 * ``00-decisions.md`` and ``00-conventions.md``.
 
-Like section 13's suite, this one needs a **real** MySQL: batched raw
-inserts, an idempotency lookup, a grouped statistics query and DECIMAL
-rounding are all things a fake or a SQLite connection would either not
+Like section 13's suite, this one needs a **real** PostgreSQL: batched raw
+inserts, an idempotency lookup, a grouped statistics query, an upsert and
+NUMERIC rounding are all things a fake or a SQLite connection would either not
 enforce or would silently get right for the wrong reason. So it shares
-section 13's Testcontainers MySQL (``tests/test_models/conftest.py``)
+section 13's Testcontainers PostgreSQL (``tests/test_models/conftest.py``)
 rather than inventing a second container: the fixtures below are *imported*
 from that module, not re-implemented, and every test that needs the
 database is marked ``dbschema`` so it lands in the same opt-in set.
@@ -22,7 +22,8 @@ database is marked ``dbschema`` so it lands in the same opt-in set.
 The three services under test commit real transactions (``persist_game``'s
 "one transaction ... commit" per §3.1), so -- unlike section 13's own
 ``db`` fixture, which never commits and is cleaned up by a rollback -- the
-``db`` fixture here truncates every table it touches *after* each test.
+``db`` fixture here truncates every table *after* each test
+(``TRUNCATE ... RESTART IDENTITY CASCADE``).
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import pytest
-from sqlalchemy import Engine, event, text
+from sqlalchemy import Engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config_models import (
@@ -61,10 +62,11 @@ from tests.test_models.conftest import (  # noqa: F401 -- fixtures, used by name
     insert_row,
     insert_user,
     migrated_url,
-    mysql_container,
-    mysql_url,
+    postgres_container,
+    postgres_url,
     schema_engine,
     table_names,
+    truncate_all,
 )
 
 __all__ = [
@@ -100,20 +102,8 @@ def unique_room_code() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Database session, bound to the shared Testcontainers MySQL
+# Database session, bound to the shared Testcontainers PostgreSQL
 # ---------------------------------------------------------------------------
-
-_TABLES_IN_DEPENDENCY_ORDER = (
-    "weeks",
-    "demand_series",
-    "participants",
-    "demand_configs",
-    "role_configs",
-    "game_configs",
-    "games",
-    "user_stats",
-    "users",
-)
 
 
 @pytest.fixture()
@@ -138,10 +128,7 @@ def session_factory(schema_engine: Engine) -> Iterator[Callable[[], Session]]:
         for session in opened:
             session.close()
         with schema_engine.begin() as conn:
-            conn.execute(text("SET FOREIGN_KEY_CHECKS=0"))
-            for table in _TABLES_IN_DEPENDENCY_ORDER:
-                conn.execute(text(f"DELETE FROM {table}"))
-            conn.execute(text("SET FOREIGN_KEY_CHECKS=1"))
+            truncate_all(conn)
 
 
 @pytest.fixture()

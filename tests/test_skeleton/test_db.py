@@ -72,14 +72,31 @@ def test_declarative_base_is_usable():
 def test_timestamp_mixin_declares_a_server_default(column_name):
     """AC 9 / §3.5 [HARD-WON]: section 14's batched raw inserts bypass the
     ORM-side ``default=``, and a NOT NULL column with no database-side
-    default then fails under a strict ``sql_mode``."""
+    default then fails with PostgreSQL's not-null violation."""
     column = _TimestampProbe.__table__.c[column_name]
     assert column.server_default is not None, (
         f"{column_name} has no server_default; a raw INSERT would fail with "
-        '"Field doesn\'t have a default value"'
+        '"null value in column ... violates not-null constraint"'
     )
     assert column.nullable is False
     assert column.type.timezone is True
+
+
+def test_only_the_timestamp_columns_have_a_server_default():
+    """The one server-default rule: ``created_at``/``updated_at`` get
+    ``now()``; every fact column is written by the application, so a
+    forgotten write fails loudly instead of storing a default nobody played."""
+    import app.models  # noqa: F401  -- registers every table on Base.metadata
+    from app.models.base import Base
+
+    offenders = [
+        f"{table.name}.{column.name}"
+        for table in Base.metadata.sorted_tables
+        for column in table.columns
+        if column.server_default is not None
+        and column.name not in {"created_at", "updated_at"}
+    ]
+    assert offenders == []
 
 
 def test_timestamp_mixin_columns_are_datetimes():
@@ -135,6 +152,9 @@ def test_session_module_surface():
     from app.db import session as session_module
 
     assert isinstance(session_module.engine, Engine)
+    # psycopg 3 against PostgreSQL; the engine never connects here.
+    assert session_module.engine.dialect.name == "postgresql"
+    assert session_module.engine.dialect.driver == "psycopg"
     assert isinstance(session_module.SessionLocal, sessionmaker)
 
 

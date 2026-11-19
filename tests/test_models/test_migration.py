@@ -1,14 +1,16 @@
-"""``alembic upgrade head``, its downgrade, and the drift detector.
+"""``alembic upgrade head``, its downgrade, the drift detectors and the DDL.
 
 Covers ``13-db-models-and-migrations.md §5`` criteria 1 to 4 and §6 failure
-mode 3.  Each test gets its own freshly created, completely empty database
+mode 3, plus the two checks every Novus backend shares: the migrated schema
+dumps to exactly the committed ``db/schema.postgres.sql``, and the models
+match the migrations.  Each test gets its own freshly created, completely empty database
 inside the session's container, so an upgrade/downgrade cycle here cannot
 disturb the migrated schema ``test_schema.py`` reads.
 
 The ``alembic`` CLI is driven as a real subprocess whose ``DB_*``
 environment names the container -- ``alembic/env.py`` builds its URL from
 ``settings.db_url``, and an environment variable beats the ``.env`` entry
-that points at the owner's live managed MySQL.
+that points at the owner's live managed PostgreSQL.
 """
 
 from __future__ import annotations
@@ -18,11 +20,22 @@ import re
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
-from sqlalchemy import create_engine, text
+from alembic.autogenerate import compare_metadata
+from alembic.migration import MigrationContext
+from sqlalchemy import Engine, create_engine, text
+from sqlalchemy.engine import make_url
 
-from .conftest import ALEMBIC_INI, ALEMBIC_VERSIONS, BACKEND_ROOT, EXPECTED_TABLES
+from .conftest import (
+    ALEMBIC_INI,
+    ALEMBIC_VERSIONS,
+    BACKEND_ROOT,
+    DDL_SNAPSHOT,
+    EXPECTED_TABLES,
+    normalize_ddl,
+)
 
 pytestmark = pytest.mark.dbschema
 
@@ -35,8 +48,8 @@ def _tables(url: str) -> set[str]:
         with engine.connect() as connection:
             rows = connection.execute(
                 text(
-                    "SELECT TABLE_NAME FROM information_schema.TABLES "
-                    "WHERE TABLE_SCHEMA = DATABASE()"
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = current_schema()"
                 )
             )
             return {row[0] for row in rows}
@@ -63,7 +76,7 @@ def _version_rows(url: str) -> list[str]:
 def test_upgrade_head_on_an_empty_database_creates_exactly_nine_tables(
     blank_database: str, alembic: AlembicRunner
 ) -> None:
-    """AC 1 -- on an empty MySQL, ``alembic upgrade head`` creates the nine
+    """AC 1 -- on an empty PostgreSQL, ``alembic upgrade head`` creates the nine
     tables of §2.1 to §2.9 plus ``alembic_version``, and nothing else."""
     assert _tables(blank_database) == set()
 
@@ -73,24 +86,21 @@ def test_upgrade_head_on_an_empty_database_creates_exactly_nine_tables(
     assert len(_version_rows(blank_database)) == 1
 
 
-def test_the_revision_chain_is_linear_and_starts_at_the_initial_schema() -> None:
-    """§4.1 -- a single linear chain rooted at ``0001_initial_schema``.
+def test_the_revision_chain_is_linear_and_starts_at_the_baseline() -> None:
+    """§4.1 -- a single linear chain rooted at ``0001_postgres_baseline``.
 
-    This deliberately does **not** assert the exact list of revision files.
-    It used to (``scripts == ["0001_initial_schema.py"]``), which made it a
-    criterion that expires the instant any later section changes the schema
-    -- and it did: section 14 folded a column into ``0001`` rather than add
-    ``0002`` purely to keep this green, which is the tail wagging the dog.
-    A migration chain grows by design; what must stay true is that it is
-    one chain with one head and no gaps, so that is what is asserted here.
+    This deliberately does **not** assert the exact list of revision files:
+    a migration chain grows by design. What must stay true is that it is one
+    chain with one head and no gaps, rooted at the baseline that builds the
+    whole schema, so that is what is asserted here.
     """
     scripts = sorted(
         path.name
         for path in ALEMBIC_VERSIONS.glob("*.py")
         if path.name != "__init__.py"
     )
-    assert scripts, "there must be at least the initial revision"
-    assert scripts[0] == "0001_initial_schema.py"
+    assert scripts, "there must be at least the baseline revision"
+    assert scripts[0] == "0001_postgres_baseline.py"
 
     numbers = [int(name[:4]) for name in scripts]
     assert numbers == list(
@@ -200,7 +210,7 @@ def test_autogenerate_against_head_produces_an_empty_revision(
     script = generated[0].read_text()
     operations = _operations(script, "upgrade") + _operations(script, "downgrade")
     assert operations == [], (
-        "autogenerate is not empty -- 0001_initial_schema and the metadata "
+        "autogenerate is not empty -- the migrations and the metadata "
         "`alembic/env.py` compares it against disagree.\n"
         "If every operation below drops one of the nine tables, the "
         "metadata was *empty*: `alembic/env.py` uses `app.db.base.Base"
@@ -221,133 +231,49 @@ def _operations(script: str, function: str) -> list[str]:
     ]
 
 
-# --- 0004: the host is recorded on its participant row only ---------------
+# --- the models and the committed DDL ------------------------------------
 
 
-def test_0004_moves_the_host_onto_its_row_and_the_downgrade_restores_it(
-    blank_database: str, alembic: AlembicRunner
-) -> None:
-    """A game stored before 0004 whose `HOST` row carries no identity keeps
-    its registered host: the upgrade copies `games.host_user_id` onto the row
-    before dropping the column, and the downgrade reads the column back."""
-    alembic(blank_database, "upgrade", "0003")
-    engine = create_engine(blank_database, future=True)
+def test_models_match_migrations(blank_database: str, alembic: AlembicRunner) -> None:
+    """The same drift check as AC 4, asked of Alembic's API directly:
+    ``compare_metadata`` between the migrated database and ``Base.metadata``
+    finds nothing to add, drop or alter."""
+    import app.models  # noqa: F401  -- registers every table on Base.metadata
+    from app.models.base import Base
+
+    alembic(blank_database, "upgrade", "head")
+    engine: Engine = create_engine(blank_database, future=True)
     try:
-        with engine.begin() as connection:
-            user_id = connection.execute(
-                text("INSERT INTO users (firebase_uid) VALUES ('uid-0004-host')")
-            ).lastrowid
-            game_id = connection.execute(
-                text(
-                    "INSERT INTO games (room_code, host_user_id, host_display_name,"
-                    " rng_seed, duration_weeks, weeks_played, started_at,"
-                    " finished_at, chain_total_cost, public_id)"
-                    " VALUES ('R0004', :user_id, 'Prof', 1, 8, 8,"
-                    " '2026-01-01 08:00:00', '2026-01-01 10:00:00', 0, 'p0004')"
-                ),
-                {"user_id": user_id},
-            ).lastrowid
-            connection.execute(
-                text(
-                    "INSERT INTO participants"
-                    " (game_id, alias, display_name, participant_type)"
-                    " VALUES (:game_id, 'HOST', 'Prof', 'HOST')"
-                ),
-                {"game_id": game_id},
+        with engine.connect() as connection:
+            diff = compare_metadata(
+                MigrationContext.configure(connection), Base.metadata
             )
-
-        alembic(blank_database, "upgrade", "head")
-        with engine.connect() as connection:
-            host = connection.execute(
-                text("SELECT user_id FROM participants WHERE game_id = :id"),
-                {"id": game_id},
-            ).scalar_one()
-            games_columns = connection.execute(
-                text(
-                    "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
-                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'games'"
-                )
-            ).scalars()
-            assert "host_user_id" not in set(games_columns)
-        assert host == user_id
-
-        alembic(blank_database, "downgrade", "0003")
-        with engine.connect() as connection:
-            restored = connection.execute(
-                text("SELECT host_user_id FROM games WHERE id = :id"),
-                {"id": game_id},
-            ).scalar_one()
-        assert restored == user_id
     finally:
         engine.dispose()
+    assert diff == [], f"models and migrations disagree: {diff}"
 
 
-# --- 0005: weeks.total_week_cost, and no allow_negative_orders ---------------
-
-
-def _columns(engine, table: str) -> set[str]:
-    with engine.connect() as connection:
-        return set(
-            connection.execute(
-                text(
-                    "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
-                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :table"
-                ),
-                {"table": table},
-            ).scalars()
-        )
-
-
-def test_0005_renames_week_cost_keeping_every_value_and_drops_the_flag(
-    blank_database: str, alembic: AlembicRunner
+def test_ddl_snapshot_matches_migrations(
+    postgres_container: Any, migrated_url: str
 ) -> None:
-    """A game stored before 0005 keeps its stored week costs under the new
-    name, `game_configs` loses `allow_negative_orders`, and the downgrade
-    puts both back (the flag as `false`, which every finished game had)."""
-    alembic(blank_database, "upgrade", "0004")
-    engine = create_engine(blank_database, future=True)
-    try:
-        with engine.begin() as connection:
-            game_id = connection.execute(
-                text(
-                    "INSERT INTO games (room_code, host_display_name,"
-                    " rng_seed, duration_weeks, weeks_played, started_at,"
-                    " finished_at, chain_total_cost, public_id)"
-                    " VALUES ('R0005', 'Prof', 1, 8, 1,"
-                    " '2026-01-01 08:00:00', '2026-01-01 10:00:00', 0, 'p0005')"
-                )
-            ).lastrowid
-            connection.execute(
-                text(
-                    "INSERT INTO weeks (game_id, week, role, opening_inventory,"
-                    " opening_backlog, arrived, incoming_order, obligation,"
-                    " shipped, unfulfilled, closing_inventory, closing_backlog,"
-                    " supply_line_after, orders_in_flight_after, order_qty,"
-                    " was_bot, was_forced, holding_cost, backlog_cost,"
-                    " fixed_order_cost, purchase_cost, week_cost, cumulative_cost)"
-                    " VALUES (:game_id, 1, 'RETAILER', 12, 0, 4, 4, 4, 4, 0, 12,"
-                    " 0, 8, 0, 4, 0, 0, 6.00, 0.00, 10.00, 4.00, 20.00, 20.00)"
-                ),
-                {"game_id": game_id},
-            )
-
-        alembic(blank_database, "upgrade", "head")
-        assert "week_cost" not in _columns(engine, "weeks")
-        assert "allow_negative_orders" not in _columns(engine, "game_configs")
-        with engine.connect() as connection:
-            total = connection.execute(
-                text("SELECT total_week_cost FROM weeks WHERE game_id = :id"),
-                {"id": game_id},
-            ).scalar_one()
-        assert float(total) == 20.00
-
-        alembic(blank_database, "downgrade", "0004")
-        assert "allow_negative_orders" in _columns(engine, "game_configs")
-        with engine.connect() as connection:
-            restored = connection.execute(
-                text("SELECT week_cost FROM weeks WHERE game_id = :id"),
-                {"id": game_id},
-            ).scalar_one()
-        assert float(restored) == 20.00
-    finally:
-        engine.dispose()
+    """``db/schema.postgres.sql`` is exactly what ``alembic upgrade head``
+    builds: ``pg_dump --schema-only`` of the migrated container, normalised
+    by the rule ``Novus/scripts/db/gen_ddl.py`` uses. A failure means a
+    migration changed and the snapshot was not regenerated (run
+    ``python3 scripts/db/gen_ddl.py --backend Beery/Beery_Backend``)."""
+    url = make_url(migrated_url)
+    result = postgres_container.exec(
+        [
+            "pg_dump",
+            "-U",
+            url.username,
+            "-d",
+            url.database,
+            "--schema-only",
+            "--no-owner",
+            "--no-privileges",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    dump = result.output.decode() if isinstance(result.output, bytes) else result.output
+    assert normalize_ddl(dump) == DDL_SNAPSHOT.read_text()

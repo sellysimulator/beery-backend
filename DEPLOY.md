@@ -1,7 +1,7 @@
 # Deploying Beery_Backend
 
 Mirrors the Tequila Game (`00-decisions.md` D17): a Docker container on
-Render, a managed MySQL instance, and — **optionally** — a managed Redis
+Render, the database `beery` on the Aiven PostgreSQL service all four Novus games share, and — **optionally** — a managed Redis
 instance. See `docs/plan/23-deployment-and-ci.md` for the full specification
 this file implements, and the D4/D17 amendment notes in
 `docs/plan/00-decisions.md` for why Redis stopped being mandatory.
@@ -13,7 +13,7 @@ Browser --HTTPS--> Firebase Hosting (Beery_Frontend, static)
 Browser --HTTPS--> Render: Beery_Backend  (/api/v1/*)
 Browser --WSS----> Render: Beery_Backend  (/socket.io)  -- direct, NOT via Hosting
                        |
-                       +--> managed MySQL   (durable record, written at game end)
+                       +--> Aiven PostgreSQL 17 (durable record, written at game end)
                        +--> managed Redis   (live room state + Socket.IO pub/sub)
                             OPTIONAL: only when REDIS_ENABLED=true. With it
                             off, that state lives inside the one container.
@@ -29,7 +29,8 @@ production, never at the Hosting origin.
   --proxy-headers`, no gunicorn) and runs `alembic upgrade head` as a
   `preDeployCommand` before traffic switches to the new instance -- not
   `create_all()`, and not at application startup, where a migration racing N
-  container instances is a lock-contention problem.
+  container instances is a lock-contention problem. On a database already at
+  head it is a no-op.
 - The image bakes in a **code snapshot**: there is no bind mount. **A source
   change needs a rebuild** -- a running container will happily keep serving
   the old code, which looks exactly like "my fix didn't work". Always confirm
@@ -60,6 +61,19 @@ FIREBASE_SERVICE_ACCOUNT_JSON=
   starts (guests can still play) but logs a CRITICAL warning at boot rather
   than failing silently. Never commit or log this value; rotate it if it is
   ever printed or pasted anywhere.
+- `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_DATABASE` are the
+  connection details of the shared Novus Aiven PostgreSQL service, with
+  Beery's own role and its database `beery` (Aiven's port, not 5432, is
+  usual). Credentials may hold any character: the app percent-encodes them
+  into `postgresql+psycopg://…`.
+- `DB_REQUIRE_SSL=true` with `DB_SSL_CA` set is the production setting: the
+  CA certificate of **the shared Novus Aiven PostgreSQL service** (Aiven
+  console → service → *CA certificate*; the same file for all four games),
+  pasted as PEM text or given as a path (locally e.g.
+  `<Novus>/novus-secrets/aiven-pg-ca.pem`). It
+  turns on `sslmode=verify-full` (certificate and hostname verified). Without
+  it the link is `sslmode=require`: encrypted, but the server is not
+  authenticated, and the boot log says so at WARNING.
 - `REDIS_ENABLED` decides whether this deployment has a Redis dependency at
   all. See *Redis is optional* below. It is `false` by default.
 - `REDIS_URL` is read **only when `REDIS_ENABLED` is `true`**, and is then
@@ -72,7 +86,7 @@ FIREBASE_SERVICE_ACCOUNT_JSON=
 ## Redis is optional
 
 Live room state -- lobbies, seating, the running `GameEngine` -- is
-authoritative in a key-value store, and MySQL is written only when a game
+authoritative in a key-value store, and PostgreSQL is written only when a game
 finishes (`00-decisions.md` **D4**). Which store holds it is one environment
 variable, and **the default is no Redis at all**.
 
@@ -87,7 +101,7 @@ the process can detect from the inside:
    players in one room land on different processes and never see each other
    -- no error, no log, just a lobby that will not fill. Scaling past one
    instance and turning Redis on must be the same change.
-2. **A restart ends every game in progress.** A game reaches MySQL only when
+2. **A restart ends every game in progress.** A game reaches PostgreSQL only when
    it finishes, so a deploy or a crash mid-session loses the live rooms.
    Warn the class, or finish the session first.
 
@@ -114,12 +128,38 @@ eviction, so this narrows the window rather than closing it.
 For a classroom deployment on one Render instance, `false` is the right
 setting. Turn it on before the first moment there is a second instance.
 
-## Managed MySQL engine version
+## Managed PostgreSQL version
 
-The managed MySQL instance **must run engine 8.4**. `tests/test_models/conftest.py`
-pins the CI schema suite's Testcontainers image to `mysql:8.4` for exactly this
-reason -- proving the schema against a different major version proves the
-wrong engine.
+The database is `beery` on the **Aiven PostgreSQL 17** service that all four
+Novus games (Selly, Lemony, Pulky, Beery) share: each game has its own
+database on it and its own login role that owns that database, and one CA
+certificate serves all four. It **must run PostgreSQL 17**:
+`tests/test_models/conftest.py` pins the CI schema suite's Testcontainers image
+to `postgres:17` for exactly this reason -- proving the schema against a
+different major version proves the wrong engine.
+
+- **Schema.** Alembic owns it: `alembic/versions/0001_postgres_baseline.py`
+  builds the whole schema, later revisions follow it. The reviewed DDL is
+  committed as `db/schema.postgres.sql`, generated by
+  `python3 scripts/db/gen_ddl.py --backend Beery/Beery_Backend` (from
+  `Novus/`; it runs `alembic upgrade head` in a throwaway `postgres:17`
+  container). The schema job fails if the migrations and that file drift.
+  Regenerate it in the same change as any migration.
+- **Time.** Every timestamp column is `timestamptz`; every session runs in UTC
+  (`options=-c timezone=UTC`), and the API returns times as ISO-8601 UTC with
+  a `Z` suffix.
+- **Connections.** All four games share one Aiven PostgreSQL 17 service
+  (Free plan, 20 connections), each with its own database and role. Per
+  instance at most `DB_POOL_SIZE + DB_MAX_OVERFLOW`: 2 + 1 = **3** for Selly,
+  Pulky and Beery, 3 + 1 = 4 for Lemony (a request waits up to 10 s for a
+  connection, then fails). Normal running: 3 + 3 + 3 + 4 = 13. During a
+  deploy Render runs the old and new instance of that game side by side (at
+  most +4 = 17), its pre-deploy `alembic upgrade head` takes 1 and one
+  operator `psql` session 1: 19 of 20. So **deploy one game at a time**. A
+  backend run locally against the shared service is one more instance;
+  prefer a local Docker PostgreSQL for development. On a bigger plan raise
+  both variables (they are not in `render.yaml`; set them in the Render
+  dashboard).
 
 ## The shared wire protocol -- ship together
 
@@ -154,6 +194,9 @@ Run this before a class, every time.
       Resolve the hostname and connect.
 - [ ] `alembic upgrade head` has run against the application database;
       `alembic_version` exists and matches head.
+- [ ] Startup logs show *"PostgreSQL TLS is required and verified against
+      DB_SSL_CA (sslmode=verify-full)."* -- `DB_SSL_CA` is the CA of the
+      shared Novus Aiven PostgreSQL service.
 - [ ] Startup logs show *"Firebase ID token verification is configured and
       active."* and **not** the CRITICAL warning.
 - [ ] `GET /api/v1/health` returns 200; `GET /api/v1/health/deep` reports the
@@ -166,7 +209,7 @@ Run this before a class, every time.
 - [ ] Smoke test as a guest: create a room as a guest and finish a game -- a
       separate identity path, and after D3 a separate hosting path too.
 - [ ] Results load at `/results/:roomCode` after the room's 24-hour state TTL
-      would have expired -- i.e. from MySQL, not from the live state store.
+      would have expired -- i.e. from PostgreSQL, not from the live state store.
 - [ ] CSV export downloads and opens in a spreadsheet.
 - [ ] Secrets: `.env` not committed; service account not printed anywhere.
 
@@ -177,8 +220,10 @@ Run this before a class, every time.
 1. `ruff check app tests`, `black --check app tests`, `mypy app/core`.
 2. `pytest -m "not dbschema" --cov=app --cov-fail-under=80`, plus a
    `coverage report` scoped to `app/core` enforcing `--fail-under=95`.
-3. A separate schema job: `pytest -m dbschema` against an ephemeral MySQL
-   started by Testcontainers -- needs a Docker daemon, no repository secret
+3. A separate schema job: `pytest -m dbschema` against an ephemeral
+   PostgreSQL 17 (`postgres:17`) started by Testcontainers -- migrations,
+   the DDL snapshot, the models-match check and the persistence round
+   trips. It needs a Docker daemon, no repository secret
    and no database credential, and fails outright if every test in it
    skipped (an all-skipped run looks identical to a passing one otherwise).
 4. `docker build .`

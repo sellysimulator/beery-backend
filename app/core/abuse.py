@@ -76,7 +76,7 @@ ROOM_PREVIEW_LIMIT_PER_IP = 300
 #: ``GET /api/v1/games/.../export`` (both routes, CSV and JSON alike) per
 #: address per ``GAME_EXPORT_WINDOW_SECONDS``. The export by ``public_id`` is
 #: open to anyone who can see the game's results, and each one rebuilds the
-#: whole record from MySQL, so this is the compute guard; the results screen's
+#: whole record from PostgreSQL, so this is the compute guard; the results screen's
 #: once-per-session download button is only a courtesy. A classroom shares
 #: one address, so never lower it below a download per student per format.
 GAME_EXPORT_LIMIT_PER_IP = 100

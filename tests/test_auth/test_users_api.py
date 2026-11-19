@@ -327,7 +327,7 @@ def test_a_long_display_name_is_stored_truncated(
     """AC 16 through the route: 200 characters in, 24 stored.
 
     ``display_name`` is ``VARCHAR(24)``, so an untruncated value is a write
-    error on MySQL -- silently truncated on SQLite, which is exactly why the
+    error on PostgreSQL -- silently truncated on SQLite, which is exactly why the
     assertion is on the stored length rather than on the write succeeding.
     The truncation itself is asserted against ``UserService.upsert_user`` in
     ``test_user_service.py``, which is where §3.6 puts it.

@@ -1,8 +1,8 @@
 """Finished exports, kept in this process's memory (2026-11-14, `15 §11`).
 
 The export by `public_id` is open to anyone who can see a game's results, so
-a class downloading the same game would rebuild the same file from MySQL once
-per student. A finished game never changes (D4: MySQL is written once, at game
+a class downloading the same game would rebuild the same file from PostgreSQL once
+per student. A finished game never changes (D4: PostgreSQL is written once, at game
 end), so the file is the same every time and can be kept.
 
 - **Bounded LRU**, `EXPORT_CACHE_MAX_ENTRIES` files keyed by

@@ -4,10 +4,10 @@ This is the boundary between the pure core (sections 03-08) and the outside
 world: the core knows how to serialise itself, this module decides where
 those bytes live, how long they live, and who is allowed to touch them at a
 time. Implements `00-decisions.md` D4 -- Redis is authoritative for a live
-game; MySQL is written at the end (section 14).
+game; PostgreSQL is written at the end (section 14).
 
 This module does not validate config, does not check `host_secret`, does not
-emit anything, and does not touch MySQL. See `09-state-service.md` §4.8, §7.
+emit anything, and does not touch PostgreSQL. See `09-state-service.md` §4.8, §7.
 """
 
 from __future__ import annotations

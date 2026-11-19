@@ -49,7 +49,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # --- .env neutralisation (01-backend-skeleton.md §4) ------------------------
 #
 # ``Settings`` reads ``.env`` relative to the working directory, and the
-# developer's ``.env`` points at a REAL, REACHABLE managed MySQL and a REAL
+# developer's ``.env`` points at a REAL, REACHABLE managed PostgreSQL and a REAL
 # managed Redis.  A suite run from ``Beery_Backend`` therefore talks to
 # production unless it is stopped: ``/api/v1/health/deep`` answers
 # ``database: true`` and AC 4 fails for a reason that has nothing to do with
@@ -66,11 +66,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # is a property of the configuration rather than of the machine.
 TEST_ENVIRONMENT = {
     "DB_HOST": "127.0.0.1",
-    "DB_PORT": "13306",
+    "DB_PORT": "15432",
     "DB_DATABASE": "beery_test",
     "DB_USER": "beery_test",
     "DB_PASSWORD": "beery_test",
     "DB_REQUIRE_SSL": "False",
+    # A CA would switch the engine to sslmode=verify-full (`app/config.py`).
+    "DB_SSL_CA": "",
     "REDIS_URL": "redis://127.0.0.1:16379/0",
     "FIREBASE_SERVICE_ACCOUNT_JSON": "",
     "DEBUG": "False",
