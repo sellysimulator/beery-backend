@@ -63,7 +63,7 @@ FIREBASE_SERVICE_ACCOUNT_JSON=
   ever printed or pasted anywhere.
 - `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_DATABASE` are the
   connection details of the shared Novus Aiven PostgreSQL service, with
-  Beery's own role and its database `beerydb` (Aiven's port, not 5432, is
+  the user `avnadmin` and the database `beerydb` (Aiven's port, not 5432, is
   usual). Credentials may hold any character: the app percent-encodes them
   into `postgresql+psycopg://…`.
 - `DB_REQUIRE_SSL=true` with `DB_SSL_CA` set is the production setting: the
@@ -132,8 +132,8 @@ setting. Turn it on before the first moment there is a second instance.
 
 The database is `beerydb` on the **Aiven PostgreSQL 17** service that all four
 Novus games (Selly, Lemony, Pulky, Beery) share: each game has its own
-database on it and its own login role that owns that database, and one CA
-certificate serves all four. It **must run PostgreSQL 17**:
+database on it, every game connects as the service's `avnadmin` user, and
+one CA certificate serves all four. It **must run PostgreSQL 17**:
 `tests/test_models/conftest.py` pins the CI schema suite's Testcontainers image
 to `postgres:17` for exactly this reason -- proving the schema against a
 different major version proves the wrong engine.
