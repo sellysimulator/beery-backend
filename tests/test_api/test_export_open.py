@@ -1,4 +1,4 @@
-"""The open export by `public_id` (2026-11-14), without Docker.
+"""The open export by `public_id`, without Docker.
 
 `GET /games/id/{public_id}/export` is open to anyone who can see the game's
 results screen, so what it carries matters as much as who may fetch it: the
@@ -300,7 +300,7 @@ def test_timestamps_and_money_keep_their_wire_types(
     assert all(isinstance(w["cumulative_cost"], float) for w in payload["weeks"])
 
 
-# --- names: P<N> only, in the export (2026-11-14) --------------------------
+# --- names: P<N> only, in the export ---------------------------------------
 
 
 def _name_parts() -> list[str]:
@@ -394,7 +394,7 @@ def test_an_unknown_public_id_is_a_404_like_its_results(open_client, fake_redis)
     assert isinstance(response.json()["detail"], str)
 
 
-# --- the in-process export cache (2026-11-14) ------------------------------
+# --- the in-process export cache -------------------------------------------
 
 
 @pytest.fixture()

@@ -1,8 +1,8 @@
-"""What a draft config will play, for the host form (2026-11-03).
+"""What a draft config will play, for the host form.
 
-The host form used to carry its own copy of the demand generators (half-up
-rounding, the ramp's `+ 1`, the seasonal `w - 1` offset). Two copies agree on
-the day they are written. This module is the replacement: it answers "what
+The host form carries no copy of the demand generators (half-up rounding, the
+ramp's `+ 1`, the seasonal `w - 1` offset): two copies agree only on the day
+they are written. This module answers "what
 will this config play?" by calling **the functions the engine itself calls**
 -- `generate_demand_series` and `GameConfig.order_arrival_lead_weeks` -- and
 never a second implementation of either. `POST /api/v1/rooms/preview` serves

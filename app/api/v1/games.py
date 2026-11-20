@@ -14,7 +14,7 @@ definition a finished game -- there is no separate status filter.
 `GET /games/id/{public_id}/results` serves the same payload addressed by the
 game's permanent `public_id`, for links that must outlive the room code, and
 `GET /games/id/{public_id}/export` the export, open to anyone who has that
-id, as the results are (2026-11-14). The export by room code stays host-only.
+id, as the results are. The export by room code stays host-only.
 """
 
 from __future__ import annotations
@@ -447,7 +447,7 @@ def export_game_by_public_id(
     format: Literal["csv", "json"] = "csv",
 ) -> Response:
     """The same export, addressed by the game's permanent `public_id`. No
-    authentication, like `get_results_by_public_id` (2026-11-14).
+    authentication, like `get_results_by_public_id`.
 
     Anyone who can open a finished game's results screen may download its
     raw data: a host may be a guest with no account to fall back on once the

@@ -72,17 +72,17 @@ class WeekRecord:
     the column `incoming_orders_in_flight_after` for that reason.
 
     `total_week_cost` is the whole week: holding and backlog cost plus this
-    week's order cost (`fixed_order_cost + purchase_cost`). It was called
-    `week_cost` until 2026-11-02, when the screens stopped showing a single
-    "week cost" -- they show "Holding & backlog" and "Order cost" separately
-    -- and the stored sum was renamed so nobody mistakes it for either.
+    week's order cost (`fixed_order_cost + purchase_cost`). It is not called
+    `week_cost`: the screens never show a single "week cost" -- they show
+    "Holding & backlog" and "Order cost" separately -- and the stored sum is
+    named so nobody mistakes it for either.
 
     `was_bot` says who placed *this week's* order: true when a bot did. A
     week whose seat changed hands while it was open (the host swapped a bot
     in after the player had ordered, or the player took the seat back after
     the bot had) is attributed to whoever's order stood when it closed. A
     forced week, with no order at all, goes to whoever held the seat at the
-    close (2026-11-03; it used to read the seat at the close every time).
+    close.
     """
 
     role: Role
@@ -150,7 +150,7 @@ def _dataclass_payload(record: Any) -> dict:
 def _settlement_from_payload(payload: dict) -> WeekSettlement:
     """Rebuild the `WeekSettlement` that `_dataclass_payload` described.
 
-    A room saved before 2026-11-03 has no `inventory_after_arrival`. Its
+    A room saved by an older build has no `inventory_after_arrival`. Its
     settlement is rebuilt with the stock it had after receiving, which for
     those rooms is exactly the opening stock plus what arrived (`settle()`
     step 1), so a game in flight across the deploy keeps loading.
@@ -381,8 +381,8 @@ class GameEngine:
     def order_bounds(self) -> tuple[int, int]:
         """`(lowest, highest)` order this game accepts, both inclusive.
 
-        The floor is always 0: there are no negative orders (the
-        `allow_negative_orders` option was removed on 2026-11-02). The player
+        The floor is always 0: there are no negative orders and no
+        `allow_negative_orders` option. The player
         view carries both numbers, so the order form checks exactly what this
         engine enforces.
         """
@@ -614,9 +614,9 @@ class GameEngine:
     def _week_cost_figures(self, role: Role) -> tuple[float, float | None]:
         """`(holding & backlog, order cost)` for the week a player is looking at.
 
-        The two are never added together on screen (2026-11-02): they are
-        charged at different moments, so one "week cost" was always either
-        incomplete or not what the recap showed.
+        The two are never added together on screen: they are
+        charged at different moments, so one "week cost" would always be either
+        incomplete or not what the recap shows.
 
         - While a week is open it is that week's: the holding and backlog
           Phase A charged, and `None` for the order cost, which is charged
@@ -692,7 +692,7 @@ class GameEngine:
             "supply_line": agent.supply_line(),
             "supply_line_slots": agent.shipments.slots(),
             # Weeks until each slot above arrives, aligned with it. The board
-            # reads these rather than counting slot positions (2026-11-03).
+            # reads these rather than counting slot positions.
             "supply_line_slot_weeks": agent.shipments.weeks_until_out(),
             "orders_in_flight": sum(in_flight_slots),
             "orders_in_flight_slots": in_flight_slots,
@@ -895,8 +895,8 @@ class GameEngine:
             for role in ROLE_ORDER
         }
 
-        # A room saved before 2026-11-03 has no `pending_by_bot`. Its orders
-        # are attributed the way they were then: by the seat's flag now.
+        # A room saved by an older build has no `pending_by_bot`. Its orders
+        # are attributed by the seat's current flag.
         by_bot = payload.get("pending_by_bot")
         if by_bot is None:
             engine.pending_by_bot = {

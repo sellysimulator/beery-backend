@@ -95,7 +95,7 @@ def test_out_of_range_values_are_refused_not_clamped(client, fake_redis):
 
 
 def test_limits_endpoint_serves_every_range_the_forms_check(client):
-    """The backend is the only copy of the form's ranges (2026-11-02)."""
+    """The backend is the only copy of the form's ranges."""
     from app.core.limits import DEFAULT_LIMITS
 
     response = client.get("/api/v1/rooms/limits")

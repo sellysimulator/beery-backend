@@ -311,7 +311,7 @@ def test_bullwhip_null_for_bot_and_host_even_with_a_defined_ratio(db):
 
 
 def test_a_seat_swapped_to_a_bot_keeps_its_player(db):
-    """2026-11-02: a player the host swaps out at week 30 of 36 keeps the game.
+    """A player the host swaps out at week 30 of 36 keeps the game.
 
     ``substitute_bot`` sets the seat's ``is_bot`` and leaves its ``identity``,
     and attribution follows the identity: the registered player keeps
@@ -1039,11 +1039,10 @@ def test_bot_participant_has_null_identity_columns(db):
 
 def test_host_numbers_at_their_ceilings_persist(db):
     """A ``random_seed`` past ``BIGINT``, a ``period_weeks`` past ``INT`` and a
-    ``phase`` past ``NUMERIC(10, 4)`` were once accepted, played to the end,
-    and then failed this write with "Out of range value for column", losing
-    the stored results. ``from_host_input`` refuses all three past their
-    ceilings now (2026-11-02), so the largest values it accepts are the ones
-    that must fit."""
+    ``phase`` past ``NUMERIC(10, 4)`` would play to the end and then fail this
+    write with "Out of range value for column", losing the stored results.
+    ``from_host_input`` refuses all three past their ceilings, so the largest
+    values it accepts are the ones that must fit."""
     config = GameConfig.from_host_input(
         {
             **make_config(duration_weeks=8).to_payload(),

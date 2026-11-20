@@ -115,8 +115,8 @@ async def test_redis_on_with_a_url_builds_a_redis_client() -> None:
 
 
 async def test_a_released_lock_leaves_no_entry_behind() -> None:
-    """Every key ever locked used to stay in `_locks` for the life of the
-    process -- including any string a client sent as a room id."""
+    """A released key leaves `_locks`, so no key -- including any string a
+    client sent as a room id -- stays there for the life of the process."""
     backend = InMemoryBackend()
     for n in range(100):
         async with backend.lock(f"lock:room:JUNK{n}"):
@@ -166,7 +166,7 @@ async def test_expired_rooms_free_their_places_under_the_ceiling(monkeypatch) ->
 
 
 async def test_expired_rooms_are_swept_from_the_write_path(monkeypatch) -> None:
-    """`purge_expired` used to be defined and never called."""
+    """The write path calls `purge_expired`, so expired rooms do not pile up."""
     clock = [1_000.0]
     monkeypatch.setattr("app.services.state_backend.time.monotonic", lambda: clock[0])
     backend = InMemoryBackend()

@@ -264,18 +264,18 @@ async def test_disconnect_never_auto_substitutes_a_bot(
     assert "bot_substituted" not in fake_socket_manager.events_for(game["room_code"])
 
 
-# --- A bot swapped in while paused plays on resume (2026-11-02) ---------------- #
+# --- A bot swapped in while paused plays on resume ---------------------------- #
 
 
 async def test_a_bot_swapped_in_while_paused_plays_on_resume_and_the_week_closes(
     make_room, start_running_game, state_svc, fake_socket_manager
 ):
-    """The normal path that used to freeze the game for good: a player drops,
-    the room auto-pauses (``pause_on_disconnect`` defaults on), the host swaps
-    in a bot -- allowed while paused -- and resumes. The swap asks the bot to
-    play at once, but a paused room plays nothing, and resuming only
-    re-broadcast state: the week waited on a bot nobody asked again. Resume
-    now plays every bot seat still owing the open week its order."""
+    """A player drops, the room auto-pauses (``pause_on_disconnect`` defaults
+    on), the host swaps in a bot -- allowed while paused -- and resumes. The
+    swap asks the bot to play at once, but a paused room plays nothing, so a
+    resume that only re-broadcast state would leave the week waiting for good
+    on a bot nobody asked again. Resume plays every bot seat still owing the
+    open week its order."""
     room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
     game = await start_running_game(room)
     _stored, engine = await _current(state_svc, game["room_code"])

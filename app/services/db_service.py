@@ -509,7 +509,7 @@ class DbService:
         to a bot mid-game is `is_bot` and still carries the displaced player's
         identity, and it is attributed to that player: the game stays in their
         match history, counts in their `user_stats`, and a guest can claim it.
-        Reading `is_bot` here used to drop all of that for a player swapped out
+        Reading `is_bot` here would drop all of that for a player swapped out
         in week 30 of 36.
 
         A Firebase uid always resolves to a `users` row: one that has none yet

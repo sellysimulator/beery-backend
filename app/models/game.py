@@ -148,7 +148,7 @@ class GameConfigRow(Base, TimestampMixin):
     show_running_cost_to_players: Mapped[bool] = mapped_column(Boolean, nullable=False)
     show_leaderboard_during_game: Mapped[bool] = mapped_column(Boolean, nullable=False)
     max_order_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # No `allow_negative_orders` column: that option was removed on 2026-11-02.
+    # No `allow_negative_orders` column: orders have a floor of 0.
 
     # --- BotConfig ---
     theta: Mapped[Decimal] = mapped_column(BOT_PARAM, nullable=False)

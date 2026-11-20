@@ -195,10 +195,10 @@ async def test_substitute_bot_marks_role_emits_and_plays_immediately(
 async def test_a_bot_order_above_the_ceiling_is_capped_not_refused(
     make_room_from_config, start_running_game, state_svc, fake_socket_manager
 ):
-    """The engine refuses an out-of-range order (2026-11-02), and a bot has
-    nobody to show a refusal to. With a per-game ceiling of 1 the bot's own
-    figure (11 here) would have raised inside the bot round and frozen the
-    week; the play loop caps it at the ceiling instead."""
+    """The engine refuses an out-of-range order, and a bot has nobody to show
+    a refusal to. With a per-game ceiling of 1 the bot's own figure (11 here)
+    would raise inside the bot round and freeze the week; the play loop caps it
+    at the ceiling instead."""
     from app.core.config_models import (
         ConstantDemand,
         FactoryConfig,

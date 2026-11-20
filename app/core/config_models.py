@@ -260,9 +260,9 @@ class BotConfig(BaseModel):
 
 
 # Keys a stored config may still carry from an earlier build, read and thrown
-# away. `allow_negative_orders` was removed on 2026-11-02: orders have a floor
-# of 0, and the option never worked (a negative order raised inside the
-# pipeline and froze the week). A room in flight in Redis, a host's saved
+# away. `allow_negative_orders` is one: orders have a floor of 0, and a
+# negative order raises inside the pipeline and freezes the week, so the
+# option must not come back. A room in flight in Redis, a host's saved
 # patch and an old export may all still hold it, and every one of them must
 # keep loading.
 LEGACY_VISIBILITY_KEYS: frozenset[str] = frozenset({"allow_negative_orders"})
@@ -521,7 +521,7 @@ class GameConfig(BaseModel):
 
         This is the one implementation. The engine sends it to the player as
         `order_arrival_lead_weeks`, and `core.preview` returns it to the host
-        form for a draft config (2026-11-03) -- no client assembles a lead time
+        form for a draft config -- no client assembles a lead time
         out of individual delays, because the Retailer and the Factory each
         break a different term of the sum.
         """

@@ -410,7 +410,7 @@ def test_a_room_saved_with_a_negative_pending_order_drops_it_on_load() -> None:
 
 
 def test_was_bot_follows_who_placed_the_order_not_the_seat_at_the_close() -> None:
-    """2026-11-03: a seat can change hands while a week is open (the host
+    """A seat can change hands while a week is open (the host
     swaps a bot in, or the player takes the seat back). The week goes to
     whoever's order stood; a forced week, with no order, to the seat holder."""
     config = get_preset("CLASSIC_MIT")
@@ -664,15 +664,15 @@ def test_a_record_saved_before_the_rename_still_loads() -> None:
 
 
 # --------------------------------------------------------------------------
-# The two week-cost figures a player sees (2026-11-02)
+# The two week-cost figures a player sees
 # --------------------------------------------------------------------------
 
 
 def test_the_player_sees_holding_and_backlog_and_an_uncharged_order_cost() -> None:
     """The example from the review: $10 fixed + $1/unit, a week-1 order of 4.
-    The screen used to say "Week cost $6", then "Total so far" jumped $26 at
-    the close. Now it shows $6 holding & backlog and an order cost that is not
-    yet charged, and the record that closes the week itemises the $14."""
+    It shows $6 holding & backlog and an order cost that is not yet charged,
+    not a "Week cost $6" that "Total so far" then overtakes by $26 at the
+    close, and the record that closes the week itemises the $14."""
     config = make_config(
         {"fixed_order_cost": 10.0, "unit_purchase_cost": 1.0},
         demand=ConstantDemand(value=4),
@@ -954,9 +954,9 @@ def test_no_pipeline_drift_after_one_hundred_and_four_weeks() -> None:
 
 def test_player_view_never_carries_another_roles_order() -> None:
     engine = GameEngine.start(get_preset("CLASSIC_MIT"), SEED)
-    # Quantities no view carries for another reason. (The Retailer's was 5
-    # until 2026-11-03, when `order_arrival_week` -- week 1 + a 4-week lead,
-    # i.e. 5 -- joined the view: a coincidence, not a leak.)
+    # Quantities no view carries for another reason. (Not 5 for the Retailer:
+    # `order_arrival_week` -- week 1 + a 4-week lead, i.e. 5 -- is in the
+    # view, which would be a coincidence, not a leak.)
     orders = {
         Role.RETAILER: 11,
         Role.WHOLESALER: 7,

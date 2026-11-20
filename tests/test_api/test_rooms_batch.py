@@ -158,7 +158,7 @@ def test_each_room_counts_against_the_create_limit(client, fake_redis, monkeypat
 
 
 def test_thirty_rooms_an_hour_then_batch_and_single_create_are_429(client, fake_redis):
-    """The real budget, not a monkeypatched one (2026-11-14): 30 rooms per
+    """The real budget, not a monkeypatched one: 30 rooms per
     address per hour, the standard across the Novus games. Three full batches
     of 10 use it up; the next batch and the next single create are both
     refused, with a Retry-After inside the hour."""

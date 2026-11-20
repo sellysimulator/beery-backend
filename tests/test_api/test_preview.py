@@ -1,9 +1,9 @@
 """Black-box tests for ``POST /rooms/preview`` and the preset cards' generated
 figures.
 
-The host form used to draw its demand preview with its own copy of the
-generators, and its preset cards restated each preset's numbers by hand. The
-preview is now the server's: it must return exactly the series a started game
+The host form draws its demand preview from the server, not from its own copy
+of the generators, and its preset cards do not restate each preset's numbers
+by hand. The preview must return exactly the series a started game
 plays and the lead times every player is sent, and refuse a draft the way a
 save is refused. The preset descriptions must be written from the preset's own
 config.
@@ -131,7 +131,7 @@ def test_preset_descriptions_are_written_from_each_presets_config(client):
     )
 
 
-# --- the multi-game setup form's draft (2026-11-14) -------------------------
+# --- the multi-game setup form's draft --------------------------------------
 
 
 def test_the_preview_answers_with_the_validated_config(client):

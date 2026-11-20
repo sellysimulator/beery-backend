@@ -108,7 +108,7 @@ def test_two_creates_return_different_codes_and_secrets(client, fake_redis):
 
 
 def _stored_host_name(fake_redis, room_code: str) -> str:
-    """The sanitised name as stored -- `/status` no longer echoes it."""
+    """The sanitised name as stored -- `/status` does not echo it."""
     return json.loads(fake_redis._store[f"room:{room_code}"])["host_display_name"]
 
 

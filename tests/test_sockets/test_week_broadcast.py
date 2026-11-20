@@ -366,10 +366,10 @@ async def test_end_game_early_mid_week_reports_weeks_played_as_week_minus_one(
 async def test_end_game_early_leaves_every_live_total_equal_to_the_results(
     make_room, start_running_game, fake_socket_manager, state_svc
 ):
-    """2026-11-02: the abandoned week's holding and backlog used to stay in the
-    live totals (host console $180) while the results left it out ($164). The
-    host and every seated player now get a fresh state, before
-    ``game_finished``, whose totals are the rolled-back ones."""
+    """The results leave the abandoned week's holding and backlog out ($164),
+    so the live totals must too, not show $180 on the host console. The host
+    and every seated player get a fresh state, before ``game_finished``, whose
+    totals are the rolled-back ones."""
     room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
     game = await start_running_game(room)
     await _close_the_open_week(game, state_svc)

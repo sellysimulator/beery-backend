@@ -519,13 +519,13 @@ async def test_the_submission_that_closes_the_week_sends_the_host_both_states(
     assert submitted["seq"] < new_week["seq"]
 
 
-# --- A room in flight from before 2026-11-02 keeps playing ------------------ #
+# --- A room an older build saved keeps playing ------------------------------ #
 
 
 async def test_a_room_saved_before_the_removals_still_plays(
     make_room, start_running_game, state_svc
 ):
-    """A room already in the state store when this build deploys carries
+    """A room an older build saved to the state store carries
     ``visibility.allow_negative_orders`` in its config and ``week_cost`` in its
     history. Both are read (the first ignored, the second renamed), and the
     room plays on."""

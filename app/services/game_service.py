@@ -121,10 +121,10 @@ def _host_refresh_after_submission(
     this one the tracker shows nobody as decided until the week closes.
 
     It is sent even when this submission was the last one the week needed.
-    It used to be left out then, on the reasoning that the close which follows
-    sends the host a state for the new week anyway -- but the final week's
-    close finishes the game and sends no new week, so the host's last state
-    was the one from before the last submission and the console ended the
+    Do not leave it out then on the reasoning that the close which follows
+    sends the host a state for the new week anyway: the final week's close
+    finishes the game and sends no new week, so the host's last state would
+    be the one from before the last submission and the console would end the
     game showing that player as "Still deciding". One extra `host_state` a
     week is the price of a rule with no exception in it. Called inside the
     lock, so the `seq` is allocated with the others; the caller emits it

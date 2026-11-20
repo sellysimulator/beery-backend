@@ -1,8 +1,8 @@
-"""`app.core.preview` and the figures the server now sends instead of the
-client working them out (2026-11-03).
+"""`app.core.preview` and the figures the server sends instead of the client
+working them out.
 
-The host form, the order form, the recap and the 3D board each used to carry
-a copy of an engine formula: the demand generators, the lead time, the
+The host form, the order form, the recap and the 3D board carry no copy of an
+engine formula: the demand generators, the lead time, the
 "inventory after arrival" step, the arrival week, a slot's weeks to go and
 the weeks played. Each test here pins the server's figure to **the function
 the engine itself uses**, so the two cannot drift: a preview is compared with

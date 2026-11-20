@@ -550,17 +550,17 @@ def test_from_payload_does_not_clamp() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Rejections (the ``test_reject_N`` numbers index this section only)
+# Rejections
 # ---------------------------------------------------------------------------
 
 
-def test_reject_1_custom_demand_shorter_than_duration_weeks() -> None:
+def test_reject_custom_demand_shorter_than_duration_weeks() -> None:
     payload = base_payload(duration_weeks=12)
     payload["demand"] = {"kind": "CUSTOM", "values": [4] * 11}
     assert_rejected(payload, field="demand.values")
 
 
-def test_reject_2_custom_demand_containing_a_negative_value() -> None:
+def test_reject_custom_demand_containing_a_negative_value() -> None:
     payload = base_payload(duration_weeks=12)
     values = [4] * 12
     values[7] = -1
@@ -569,7 +569,7 @@ def test_reject_2_custom_demand_containing_a_negative_value() -> None:
 
 
 @pytest.mark.parametrize("step_week", [1, 0, -3, 37, 100])
-def test_reject_3_step_week_outside_two_to_duration_weeks(step_week: int) -> None:
+def test_reject_step_week_outside_two_to_duration_weeks(step_week: int) -> None:
     payload = payload_with_demand(
         kind="STEP", initial_value=4, step_week=step_week, step_value=8
     )
@@ -578,7 +578,7 @@ def test_reject_3_step_week_outside_two_to_duration_weeks(step_week: int) -> Non
 
 
 @pytest.mark.parametrize("start_week", [0, -1, 37, 500])
-def test_reject_4_ramp_start_week_outside_one_to_duration_weeks(
+def test_reject_ramp_start_week_outside_one_to_duration_weeks(
     start_week: int,
 ) -> None:
     payload = payload_with_demand(
@@ -593,7 +593,7 @@ def test_reject_4_ramp_start_week_outside_one_to_duration_weeks(
 
 
 @pytest.mark.parametrize("period_weeks", [1, 0, -4])
-def test_reject_5_seasonal_period_below_two(period_weeks: int) -> None:
+def test_reject_seasonal_period_below_two(period_weeks: int) -> None:
     payload = payload_with_demand(
         kind="SEASONAL",
         base=8,
@@ -605,19 +605,19 @@ def test_reject_5_seasonal_period_below_two(period_weeks: int) -> None:
 
 
 @pytest.mark.parametrize("missing", ROLE_NAMES)
-def test_reject_6_roles_missing_any_member(missing: str) -> None:
+def test_reject_roles_missing_any_member(missing: str) -> None:
     payload = base_payload()
     del payload["roles"][missing]
     assert_rejected(payload, field="roles")
 
 
-def test_reject_6_empty_roles_mapping() -> None:
+def test_reject_empty_roles_mapping() -> None:
     payload = base_payload()
     payload["roles"] = {}
     assert_rejected(payload, field="roles")
 
 
-def test_reject_7_factory_entry_that_is_not_a_factory_config() -> None:
+def test_reject_factory_entry_that_is_not_a_factory_config() -> None:
     """This refusal is reachable only when the caller passes model
     *instances* -- any mapping under ``"FACTORY"`` parses as a ``FactoryConfig``
     with defaults, so a pure-JSON payload can never trigger it."""
@@ -644,7 +644,7 @@ def test_role_config_instances_are_accepted_for_the_other_three_roles() -> None:
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
-def test_reject_8_non_finite_cost(bad: float) -> None:
+def test_reject_non_finite_cost(bad: float) -> None:
     assert not math.isfinite(bad)
     assert_rejected(
         payload_for_role("RETAILER", holding_cost_per_unit_week=bad),
@@ -653,7 +653,7 @@ def test_reject_8_non_finite_cost(bad: float) -> None:
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
-def test_reject_8_non_finite_starting_capital(bad: float) -> None:
+def test_reject_non_finite_starting_capital(bad: float) -> None:
     assert_rejected(
         payload_for_role("FACTORY", starting_capital=bad),
         field="roles.FACTORY.starting_capital",
@@ -661,14 +661,14 @@ def test_reject_8_non_finite_starting_capital(bad: float) -> None:
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
-def test_reject_8_non_finite_bot_parameter(bad: float) -> None:
+def test_reject_non_finite_bot_parameter(bad: float) -> None:
     payload = base_payload()
     payload["bot"]["theta"] = bad
     assert_rejected(payload, field="bot.theta")
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
-def test_reject_8_non_finite_demand_parameter(bad: float) -> None:
+def test_reject_non_finite_demand_parameter(bad: float) -> None:
     assert_rejected(
         payload_with_demand(
             kind="RAMP",
@@ -682,7 +682,7 @@ def test_reject_8_non_finite_demand_parameter(bad: float) -> None:
 
 
 @pytest.mark.parametrize("symbol", ["$$$$$", "US$$$", "€€€€€"])
-def test_reject_9_currency_symbol_longer_than_four_characters(symbol: str) -> None:
+def test_reject_currency_symbol_longer_than_four_characters(symbol: str) -> None:
     assert len(symbol) == 5
     assert_rejected(base_payload(currency_symbol=symbol), field="currency_symbol")
 
@@ -694,7 +694,7 @@ def test_config_validation_error_is_a_value_error_with_a_field() -> None:
 
 
 # ---------------------------------------------------------------------------
-# A violation that is NOT one of the nine must be repaired, not raised
+# Every other out-of-range number: refused too, never repaired
 # ---------------------------------------------------------------------------
 
 
@@ -1247,8 +1247,8 @@ def test_target_stock_multiplier_inside_zero_ten_is_kept(given: float) -> None:
 
 
 def test_allow_negative_orders_is_gone_and_a_legacy_key_is_ignored() -> None:
-    """Removed 2026-11-02: orders have a floor of 0. A stored config that still
-    carries the key -- a room in flight, a saved patch, an old export -- must
+    """Orders have a floor of 0 and there is no such option. A stored config
+    that still carries the key -- a room in flight, a saved patch, an old export -- must
     keep loading, through either door, and the key is simply dropped."""
     assert "allow_negative_orders" not in VisibilityConfig.model_fields
     assert "allow_negative_orders" not in VisibilityConfig().model_dump()
@@ -1545,7 +1545,7 @@ def test_seasonal_parameters_are_carried() -> None:
     ],
     ids=["seasonal.phase", "stochastic.mean", "stochastic.stdev"],
 )
-def test_reject_8_non_finite_in_any_demand_float_field(
+def test_reject_non_finite_in_any_demand_float_field(
     bad: float, demand: dict, field: str
 ) -> None:
     payload_demand = dict(demand)
@@ -1874,7 +1874,7 @@ def test_an_unrecognised_distribution_falls_back_to_its_default(
 def test_stage_count_is_forced_to_four_rather_than_rejected(
     stage_count: Any,
 ) -> None:
-    """``D14``: v1 is a four-stage chain, and rejection is not among the nine."""
+    """``D14``: v1 is a four-stage chain, so any other count is forced to four."""
     assert build(base_payload(stage_count=stage_count)).stage_count == 4
 
 
@@ -2233,7 +2233,7 @@ def test_seasonal_phase_is_not_clamped(phase: float) -> None:
 def test_seasonal_phase_past_a_full_turn_is_refused(phase: float) -> None:
     """``sin`` repeats every ``2*pi``, so a phase past one full turn adds
     nothing a host could want; it is refused, and the host form checks the
-    same ``max_phase``. (It used to be folded silently into one turn.)"""
+    same ``max_phase``, not folded silently into one turn."""
     assert_rejected(
         payload_with_demand(
             kind="SEASONAL", base=40, amplitude=30, period_weeks=12, phase=phase
@@ -2358,7 +2358,7 @@ def test_custom_demand_entries_in_range_are_kept(given: int) -> None:
     assert build(payload).demand.values[3] == given
 
 
-def test_custom_rules_are_evaluated_before_clamping() -> None:
+def test_custom_rules_refuse_rather_than_clamp() -> None:
     """A short or negative ``CUSTOM`` series is refused, never padded, clamped
     or otherwise silently repaired into validity."""
     payload = base_payload(duration_weeks=8)
@@ -2682,7 +2682,7 @@ def test_a_payload_that_is_not_a_mapping_reports_field_config(payload: Any) -> N
     assert_rejected(payload, field="config")
 
 
-def test_an_unknown_roles_key_is_skipped_and_rule_6_then_fires() -> None:
+def test_an_unknown_roles_key_is_skipped_and_the_missing_role_check_fires() -> None:
     """A `roles` key that is not a ``Role`` name is **skipped**, so
     the missing-role check fires for whichever member is now missing."""
     payload = base_payload()

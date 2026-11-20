@@ -45,7 +45,7 @@ SERVER_ERROR_MESSAGE = "Something went wrong on the server. Please try again."
 
 def requested_room_code(data: Any) -> str | None:
     """The `room_id` a payload asked for, echoed back as `room_code` on a
-    refusal of `start_game` (2026-11-14). It is the caller's own input, so
+    refusal of `start_game`. It is the caller's own input, so
     echoing it reveals nothing; it is bounded so a refusal cannot be made to
     carry an arbitrary blob."""
     if not isinstance(data, dict):
@@ -71,8 +71,7 @@ def guarded(
     With `echo_room_code`, the refusal also carries the `room_code` the payload
     asked for (`requested_room_code`), next to `message`. `start_game` wears
     it, so the multi-game dashboard can put a "Start all" refusal on that
-    game's card (2026-11-14). Additive: a listener that reads `message` only
-    is unaffected.
+    game's card. A listener that reads `message` only is unaffected.
 
     Apply it *under* `@sio.event`, so Socket.IO registers the wrapper:
 

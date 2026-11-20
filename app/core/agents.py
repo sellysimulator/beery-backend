@@ -358,8 +358,8 @@ class FactoryAgent(RoleAgent):
 
         A negative `qty` raises `ValueError`, before anything is mutated, so a
         caller that catches it is not left holding a half-run Factory. There are
-        no negative orders (the cancellation option was removed on 2026-11-02),
-        and the engine refuses one long before it could reach here.
+        no negative orders (orders have a floor of 0), and the engine refuses
+        one long before it could reach here.
         """
         if qty < 0:
             raise ValueError(f"production is never negative, got {qty}")

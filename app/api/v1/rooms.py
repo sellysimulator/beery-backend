@@ -460,13 +460,13 @@ def preview_room_config(payload: ConfigPreviewRequest) -> ConfigPreviewResponse:
     and a refusal is the same 422 naming the field and the range. A valid
     draft returns the demand series and every role's lead time from
     `core.preview`, which calls the generator and the lead-time function the
-    engine itself calls -- the host form keeps no copy of either (2026-11-03).
+    engine itself calls -- the host form keeps no copy of either.
     Nothing is stored and no room is read, so the call needs no room code and
     no host secret: it is a pure function of the body, like `/limits`.
 
     An optional `patch` is merged over `config` first, by the config save's
-    own `merge_config_patch`, and the answer carries the validated `config`
-    (2026-11-14). That is what lets the multi-game setup form edit a draft no
+    own `merge_config_patch`, and the answer carries the validated `config`.
+    That is what lets the multi-game setup form edit a draft no
     room holds: each edit is merged, defaulted and checked here, exactly as a
     lobby save would be, and the form keeps the answer as its draft.
 
@@ -504,10 +504,9 @@ async def list_limits() -> Limits:
     """Every range the host form and the order form check, for the host UI.
     No authentication.
 
-    The backend is the only copy of these numbers (2026-11-02). The form builds
-    its checks from this response instead of carrying its own table, so the
-    form and `GameConfig.from_host_input` cannot disagree about a bound -- they
-    did, on four fields, while there were two copies. The order bounds a player
+    The backend is the only copy of these numbers. The form builds its checks
+    from this response instead of carrying its own table, so the form and
+    `GameConfig.from_host_input` cannot disagree about a bound. The order bounds a player
     sees travel separately, per game, in `your_state` (`min_order_quantity`,
     `max_order_quantity`), because a host may lower the ceiling per game.
     """

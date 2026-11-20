@@ -565,7 +565,7 @@ async def assign_role(sid: str, data: dict | None = None) -> None:
                 await _reject(sid, _UNKNOWN_ROLE)
                 return
 
-        # A role someone else holds is refused, not moved. Moving it used to
+        # A role someone else holds is refused, not moved. Moving it would
         # unseat the holder silently, which a host picking from a list reads
         # as two people sharing a seat until one of them vanishes from it.
         # Taking a seat over is two deliberate steps: unseat, then assign.
@@ -741,10 +741,10 @@ async def release_role(sid: str, data: dict | None = None) -> None:
 async def _reject_start(sid: str, message: str, room_code: str | None) -> None:
     """A refusal of ``start_game``: ``join_error`` ``{message, room_code}``.
 
-    ``room_code`` is additive (2026-11-14): the room the caller asked to
-    start, so the multi-game dashboard, which starts several rooms from one
-    socket, can show the refusal on that game's card. A listener reading
-    ``message`` alone is unaffected.
+    ``room_code`` is the room the caller asked to start, so the multi-game
+    dashboard, which starts several rooms from one socket, can show the
+    refusal on that game's card. A listener reading ``message`` alone is
+    unaffected.
     """
     payload: dict[str, str] = {"message": message}
     if room_code is not None:

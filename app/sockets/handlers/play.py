@@ -306,8 +306,7 @@ _GAME_FINISHED_MSG = "The game has finished."
 @sio.event
 @guarded("error")
 async def reclaim_seat(sid: str, data: dict | None = None) -> None:
-    """The player whose seat the host swapped to a bot takes it back
-    (amended 2026-11-03; swapping used to be one-way).
+    """The player whose seat the host swapped to a bot takes it back.
 
     Only the seat's own player can: the seat is found from the caller's
     connection (``sid_to_alias``, which ``join`` maps by identity), never from
