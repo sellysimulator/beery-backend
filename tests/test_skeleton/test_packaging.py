@@ -5,7 +5,9 @@ Acceptance criteria 1, 12, 21 and 22.
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -209,6 +211,20 @@ def test_alembic_upgrade_head_creates_exactly_the_declared_tables():
 
 # --- AC 21 ------------------------------------------------------------------
 
+_STARTUP_MIGRATION = "alembic upgrade head && "
+
+
+def _serve_only_cmd() -> list[str]:
+    """The Dockerfile's exec-form ``CMD`` without its startup migration
+    (``alembic upgrade head && exec uvicorn ...``): this test has no database,
+    so it runs exactly the committed uvicorn command and nothing before it."""
+    text = (PROJECT_ROOT / "Dockerfile").read_text().replace("\\\n", "")
+    match = re.search(r"^CMD\s*(\[.*\])\s*$", text, re.MULTILINE)
+    assert match, "Dockerfile has no exec-form CMD"
+    argv = json.loads(match.group(1))
+    assert argv[-1].startswith(_STARTUP_MIGRATION)
+    return [*argv[:-1], argv[-1][len(_STARTUP_MIGRATION) :]]
+
 
 def test_docker_image_builds_and_runs():
     """AC 21: ``docker build .`` succeeds and the resulting image runs the app.
@@ -233,7 +249,7 @@ def test_docker_image_builds_and_runs():
     assert build.returncode == 0, build.stdout + build.stderr
 
     started = subprocess.run(
-        ["docker", "run", "-d", "-P", tag],
+        ["docker", "run", "-d", "-P", tag, *_serve_only_cmd()],
         capture_output=True,
         text=True,
         check=False,

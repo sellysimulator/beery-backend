@@ -1,6 +1,8 @@
-# Render Blueprint for the Beery backend (00-decisions.md D17,
-# 23-deployment-and-ci.md §3). One web service, built from the committed
-# Dockerfile -- plain uvicorn, no gunicorn (game_stack.md §3).
+# Render service definition for the Beery backend (00-decisions.md D17,
+# 23-deployment-and-ci.md §3). The service is a plain Docker web service on
+# the free plan, configured in the Render dashboard (this file is not linked
+# as a Blueprint; it records the settings). One web service, built from the
+# committed Dockerfile -- plain uvicorn, no gunicorn (game_stack.md §3).
 #
 # The database is NOT declared here: it is the database `beerydb` on the Aiven
 # PostgreSQL service all four Novus games share (each game its own database
@@ -26,19 +28,15 @@ services:
     runtime: docker
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    plan: starter
+    plan: free
     healthCheckPath: /api/v1/health
     # Render deploys a push to the linked branch only once every GitHub check
     # on that commit has passed -- this IS the CI gate. There is deliberately no
     # deploy job or deploy hook in ci.yml: with both, a passing push deploys
     # twice, and with plain on-commit auto-deploy a failing push ships anyway.
     autoDeployTrigger: checksPass
-    # Runs once per deploy, before traffic is switched to the new instance
-    # (a no-op when the database is already at head) --
-    # not `create_all()`, and not at application startup, where a migration
-    # racing N container instances is a lock-contention problem waiting to
-    # happen (§3.3).
-    preDeployCommand: alembic upgrade head
+    # Migrations run at container startup (Dockerfile CMD): free instances
+    # have no pre-deploy command.
     envVars:
       - key: DEBUG
         value: "false"
