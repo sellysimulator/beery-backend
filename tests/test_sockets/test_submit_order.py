@@ -218,9 +218,8 @@ async def test_invalid_order_is_rejected_and_records_nothing(
 async def test_an_out_of_range_order_is_refused_not_clamped(
     make_room, start_running_game, fake_socket_manager, state_svc, out_of_range
 ):
-    """Amended 2026-11-02 (was "huge order is clamped to 9999"). A clamped
-    order is an order nobody placed, and the player only found out from a
-    supply line that did not add up. The order is refused with
+    """A clamped order would be an order nobody placed, and the player would
+    only find out from a supply line that did not add up. The order is refused with
     ``INVALID_ORDER`` and a message naming the bounds -- the same two numbers
     ``your_state`` carries for the form -- records nothing, and does not use
     up one of the player's resubmissions."""

@@ -335,7 +335,7 @@ def test_worked_example_classic_mit_accessors() -> None:
 
 
 def test_worked_example_duration_weeks_out_of_range_is_refused() -> None:
-    """Amended 2026-11-02: a host who types 500 weeks is told the range, not
+    """A host who types 500 weeks is told the range, not
     handed a 104-week game they did not ask for."""
     err = assert_rejected(base_payload(duration_weeks=500), field="duration_weeks")
     assert "between 8 and 104" in str(err)
@@ -550,7 +550,7 @@ def test_from_payload_does_not_clamp() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Rejection rules 1-9
+# Rejections (the ``test_reject_N`` numbers index this section only)
 # ---------------------------------------------------------------------------
 
 
@@ -618,7 +618,7 @@ def test_reject_6_empty_roles_mapping() -> None:
 
 
 def test_reject_7_factory_entry_that_is_not_a_factory_config() -> None:
-    """Rule 7 is reachable only when the caller passes model
+    """This refusal is reachable only when the caller passes model
     *instances* -- any mapping under ``"FACTORY"`` parses as a ``FactoryConfig``
     with defaults, so a pure-JSON payload can never trigger it."""
     payload = base_payload()
@@ -627,7 +627,7 @@ def test_reject_7_factory_entry_that_is_not_a_factory_config() -> None:
 
 
 def test_a_factory_config_instance_under_factory_is_accepted() -> None:
-    """The mirror of rule 7: the model-instance input shape itself is legal."""
+    """The mirror of the test above: the model-instance input shape is legal."""
     payload = base_payload()
     payload["roles"]["FACTORY"] = FactoryConfig(production_capacity_per_week=25)
     cfg = build(payload)
@@ -762,8 +762,8 @@ def _accepted(payload: dict) -> GameConfig:
 def test_out_of_range_numbers_are_refused_not_repaired(
     payload: dict, field: str
 ) -> None:
-    """Amended 2026-11-02 (the clamp-to-refuse change): every number outside
-    its range is refused, naming the field and the range."""
+    """Every number outside its range is refused, naming the field and the
+    range."""
     err = assert_rejected(payload, field=field)
     assert "must be between" in str(err)
 
@@ -790,8 +790,9 @@ def test_bot_parameters_out_of_range_are_refused(field: str, given: float) -> No
 
 
 def test_boundary_values_on_the_rejection_rules_are_accepted() -> None:
-    """The nine rules reject *outside* their range; the edges stay legal."""
-    # Rule 3: step_week in 2..duration_weeks inclusive.
+    """The rejections above refuse values *outside* their range; the edges
+    stay legal."""
+    # step_week in 2..duration_weeks inclusive.
     payload = payload_with_demand(
         kind="STEP", initial_value=4, step_week=2, step_value=8
     )
@@ -804,7 +805,7 @@ def test_boundary_values_on_the_rejection_rules_are_accepted() -> None:
     payload["duration_weeks"] = 36
     assert _accepted(payload).demand.step_week == 36
 
-    # Rule 4: start_week in 1..duration_weeks inclusive.
+    # start_week in 1..duration_weeks inclusive.
     for start_week in (1, 36):
         payload = payload_with_demand(
             kind="RAMP",
@@ -816,18 +817,18 @@ def test_boundary_values_on_the_rejection_rules_are_accepted() -> None:
         payload["duration_weeks"] = 36
         assert _accepted(payload).demand.start_week == start_week
 
-    # Rule 5: period_weeks == 2 is the smallest legal period.
+    # period_weeks == 2 is the smallest legal period.
     payload = payload_with_demand(
         kind="SEASONAL", base=8, amplitude=4, period_weeks=2, phase=0.0
     )
     assert _accepted(payload).demand.period_weeks == 2
 
-    # Rule 2: zero is not negative.
+    # A CUSTOM entry of zero is not negative.
     payload = base_payload(duration_weeks=8)
     payload["demand"] = {"kind": "CUSTOM", "values": [0] * 8}
     assert _accepted(payload).demand.values == [0] * 8
 
-    # Rule 9: exactly four characters is not "longer than 4".
+    # currency_symbol: exactly four characters is not "longer than 4".
     assert _accepted(base_payload(currency_symbol="US$ ")).currency_symbol == "US$ "
 
 
@@ -1553,7 +1554,7 @@ def test_reject_8_non_finite_in_any_demand_float_field(
 
 
 # ---------------------------------------------------------------------------
-# Clamping is per role, not global -- "every initial quantity, every cost"
+# Ranges are checked per role, not globally -- every initial quantity, every cost
 # ---------------------------------------------------------------------------
 
 
@@ -1652,7 +1653,7 @@ def test_omitted_role_fields_take_their_model_defaults() -> None:
 
 @pytest.mark.parametrize("seed", [0, 1, 987_654_321, -17, 2**53 - 1, -(2**53 - 1)])
 def test_random_seed_is_carried_verbatim(seed: int) -> None:
-    """``D11``: the host's seed is the game's seed. It is not a clamped knob."""
+    """``D11``: the host's seed is the game's seed. It is carried as given."""
     cfg = build(base_payload(random_seed=seed))
     assert cfg.random_seed == seed
     assert GameConfig.from_payload(cfg.to_payload()).random_seed == seed
@@ -1894,8 +1895,8 @@ def test_stage_count_is_forced_to_four_rather_than_rejected(
 def test_an_unusable_scalar_falls_back_to_its_declared_default(
     key: str, value: Any, expected: Any
 ) -> None:
-    """An unusable scalar falls back to its declared default and is then
-    clamped."""
+    """An unusable scalar falls back to its declared default, which is then
+    range-checked like any other value."""
     assert getattr(build(base_payload(**{key: value})), key) == expected
 
 
@@ -2012,9 +2013,10 @@ def test_currency_symbol_is_reported_before_demand() -> None:
 
 
 def test_duration_weeks_is_checked_before_the_demand_rules_are_applied() -> None:
-    """``duration_weeks`` leads the order because rules 1, 3 and 4 are all
-    measured against it: a 500-week game is refused for its length, before a
-    ``CUSTOM`` series could be measured against a length it will never have.
+    """``duration_weeks`` leads the order because the ``CUSTOM`` length,
+    ``step_week`` and ``start_week`` checks are all measured against it: a
+    500-week game is refused for its length, before a ``CUSTOM`` series could
+    be measured against a length it will never have.
     """
     payload = base_payload(duration_weeks=500)
     payload["demand"] = {"kind": "CUSTOM", "values": [4] * 104}
@@ -2051,7 +2053,7 @@ def test_a_valid_payload_is_unaffected_by_the_ordering() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Demand magnitudes are clamped to [0, limits.max_order_quantity]
+# Demand magnitudes outside [0, limits.max_order_quantity] are refused
 # ---------------------------------------------------------------------------
 
 MAX_Q = DEFAULT_LIMITS.max_order_quantity
@@ -2200,10 +2202,9 @@ def test_seasonal_period_weeks_up_to_the_longest_game_is_kept(
 def test_seasonal_period_weeks_past_the_longest_game_is_refused(
     period_weeks: int,
 ) -> None:
-    """Amended 2026-11-02: the bound is 104 (``max_period_weeks``), the longest
-    game -- a longer period is already flat over any game -- and the host form
-    reads the same number. It was the ``INT`` column's ``2**31 - 1``, silently
-    clamped, while the form allowed 104."""
+    """The bound is 104 (``max_period_weeks``), the longest game -- a longer
+    period is already flat over any game -- and the host form reads the same
+    number."""
     err = assert_rejected(
         payload_with_demand(
             kind="SEASONAL",
@@ -2259,9 +2260,8 @@ def test_seasonal_phase_within_a_full_turn_is_kept(phase: float) -> None:
 def test_stochastic_float_magnitudes_are_range_checked(
     field: str, given: float, refused: bool
 ) -> None:
-    """Amended 2026-11-02: ``mean`` and ``stdev`` were clamped to 9999 while the
-    form allowed a million. Both are refused outside ``[0, max_order_quantity]``
-    now, and the form reads the same ceiling."""
+    """``mean`` and ``stdev`` are refused outside ``[0, max_order_quantity]``,
+    and the host form reads the same ceiling."""
     demand = {
         "kind": "STOCHASTIC",
         "distribution": "NORMAL",
@@ -2359,9 +2359,8 @@ def test_custom_demand_entries_in_range_are_kept(given: int) -> None:
 
 
 def test_custom_rules_are_evaluated_before_clamping() -> None:
-    """Rules 1 and 2 are evaluated *before* clamping, so a short or negative
-    ``CUSTOM`` series still raises rather than being silently repaired into
-    validity."""
+    """A short or negative ``CUSTOM`` series is refused, never padded, clamped
+    or otherwise silently repaired into validity."""
     payload = base_payload(duration_weeks=8)
     payload["demand"] = {"kind": "CUSTOM", "values": [4, 4, -1, 4, 4, 4, 4, 4]}
     assert_rejected(payload, field="demand.values")
@@ -2635,7 +2634,7 @@ def test_coercion_never_raises_for_an_unusable_scalar() -> None:
 
     ``currency_symbol`` is deliberately not in this sweep: it is the one scalar
     with a rejection rule of its own, and a garbage value that coerces to a
-    valid-but-too-long *string* is rule 9's business rather than coercion's.
+    valid-but-too-long *string* is the four-character check's business.
     Its non-string inputs are covered by
     ``test_a_mistyped_currency_symbol_falls_back_to_the_default``.
     """
@@ -2685,7 +2684,7 @@ def test_a_payload_that_is_not_a_mapping_reports_field_config(payload: Any) -> N
 
 def test_an_unknown_roles_key_is_skipped_and_rule_6_then_fires() -> None:
     """A `roles` key that is not a ``Role`` name is **skipped**, so
-    rule 6 fires for whichever member is now missing."""
+    the missing-role check fires for whichever member is now missing."""
     payload = base_payload()
     payload["roles"]["GOBLIN"] = payload["roles"].pop("WHOLESALER")
     assert_rejected(payload, field="roles")
@@ -2773,7 +2772,8 @@ def test_custom_values_truncate_a_fractional_entry(value: Any) -> None:
     """``4.7`` truncates to ``4``, consistent with the coercion rule for
     scalars.
 
-    Truncation applies only to an entry that has already cleared rule 2 -- see
+    Truncation applies only to an entry that has already cleared the negative
+    check -- see
     ``test_a_negative_custom_entry_rejects_however_it_is_spelled``.
     """
     cfg = build_custom([value] + [4] * 7)
@@ -2824,15 +2824,15 @@ def test_custom_values_read_a_bool_as_zero_or_one() -> None:
     ],
 )
 def test_a_negative_custom_entry_rejects_however_it_is_spelled(negative: Any) -> None:
-    """Rule 2 is evaluated on the **parsed number, before
+    """The negative check is evaluated on the **parsed number, before
     truncation**.
 
     A negative entry is a negative entry however the wire spelled it, so it
     rejects rather than being clamped up to 0 or truncated toward zero into
     valid demand.  The fractional cases are the ones that matter: truncating
     ``-0.5`` toward zero would repair the host's value into something they did
-    not ask for, which is the same failure the "rules 1 and 2 before clamping"
-    ordering exists to prevent, one step further in.
+    not ask for: the same silent repair the ``CUSTOM`` length and negative
+    checks exist to prevent, one step further in.
     """
     assert_rejected_custom([negative] + [4] * 7, field="demand.values")
 
@@ -2844,9 +2844,9 @@ def test_a_negative_custom_entry_rejects_however_it_is_spelled(negative: Any) ->
 def test_a_non_negative_fraction_below_one_truncates_to_zero(
     value: Any, expected: int
 ) -> None:
-    """The other side of the same frontier: rule 2 rejects everything below
-    ``0``, and everything in ``[0, 1)`` truncates to ``0`` and is kept.  Pinning
-    both sides is what stops the boundary drifting."""
+    """The other side of the same frontier: the negative check rejects
+    everything below ``0``, and everything in ``[0, 1)`` truncates to ``0`` and
+    is kept.  Pinning both sides is what stops the boundary drifting."""
     cfg = build_custom([value] + [4] * 7)
     assert cfg.demand.values[0] == expected
     assert type(cfg.demand.values[0]) is int
@@ -2869,10 +2869,10 @@ def test_a_numeric_string_entry_above_the_ceiling_is_refused() -> None:
 def test_a_non_finite_custom_entry_reports_demand_values_unindexed(
     bad: float,
 ) -> None:
-    """Rule 8 and the ``CUSTOM`` bullet overlap for a non-finite entry
-    inside a series, and the ``CUSTOM`` bullet wins -- the field is
-    ``demand.values``, **not** ``demand.values[3]``.  An index-bearing field
-    string is not something a black-box test can predict.
+    """The non-finite check and the ``CUSTOM`` field rule (spec §6.6) overlap
+    for a non-finite entry inside a series, and the ``CUSTOM`` rule wins --
+    the field is ``demand.values``, **not** ``demand.values[3]``.  An
+    index-bearing field string is not something a black-box test can predict.
     """
     err = assert_rejected_custom([4, 4, 4, bad, 4, 4, 4, 4], field="demand.values")
     assert "[" not in err.field

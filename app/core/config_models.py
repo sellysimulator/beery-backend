@@ -203,7 +203,7 @@ def _as_bool(value: Any, default: bool) -> bool:
 
 
 def _default_of(model: type[BaseModel], name: str) -> Any:
-    """The declared default of `model.name`, so clamping never restates one."""
+    """The declared default of `model.name`, so a fallback never restates one."""
     return model.model_fields[name].default
 
 
@@ -957,7 +957,7 @@ def _checked_demand(raw: Any, duration_weeks: int, limits: Limits) -> _AnyDemand
                 "demand.values",
                 f"CUSTOM demand values must be numbers, not {item!r}.",
             )
-        # Rule 2 is evaluated on the parsed number, *before* truncation. An
+        # The negative check runs on the parsed number, *before* truncation. An
         # entry in (-1, 0) truncates toward zero to 0, so truncating first
         # would repair an unambiguously negative entry into valid demand the
         # host never asked for.

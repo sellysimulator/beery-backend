@@ -72,16 +72,16 @@ EXPECTED_HEADER = [
     "production_queued",
 ]
 
-# A display name beginning "=" must be written with a leading "'"; the value
-# that round-trips is that *sanitised* string, not the original.
+# A formula-shaped display name. The export writes each seat's `P<N>`
+# (`export_service.seat_alias`) instead of a name, so neither this string nor
+# its `'`-prefixed form (what a CSV-injection guard would write) is in the file.
 INJECTION_NAME = "=cmd|'/c calc'!A1"
 SANITISED_INJECTION_NAME = "'" + INJECTION_NAME
 
 # Comma, quote, a real embedded newline, and a non-ASCII character, all in
 # one field -- and, at 6 characters, comfortably under the 24-character cap
-# so it is a realistic display name rather than a truncation edge case. This
-# is also the row-count trap: the embedded newline makes the file's
-# *physical* line count larger than its row count.
+# so it is a realistic display name rather than a truncation edge case. The
+# export writes the seat's `P<N>` instead, so none of it reaches the file.
 UNICODE_NAME = 'A,"é\nZ'
 
 
@@ -163,13 +163,10 @@ def test_csv_row_count_header_and_customer_demand(
     # The header, column for column.
     assert header == EXPECTED_HEADER
 
-    # Row count -- counted with csv.reader, never splitlines(): the embedded
-    # newline in UNICODE_NAME makes the physical line count larger than the
-    # true row count once it is correctly quoted.
+    # Row count, taken with csv.reader rather than splitlines().
     assert len(data_rows) == 8 * 4
-    # The file carries no chosen name (spec §9.5), so the embedded-newline
-    # name does not reach it; the count above is still taken with
-    # csv.reader, never splitlines().
+    # The file carries no chosen name (spec §9.5), so UNICODE_NAME's embedded
+    # newline does not reach it.
     assert "\nZ" not in response.text
 
     # customer_demand is the same on all four rows of a week.

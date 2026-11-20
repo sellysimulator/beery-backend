@@ -790,7 +790,7 @@ async def test_bot_fill_off_keeps_the_unfilled_roles_reason(
     )
 
 
-# --- every start_game refusal names its room (2026-11-14) ------------------------------------- #
+# --- every start_game refusal names its room -------------------------------------------------- #
 # The multi-game dashboard starts several rooms from one socket, so each refusal carries the
 # `room_code` it was for, next to `message`, to land on that game's card. Additive: `message`
 # is unchanged.
