@@ -20,7 +20,7 @@ measures.
   nobody is left seatless; RANDOM deals everyone a role first), and a seat the host explicitly
   **swaps** to a bot ("Swap in a bot", `substitute_bot`). A player who drops is never replaced
   automatically — the room pauses (D7) and the host decides. A swapped seat keeps its player's
-  identity, so the finished game still counts for them (`14 §3.6`); a bot swapped in while
+  identity, so the finished game still counts for them (spec §10.4); a bot swapped in while
   paused plays the moment the host resumes. The swapped player can take the seat back
   (`reclaim_seat`, their own seat only, running or paused); rejoining alone never does.
   `WeekRecord.was_bot` is who placed the week's standing order, not who held the seat at the
@@ -39,11 +39,13 @@ copy; the per-game copies, including `Beery/game_stack.md`, are generated from i
 edit those in place).
 
 - `Selly/` — the Tequila Game, the worked reference implementation the template came from.
-- `Beery/` — this game: `Beery_Backend/` (this repo) + `Beery_Frontend/` + `docs/`.
-  The two code directories are **separate git repos** (`origin` here is
-  `github.com/sellysimulator/beery-backend`).
-- `Lemony/`, `Pulky/` — scaffolds only, not built.
-- `Supply/` — an unrelated Firebase/Supabase app, not part of the game template.
+- `Beery/` — this game: `Beery_Backend/` (this repo) + `Beery_Frontend/`, whose `docs/`
+  holds the Beer Game spec and manual. The two code directories are **separate git repos**
+  (`origin` here is `github.com/sellysimulator/beery-backend`).
+- `Lemony/` (the Lemonade Game) and `Pulky/` (the Pulque Game) — the other games built from
+  the same template.
+- `Supply/` — **Selly**, the catalog site that lists the games (Supabase); not built from the
+  template.
 
 `Beery_Frontend` is React 19 + Vite 7 + TS + Tailwind 4 + Zustand + `socket.io-client` +
 Firebase Auth, hosted on **Firebase Hosting** (`https://beersim.web.app`). It talks to this
@@ -60,25 +62,18 @@ production the frontend's `VITE_SOCKET_URL` points directly at the Render host.
   layout, and a long, good section on **"Room state and Redis"** (what the `REDIS_ENABLED`
   switch changes, its two deployment constraints, measured round-trip costs, and how to
   smoke-test a real Redis). Open it before touching `app/services/state_backend.py` or
-  anything about deployment topology. It was re-derived from the routers on 2026-09-21 and
-  is current.
+  anything about deployment topology.
 - **`DEPLOY.md` (here)** — production topology diagram, platform env vars, **"Redis is
   optional"** (what `REDIS_ENABLED=false` costs and when it stops being allowed), the
   managed PostgreSQL 17 requirement (Aiven, TLS, DDL snapshot), the "ship frontend and backend together" rule, a pre-class
   deploy checklist, and what CI runs.
-- **`../docs/plan/`** — the build plan this code was written against. Open when you need
-  the *why*:
-  - `00-decisions.md` — the **append-only** decision log D1–D19 and the hard limits (§5). It
-    overrides `beer-game-spec.md`, `game_stack.md` and Selly wherever they disagree. D4 and
-    D17 carry dated amendment notes recording that Redis became optional in `b56edaa`; amend
-    by appending a dated note, never by rewriting a decision.
-  - `00-conventions.md` — vocabulary, the three identifiers, payload/error/event shapes,
-    redaction, idempotency, locking, code and test conventions.
-  - `01..23-*.md` — one document per buildable section; each is the contract for the files
-    it owns. Module docstrings in `app/` cite these by section and §.
-  - `BUILD-LOG.md` (146K) / `HANDOFF.md` — what was built, every spec defect found, and
-    where the work stopped. `ORCHESTRATOR.md` is the two-agent build protocol (historical).
-  - `99-phase-2-backlog.md` — deliberately-excluded features. Check before "adding" one.
+- **`../Beery_Frontend/docs/beer-game-spec.md`** — the product contract: the week's
+  sequence (§7), the bot (§8.5), the engine and its redaction (§8.6, §8.8), persistence
+  (§10), the REST, socket and room-document surface (§11), the abuse limits (§12.1), the
+  vocabulary (§14), **§15 Decisions** (the `D<n>` that code comments cite) and **§16 Not
+  built yet**. `beer-game-manual.md` beside it is the product voice. `game_stack.md` wins on
+  shared plumbing except where §15 records a deliberate departure. Git history holds the
+  build record.
 - `/Users/humberto/Code/Novus/game_stack.md` — the shared template: §0's seven security
   invariants, §2's pins and Dockerfile, §4's per-game vs never-changes split.
 
@@ -155,7 +150,8 @@ cp .env.example .env
 ./venv/bin/python -m pytest -m dbschema                   # needs a Docker daemon (postgres:17)
 BEERY_DOCKER_BUILD_TEST=1 ./venv/bin/python -m pytest -k docker   # the opt-in image build
 
-# gates (all must be clean; CI runs them over `app tests`)
+# gates (all must be clean; CI runs them over `app tests` only: `ruff check .` also lints
+# alembic/, where env.py has two old findings, so don't widen the scope without fixing them)
 ./venv/bin/ruff check app tests
 ./venv/bin/black --check app tests
 ./venv/bin/mypy app/core
@@ -214,7 +210,14 @@ source change needs a rebuild.
 - **Locking.** Every read-modify-write of room state is inside
   `async with state_svc.lock(room_code):`. No exceptions. Never hold the lock across a
   database write — `db_service.build_snapshot` copies out under the lock, everything below
-  it is lock-free.
+  it is lock-free. The lock is **not reentrant**: re-acquiring it deadlocks the room for
+  `LOCK_TIMEOUT_SECONDS` (10). Read, mutate and save inside it; build payloads and mint
+  `seq` inside it; emit and call any other `GameService` method only after it is released.
+  `submit`, `run_bot_decisions`, `close_week_if_ready` and `broadcast_state` each take their
+  own lock; `finish_game` takes none. The all-bot cascade is a loop of short acquisitions
+  (`GameService._drive`), not recursion, and a double close is prevented by re-reading the
+  room inside `close_week_if_ready`'s own lock. `start_game`'s `run_bot_decisions` call sits
+  after its lock block.
 - **Model / schema separation.** `app/models/` is SQLAlchemy only; `app/schemas/` is
   Pydantic only. The response shapes in `app/schemas/results.py` are **frozen** — the
   shipped frontend expects those exact names. Money fields there are declared `float`, never
@@ -243,18 +246,21 @@ source change needs a rebuild.
   `set_role_mode`, `assign_role`, `claim_role`, `release_role`, `start_game`, `submit_order`,
   `pause_game`, `resume_game`, `force_close_week`, `substitute_bot`, `reclaim_seat`,
   `end_game_early`, `request_state`.
-  Socket out: `joined`, `join_error`, `leave_ack`, `lobby_update`, `config_updated`,
-  `roles_assigned`, `game_started`, `game_paused`, `game_resumed`, `your_state`, `host_state`,
-  `order_submitted`, `your_week_closed`, `bot_substituted`, `seat_reclaimed`, `error`.
+  Socket out: `joined`, `join_error`, `host_claimed`, `leave_ack`, `lobby_update`,
+  `config_updated`, `roles_assigned`, `game_started`, `game_paused`, `game_resumed`,
+  `your_state`, `host_state`, `order_submitted`, `your_week_closed`, `week_closed`,
+  `participant_disconnected`, `participant_reconnected`, `host_disconnected`,
+  `host_reconnected`, `bot_substituted`, `seat_reclaimed`, `game_finished`,
+  `game_persisted`, `error`.
   Any change here must ship with `Beery_Frontend/src/api/socketHandlers.ts` in the same
   window, backend first, unless the backend stops sending a field the live frontend reads
   (e.g. `own_history` leaving the per-round `your_state`): then frontend first, per
   `DEPLOY.md`.
-- **`host_view()` carries `order_history`** (2026-11-02, `../CHARTS-PLAN.md` BE-4,
-  `07 §3.9`): `{role.value: [order per CLOSED week]}` in `ROLE_ORDER`, every key present and
+- **`host_view()` carries `order_history`** (spec §9.6): `{role.value: [order per CLOSED
+  week]}` in `ROLE_ORDER`, every key present and
   `[]` before the first close, **derived** from `history` (not in `to_payload`). It is every
   order quantity of the game so far, so `host_state` must stay `emit_to_sid` to the host. It
-  is on `12 §3.4`'s list of keys no room broadcast may carry, and `test_redaction.py` checks
+  is on spec §8.8's list of keys no room broadcast may carry, and `test_redaction.py` checks
   it. The frontend reads it as optional, so a frontend deployed ahead of this backend renders
   as before, but the intended order is still backend first.
 - **Error handling.** REST: `HTTPException` with a **string** `detail`, never `str(e)`;
@@ -267,8 +273,7 @@ source change needs a rebuild.
   room-create budget itself, `abuse.room_create_allowed(scope, count)` (all or nothing,
   `RateLimiter.allow(key, cost)`), after its preset and config have validated, so the
   middleware leaves that path on the general limit. The room-create budget is **30 rooms per
-  address per hour** (`ROOM_CREATE_WINDOW_SECONDS`, 2026-11-14, the standard across the Novus
-  games), shared by `/create` and `/batch-create` (≤ 10 a request): three full batches, then
+  address per hour** (`ROOM_CREATE_WINDOW_SECONDS`, the standard across the Novus games), shared by `/create` and `/batch-create` (≤ 10 a request): three full batches, then
   429. Both export routes share an **hourly**
   per-address budget (`GAME_EXPORT_LIMIT_PER_IP = 100` per `GAME_EXPORT_WINDOW_SECONDS`,
   CSV and JSON together), applied by the middleware; its 429's `Retry-After` is the seconds
@@ -290,29 +295,46 @@ source change needs a rebuild.
   Redact server-side before sending: build payloads key by key, never spread a room document.
 - **Authority is a capability**: `host_secret`, compared with `hmac.compare_digest`
   (D3). D18 also accepts a connection whose verified identity equals `host_identity`.
+  `room_service.check_host_identity` must return `False` when the stored `host_identity` is
+  null, and only a secret claim may write `host_identity` — otherwise the D18 recovery path
+  hands a fresh room to the first stranger.
+- **`room['sid_to_alias']` in the room document is authoritative**;
+  `socket_manager.sid_to_alias` is per-process bookkeeping. Read the room's, inside the
+  lock. A reconnect moves the mapping (the stale sid is dropped), and the host is never in
+  either map (`join_waiting` uses `sio.enter_room`, not `socket_manager.join_room`).
+- **`connection.py`'s `disconnect` calls `play.on_participant_disconnected(sid)` before
+  `socket_manager.disconnect(sid)`**, which pops the sid maps; reversed, the game silently
+  never pauses.
+- **Vocabulary** is the spec's §14: no synonyms ("round" is not a week) and never a bare
+  `token` as an identifier.
+- **Socket payload conventions.** Event names are snake_case; every client → server payload
+  carries `room_id`, privileged ones also `host_secret`; every server → client game event
+  carries the room's monotonic `seq`. Every mutating handler is idempotent: `join` by
+  identity (`find_alias_for_reconnect` / `find_alias_for_identity`), `submit_order` by
+  (room, week, role), replacing a pre-close resubmission and refusing a closed week, and
+  `start_game` on a running room is a silent no-op.
 - **Alias allocation scans for the lowest unused `P<N>`** (`next_free_alias`), never
   `len(participants) + 1` — that reissues a live participant's alias after a `leave`.
 - **`app/db/base.py` must read `from ..models.base import Base`.** `from .base import Base`
   there is a self-import that raises `ImportError`.
-- **Every range lives once, on `core.limits.Limits`, and is refused, never clamped**
-  (2026-11-02). `GameConfig.from_host_input` raises `ConfigValidationError` naming the field
+- **Every range lives once, on `core.limits.Limits`, and is refused, never clamped**. `GameConfig.from_host_input` raises `ConfigValidationError` naming the field
   and the range for any number outside it; `GameEngine.submit_order` raises
   `OrderOutOfRangeError` for an order outside `order_bounds()` (sent as `INVALID_ORDER`). The
   host form reads the ranges from `GET /rooms/limits` and the order form from `your_state`
   (`min_order_quantity`, `max_order_quantity`) — the frontend keeps no copy, so add a bound to
   `Limits`, never to a form. The only repairs left: a cap of 0 means unlimited, an inverted
-  stochastic range is swapped. There are no negative orders (`allow_negative_orders` was
-  removed; a stored config still carrying the key loads and ignores it).
-- **The server owns every game figure, not only the ranges** (2026-11-03, `00-decisions.md`
-  §5 amendment). The frontend computes nothing a rule defines; when it needs a figure, add it
+  stochastic range is swapped. There are no negative orders (a stored config still carrying an
+  `allow_negative_orders` key loads and ignores it).
+- **The server owns every game figure, not only the ranges** (spec §15). The frontend
+  computes nothing a rule defines; when it needs a figure, add it
   to a payload or a route that calls **the function the engine itself uses**:
-  - `POST /rooms/preview` (`core/preview.py`, `10 §3.5b`): a draft config → `demand_series`
+  - `POST /rooms/preview` (`core/preview.py`): a draft config → `demand_series`
     (`generate_demand_series`, with the host's `random_seed` or `EXAMPLE_SEED`),
     `demand_is_example` (`demand.uses_seed` and no seed) and per-role `lead_times`
     (`GameConfig.order_arrival_lead_weeks`, which the engine's `_order_arrival_lead_weeks`
-    now delegates to). No auth, nothing stored; a refusal is the `PUT /config` 422. It also
+    delegates to). No auth, nothing stored; a refusal is the `PUT /config` 422. It also
     returns the validated `config`, and takes an optional `patch` merged first by
-    `merge_config_patch` (2026-11-14): that is how the multi-game setup form edits a draft no
+    `merge_config_patch`: that is how the multi-game setup form edits a draft no
     room holds without copying the merge rule or a kind's defaults. `/rooms/presets` marks
     the `/create` default with `is_default`.
   - `/rooms/presets` `description` = `scenario_summary(preset)` + a figure-free tagline.
@@ -326,8 +348,8 @@ source change needs a rebuild.
   - The bot is milder at β=1, **not steady** (on flat demand of 4 it orders 9–14 first): its
     target is 3× opening stock, it has no desired-supply-line term and its supply line is
     shipments in transit only. Don't let a docstring or label promise otherwise
-    (`test_bot.py::test_ac14a_…`).
-- **Multi-game hosting** (`10 §3.5c`, `§3.5d`) is two REST routes over the ordinary room,
+    (`test_bot.py` asserts it).
+- **Multi-game hosting** (spec §9.10) is two REST routes over the ordinary room,
   nothing more: the rooms are plain rooms, and each is still claimed and run from its own
   host screen. `POST /rooms/batch-create` resolves the preset with `/create`'s
   `_preset_config` and validates the patch with the config PUT's `_validated_config`
@@ -340,11 +362,11 @@ source change needs a rebuild.
   `/rooms/limits`. The dashboard's "Start all" is the ordinary `start_game` emit:
   `start_game` is authorised by `host_secret` alone, and its `host_state` goes to
   `host_sid` (the claimed host tab) or, when none is claimed, to the caller. **Every refusal
-  of `start_game` names its room** (2026-11-14, identical in every Novus game): `join_error`
+  of `start_game` names its room** (identical in every Novus game): `join_error`
   `{message, room_code}` (`_reject_start`, and `@guarded("join_error", echo_room_code=True)`
   for its rate-limit and server-error replies), so the dashboard puts it on that game's card.
   Additive: listeners reading `message` are unaffected.
-- **The export is open by `public_id`, host-only by room code** (2026-11-14, `15 §10`).
+- **The export is open by `public_id`, host-only by room code** (D22).
   Anyone who can open a finished game's results may download it: a guest host has no account
   to fall back on. `GET /games/id/{public_id}/export` takes no credential (404 for an unknown
   id, like its results) and the results screen uses it for everyone. `GET /games/{code}/export`
@@ -353,7 +375,7 @@ source change needs a rebuild.
   screen shows: never add a uid, email, `user_id`, guest identity, session token or secret to
   `build_week_export_rows` or `ResultsResponse` (`tests/test_api/test_export_open.py` checks
   both formats without Docker). The frontend's once-per-session download button is UX only;
-  the hourly budget above is the guard. **No chosen name is in the file** (`15 §11`): every
+  the hourly budget above is the guard. **No chosen name is in the file**: every
   player is their seat's `P<N>` (`export_service.seat_alias`, Retailer `P1` … Factory `P4`)
   in `display_name`, rows and the JSON's `per_role` alike; the screens keep the names. **A
   finished export is cached** in `services/export_cache.py`: an in-process LRU of 64 files
@@ -365,18 +387,16 @@ source change needs a rebuild.
   `weeks.total_week_cost` column, the export's `total_week_cost`) is holding + backlog + order
   cost; `player_view` sends `week_holding_backlog_cost` and `week_order_cost` (`null` until the
   week closes). `end_early()` rolls the abandoned week's cost back out of every live total.
-- **The §5 hard limits are not settings, on purpose.** `Settings` declares exactly one of
+- **The hard limits are not settings, on purpose.** `Settings` declares exactly one of
   them, `MAX_DISPLAY_NAME_LENGTH` (consumed by `display_name.py` and `user_service.py`).
   The game ceilings live on `core.limits.Limits` / `DEFAULT_LIMITS` (re-exported by
   `core.config_models`) and are
   injected, because `app/core` may not import `app.config`; `ROOM_TTL_SECONDS` and
   `LOCK_TIMEOUT_SECONDS` are module constants in `services/state_service.py`, `MAX_ROOMS` is
   one in `services/state_backend.py`, and every abuse limit is one in `core/abuse.py`
-  (README "Abuse limits"). The other ten
-  §5 names *were* `Settings` fields, were read by nothing, and were deleted on 2026-09-21
-  so that `.env` stops lying — a variable the app ignores is worse than no variable. Change
-  a ceiling at the site that owns it; `01-backend-skeleton.md` §2 still shows the old,
-  larger `Settings` surface, and the code is right and the plan is stale on that point.
+  (README "Abuse limits"). No other limit is a `Settings` field: a variable the app ignores
+  is worse than no variable, because `.env` then lies. Change a ceiling at the site that
+  owns it.
 - **`FIREBASE_SERVICE_ACCOUNT_JSON` must be one line, single-quoted or unquoted.** Double
   quotes make python-dotenv decode `\n` inside `private_key`, break the line, and leave the
   variable silently unset.
@@ -387,6 +407,30 @@ source change needs a rebuild.
   service account.** Use `logging.getLogger(__name__)`; no `print`.
 - **`asyncio_mode = strict`** — every `async def test_*` needs `@pytest.mark.asyncio` or it
   fails loudly.
+- **Writing tests.** Every `tests/test_<area>/` has an `__init__.py` and `tests/` itself has
+  none, or a second `conftest.py` makes `from conftest import ...` bind to the wrong module.
+  A throwaway mapped class gets its own `DeclarativeBase`, never the app's `Base` (it would
+  pollute `Base.metadata` for the session and break the `dbschema` comparisons). A
+  concurrency test against the fake store proves nothing unless the critical section forces
+  a suspension point (`await asyncio.sleep(0)`): confirm it goes red with the lock removed.
+  Likewise break the code once to see any new regression test fail, and when a database
+  constraint is named as a backstop, check it is reachable from the race (`persist_game`'s
+  is `uq_games_room_code_started_at`, not the `weeks` key). Assert against injectable
+  inputs, not live wiring; never let a test skip itself once later code lands; no two file
+  names may differ only by case.
+- **`app/core/checks.register_check` has no unregister.** A check a test registers stays for
+  the whole session, so tests that need isolation reload the `app.core.checks` package. A
+  raising check is logged and never aborts boot, so a leaked one can't break startup.
+- **Migrations.** A schema change is a new revision on the single linear chain from
+  `0001_postgres_baseline` (`test_migration.py` asserts contiguous numbers and one head),
+  never an edit to an applied revision, and it regenerates `db/schema.postgres.sql` in the
+  same change. `downgrade()` drops in reverse dependency order. A foreign-key column that is
+  queried gets an explicitly named index in the model (`ix_user_stats_best_game_id`):
+  PostgreSQL never creates one for a foreign key.
+- **A known unexplained flake:** `tests/test_api/test_profile.py` (`dbschema`) once failed
+  three tests ("expected 3, got 0" and a 404), then passed every rerun. If it fails again,
+  suspect commit visibility between the test session and the request's session before
+  suspecting the route.
 - **The suite never reaches a real DB or Redis.** `tests/conftest.py` overwrites `DB_*` and
   `REDIS_URL` with unreachable values *before* `app` is imported, and monkeypatches
   `app.services.state_service.redis_client` with a `FakeRedis`. A change to
@@ -398,6 +442,6 @@ source change needs a rebuild.
 - Deps are exactly pinned (`==`). There is no `ruff`/`mypy`/`black` config section anywhere —
   they run on defaults; keep it that way unless you have a reason.
 - English only, no i18n layer (D13). Do not port Selly's Spanish strings.
-- Before "adding a feature", check `00-decisions.md` §3 (superseded spec parts) and
-  `99-phase-2-backlog.md` — spectators, timers, chat, `clone_room`, per-week write-through
-  and non-4-stage chains are all deliberately out of v1.
+- Before "adding a feature", check the spec's §13 Out of scope and §16 Not built yet —
+  spectators, timers, chat, `clone_room`, per-week write-through and non-4-stage chains are
+  all deliberately out of v1.

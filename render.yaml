@@ -1,5 +1,5 @@
-# Render service definition for the Beery backend (00-decisions.md D17,
-# 23-deployment-and-ci.md §3). The service is a plain Docker web service on
+# Render service definition for the Beery backend (D17 in the spec's §15;
+# see DEPLOY.md). The service is a plain Docker web service on
 # the free plan, configured in the Render dashboard (this file is not linked
 # as a Blueprint; it records the settings). One web service, built from the
 # committed Dockerfile -- plain uvicorn, no gunicorn (game_stack.md §3).
@@ -13,14 +13,14 @@
 # Redis is OPTIONAL and is likewise not declared here. Since the state
 # backend became switchable, REDIS_ENABLED=false (the default) keeps live
 # room state in the process and the service has no Redis dependency at all --
-# correct for the single-instance classroom deployment this plan describes,
+# correct for the single-instance classroom deployment Beery runs as,
 # at the cost of losing in-progress games on any restart or deploy. Turning
 # it on means provisioning Redis separately (e.g. Redis Cloud/Upstash) and
 # setting both REDIS_ENABLED and REDIS_URL below. See DEPLOY.md.
 #
 # The managed instance MUST run PostgreSQL 17 -- the same `postgres:17` image
 # `tests/test_models/conftest.py` pins its Testcontainers schema suite to
-# (23-deployment-and-ci.md AC 15). Provisioning a different major version
+# (`test_config_surface.py` checks both). Provisioning a different major version
 # makes CI prove the wrong engine.
 services:
   - type: web
@@ -40,7 +40,8 @@ services:
     envVars:
       - key: DEBUG
         value: "false"
-      # Never ["*"]: this app sets allow_credentials=True (§3.2, AC 5).
+      # Never ["*"]: this app sets allow_credentials=True, and Settings refuses
+      # the combination at load.
       - key: CORS_ORIGINS
         value: '["https://beersim.web.app","http://localhost:5173"]'
       - key: DB_HOST
@@ -72,10 +73,10 @@ services:
       # Read only when REDIS_ENABLED is "true", and then required: an empty
       # REDIS_URL with the flag on refuses to start. It must point at a live,
       # non-free-tier instance -- a reclaimed free-tier Redis returns NXDOMAIN
-      # and every room operation fails (§3.4).
+      # and every room operation fails.
       - key: REDIS_URL
         sync: false
       # The whole service account JSON, on one line, single-quoted or
-      # unquoted -- double quotes corrupt it (§3.2, AC 6, failure mode 3).
+      # unquoted -- double quotes corrupt it (DEPLOY.md, Environment).
       - key: FIREBASE_SERVICE_ACCOUNT_JSON
         sync: false
