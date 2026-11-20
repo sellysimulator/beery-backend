@@ -209,12 +209,17 @@ source change needs a rebuild.
   instance and no `--workers`.
 - **Locking.** Every read-modify-write of room state is inside
   `async with state_svc.lock(room_code):`. No exceptions. Never hold the lock across a
-  database write — `db_service.build_snapshot` copies out under the lock, everything below
-  it is lock-free. The lock is **not reentrant**: re-acquiring it deadlocks the room for
+  database write — `db_service.build_snapshot` works on a room document already read under
+  the lock and runs after it is released; everything below it is lock-free. The lock is
+  **not reentrant**: re-acquiring it deadlocks the room for
   `LOCK_TIMEOUT_SECONDS` (10). Read, mutate and save inside it; build payloads and mint
   `seq` inside it; emit and call any other `GameService` method only after it is released.
   `submit`, `run_bot_decisions`, `close_week_if_ready` and `broadcast_state` each take their
-  own lock; `finish_game` takes none. The all-bot cascade is a loop of short acquisitions
+  own lock. `finish_game` takes two short ones around a lock-free persistence call: one to
+  re-read, mint `game_finished`'s `seq` and save, one to re-read, set `persisted`, mint
+  `game_persisted`'s `seq` and save — never saving the caller's copy, so a mutation made
+  while the database write runs survives. Its callers (`_drive`, `close_week_if_ready`,
+  `end_game_early`) call it only after their own lock block. The all-bot cascade is a loop of short acquisitions
   (`GameService._drive`), not recursion, and a double close is prevented by re-reading the
   room inside `close_week_if_ready`'s own lock. `start_game`'s `run_bot_decisions` call sits
   after its lock block.

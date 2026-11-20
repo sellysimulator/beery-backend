@@ -478,40 +478,135 @@ async def test_all_bot_104_week_game_does_not_recurse(
     assert engine.weeks_played == 104
 
 
-# --- no lock across persistence --------------------------------------------- #
+# --- finish_game: saves under the lock, persistence outside it -------------- #
 
 
-async def test_finish_game_never_acquires_the_room_lock(
+async def test_finish_game_saves_under_the_room_lock_and_persists_outside_it(
     make_room, start_running_game, state_svc, monkeypatch
 ):
-    """``finish_game`` is documented to *never* acquire
-    ``state_svc.lock`` -- persistence must not run under a lock at all. A spy
-    on ``state_svc.lock`` is timing-independent, unlike a bare
-    ``asyncio.gather`` against ``FakeRedis``: gathered coroutines against an
-    in-memory fake run to completion one at a time, so a wrong
-    implementation that wraps the whole body (including a slow persistence
-    call) in the lock would still finish instantly and prove nothing by
-    timing alone. Counting actual lock acquisitions does not have that
-    problem."""
+    """Every ``save_room`` ``finish_game`` makes -- the ``game_finished``
+    ``seq`` and the ``persisted`` flag -- happens while it holds
+    ``state_svc.lock``, and ``persist_finished_game`` runs with the lock
+    released. A spy that tracks whether the lock is held is
+    timing-independent, unlike a bare ``asyncio.gather`` against
+    ``FakeRedis``: gathered coroutines against an in-memory fake run to
+    completion one at a time, so neither a lock-free save nor a lock held
+    across a slow persistence call would show up by timing alone. The lock is
+    not reentrant, so the call is bounded: a re-acquisition would hang."""
     from app.services.game_service import GameService
 
     room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
     game = await start_running_game(room)
     stored, _engine = await _current(state_svc, game["room_code"])
 
-    lock_calls: list[str] = []
+    held = 0
+    acquisitions = 0
     original_lock = state_svc.lock
 
-    def spy_lock(room_code: str):
-        lock_calls.append(room_code)
-        return original_lock(room_code)
+    @contextlib.asynccontextmanager
+    async def spy_lock(room_code: str):
+        nonlocal held, acquisitions
+        async with original_lock(room_code):
+            held += 1
+            acquisitions += 1
+            try:
+                yield
+            finally:
+                held -= 1
 
     monkeypatch.setattr(state_svc, "lock", spy_lock)
 
-    service = GameService()
-    await service.finish_game(game["room_code"], stored)
+    saves_held: list[int] = []
+    original_save = state_svc.save_room
 
-    assert lock_calls == []
+    async def spy_save(room_code: str, room_doc: dict) -> None:
+        saves_held.append(held)
+        await original_save(room_code, room_doc)
+
+    monkeypatch.setattr(state_svc, "save_room", spy_save)
+
+    persist_held: list[int] = []
+
+    async def spy_persist(room_code, room_doc, engine, stats):
+        persist_held.append(held)
+        return "b" * 32
+
+    monkeypatch.setattr(game_service_module, "persist_finished_game", spy_persist)
+
+    await asyncio.wait_for(
+        GameService().finish_game(game["room_code"], stored), timeout=5
+    )
+
+    assert persist_held == [0]
+    assert saves_held == [1, 1]  # game_finished's seq, then the persisted flag
+    assert acquisitions == 2
+    after, _engine = await _current(state_svc, game["room_code"])
+    assert after["state"] == "FINISHED"
+    assert after["persisted"] is True
+
+
+async def test_a_seq_minted_during_persistence_survives_finish_game(
+    make_room, start_running_game, state_svc, fake_socket_manager, monkeypatch
+):
+    """A ``request_state`` that lands while the database write is running
+    mints its ``seq`` under the lock and saves it. ``finish_game`` must not
+    then overwrite the room with the copy it held before persisting: the
+    reply must sit strictly between ``game_finished`` and ``game_persisted``,
+    and the stored counter must end at ``game_persisted``'s number, so no two
+    events ever share a ``seq``."""
+    public_id = "c" * 32
+    persist_started = asyncio.Event()
+    release_persist = asyncio.Event()
+
+    async def gated_persist(room_code, room_doc, engine, stats):
+        persist_started.set()
+        await release_persist.wait()
+        return public_id
+
+    monkeypatch.setattr(game_service_module, "persist_finished_game", gated_persist)
+
+    room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
+    game = await start_running_game(room)
+
+    task = asyncio.create_task(
+        end_game_early(
+            game["host_sid"],
+            {"room_id": game["room_code"], "host_secret": game["host_secret"]},
+        )
+    )
+    try:
+        await asyncio.wait_for(persist_started.wait(), timeout=5)
+        emitted_before = len(fake_socket_manager.sid_emits)
+        await asyncio.wait_for(
+            request_state(game["host_sid"], {"room_id": game["room_code"]}),
+            timeout=5,
+        )
+        release_persist.set()
+        await asyncio.wait_for(task, timeout=5)
+    finally:
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    reply_seq = next(
+        data["seq"]
+        for target, event, data in fake_socket_manager.sid_emits[emitted_before:]
+        if target == game["host_sid"] and event == "host_state"
+    )
+    emits = fake_socket_manager.emits_for(game["room_code"])
+    finished_seq = next(
+        data["seq"] for event, data in emits if event == "game_finished"
+    )
+    persisted_seq = next(
+        data["seq"] for event, data in emits if event == "game_persisted"
+    )
+    assert finished_seq < reply_seq < persisted_seq
+
+    stored, _engine = await _current(state_svc, game["room_code"])
+    assert stored["seq"] == persisted_seq
+    assert stored["persisted"] is True
+    assert stored["state"] == "FINISHED"
 
 
 # --- a persistence failure -------------------------------------------------- #

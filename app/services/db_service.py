@@ -2,8 +2,8 @@
 
 This is the only path that writes game data to the database (**D4**). Nothing
 here runs under the Redis lock: `build_snapshot` copies everything it needs
-out of the room document while the lock is still held by the caller
-(`app/services/game_service.py::finish_game`), and everything below this
+out of a room document the caller (`app/services/game_service.py::finish_game`)
+read under the lock and has since released, and everything below this
 point in the call graph is lock-free.
 
 `persist_game` is idempotent by `(room_code, started_at)` and all-or-nothing:

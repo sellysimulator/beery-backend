@@ -817,7 +817,7 @@ async def test_persistence_runs_with_the_room_lock_released(
     """`persist_finished_game` must never call `state_svc.lock` at all --
     the same spy-on-`lock` technique the socket suite uses for
     `finish_game` (``tests/test_sockets/test_week_broadcast.py::
-    test_finish_game_never_acquires_the_room_lock``), applied directly to
+    test_finish_game_saves_under_the_room_lock_and_persists_outside_it``), applied directly to
     the persistence function. Counting real lock
     acquisitions proves the claim regardless of timing, unlike racing a
     concurrent operation against an in-memory fake."""

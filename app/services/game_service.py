@@ -547,8 +547,8 @@ class GameService:
     ) -> tuple[bool, bool, dict | None]:
         """One lock cycle. Returns `(closed, finished, room)`; `room` is the
         document already saved inside this call, handed back so the caller
-        can pass it straight to `finish_game` without a second lock or a
-        second read."""
+        can pass it to `finish_game` (after this lock is released) as the
+        snapshot it persists; `finish_game` takes its own lock for its saves."""
         state_svc = get_state_service()
         room_code_out = room_code
         week_closed_payload: dict | None = None
@@ -722,19 +722,32 @@ class GameService:
     # --- the end -------------------------------------------------------- #
 
     async def finish_game(self, room_code: str, room: dict) -> None:
-        """Never acquires the lock; persistence never runs under
-        one either. A persistence failure must not break the results
-        screen: it is logged, `persisted` is `False`, and the
-        clients keep the `game_finished` payload they already received."""
+        """Two short lock cycles around a lock-free persistence call.
+
+        The caller must already have released the room lock (it is not
+        reentrant): `room` is the document it saved under that lock, and is
+        used here only as the read-only snapshot handed to persistence.
+
+        1. Under the lock: re-read the room, mint `game_finished`'s `seq`
+           and save. Emit after release.
+        2. No lock: persist (a database write that may be slow or fail).
+        3. Under the lock: re-read the room again, set `persisted`, mint
+           `game_persisted`'s `seq` and save. Emit after release.
+
+        Each save is of the document just read under the lock, never of the
+        caller's copy, so a mutation made while persistence runs (a
+        `request_state` minting a `seq`, a disconnect) is kept, not
+        overwritten, and no two events share a `seq`.
+
+        A persistence failure must not break the results screen: it is
+        logged, `persisted` is `False`, and the clients keep the
+        `game_finished` payload they already received."""
         state_svc = get_state_service()
         engine = state_svc.load_engine(room)
         if engine is None:
             logger.error("finish_game called for room %s with no engine.", room_code)
             return
-
-        room["state"] = RoomState.FINISHED.value
-        if not room.get("finished_at"):
-            room["finished_at"] = datetime.now(timezone.utc).isoformat()
+        room_code_out = room["room_code"]
 
         weeks_played = engine.weeks_played
         stats = compute_stats(engine.history, engine.demand_series, weeks_played)
@@ -743,42 +756,70 @@ class GameService:
         for record in engine.history:
             orders_by_role[record.role.value].append(record.order)
 
-        finished_payload = {
-            "seq": state_svc.next_seq(room),
-            "weeks_played": weeks_played,
-            "stats": stats_to_payload(stats),
-            "demand_series": list(engine.demand_series),
-            "orders_by_role": orders_by_role,
-        }
+        async with state_svc.lock(room_code_out):
+            current = await state_svc.get_room(room_code_out)
+            if current is None:
+                logger.error(
+                    "finish_game: room %s vanished before game_finished.",
+                    room_code_out,
+                )
+                return
+            # The callers already saved FINISHED; this only guards a caller
+            # that did not.
+            current["state"] = RoomState.FINISHED.value
+            if not current.get("finished_at"):
+                current["finished_at"] = datetime.now(timezone.utc).isoformat()
+            finished_payload = {
+                "seq": state_svc.next_seq(current),
+                "weeks_played": weeks_played,
+                "stats": stats_to_payload(stats),
+                "demand_series": list(engine.demand_series),
+                "orders_by_role": orders_by_role,
+            }
+            await state_svc.save_room(room_code_out, current)
+            snapshot = current
 
         # The debrief goes out BEFORE persistence, not after (spec §10.2).
         # Persistence is a database round trip that may be slow and may fail;
         # the results screen must not wait on it and must not be lost with it.
         await socket_manager.emit_to_room(
-            room["room_code"], "game_finished", finished_payload
+            room_code_out, "game_finished", finished_payload
         )
 
         public_id: str | None = None
         try:
             public_id = await persist_finished_game(
-                room["room_code"], room, engine, stats
+                room_code_out, snapshot, engine, stats
             )
         except Exception:
-            logger.exception("Persisting finished game %s failed.", room["room_code"])
+            logger.exception("Persisting finished game %s failed.", room_code_out)
             public_id = None
 
         persisted = isinstance(public_id, str)
-        room["persisted"] = persisted
         persisted_payload: dict | None = None
-        if persisted:
-            persisted_payload = {"seq": state_svc.next_seq(room), "game_id": public_id}
-        await state_svc.save_room(room["room_code"], room)
+        async with state_svc.lock(room_code_out):
+            current = await state_svc.get_room(room_code_out)
+            if current is None:
+                # Expired or deleted while the write ran: nothing to flag,
+                # and saving the stale snapshot would resurrect the room.
+                logger.warning(
+                    "finish_game: room %s vanished before persisted was saved.",
+                    room_code_out,
+                )
+            else:
+                current["persisted"] = persisted
+                if persisted:
+                    persisted_payload = {
+                        "seq": state_svc.next_seq(current),
+                        "game_id": public_id,
+                    }
+                await state_svc.save_room(room_code_out, current)
 
         # Only now does the permanent results URL exist. Clients already hold
         # the debrief from `game_finished`; this just lets them link to it.
         if persisted_payload is not None:
             await socket_manager.emit_to_room(
-                room["room_code"], "game_persisted", persisted_payload
+                room_code_out, "game_persisted", persisted_payload
             )
 
 
