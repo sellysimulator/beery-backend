@@ -1,9 +1,7 @@
-"""Black-box tests for section 14 -- ``app/services/stats_service.py``.
+"""Black-box tests for ``app/services/stats_service.py`` (spec §10.5).
 
-Covers ``14-end-of-game-persistence.md §4`` acceptance criteria 12-15 and
-``§5`` failure modes 4 and (the stats half of) 12. Criteria 1-11, 20 and
-failure modes 1, 2, 3, 5, 6, 7, 8, 9, 11 live in ``test_db_service.py``;
-16-19 and failure mode 10 in ``test_guest_claim.py``.
+Writing a finished game is tested in ``test_db_service.py``, and the guest
+claim in ``test_guest_claim.py``.
 
 Fixture data is produced through ``DbService.persist_game`` -- the only
 path that writes a `weeks`/`participants` row at all -- rather than by
@@ -71,11 +69,11 @@ def _persist_game_for_user(
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 12
+# Recompute after one game
 # ---------------------------------------------------------------------------
 
 
-def test_ac12_recompute_after_one_game(db):
+def test_recompute_after_one_game(db):
     user_id = insert_user(db.connection(), firebase_uid="uid-single-game")
     db.commit()
     game_id, _engine, final_cost = _persist_game_for_user(
@@ -102,7 +100,7 @@ def test_ac12_recompute_after_one_game(db):
     assert row.games_as_wholesaler == 0
 
 
-def test_ac12_recompute_twice_updates_the_one_row_in_place(db):
+def test_recompute_twice_updates_the_one_row_in_place(db):
     """The upsert's second run takes the `ON CONFLICT (user_id) DO UPDATE`
     branch: still one `user_stats` row, now carrying the new totals."""
     user_id = insert_user(db.connection(), firebase_uid="uid-upsert-twice")
@@ -132,11 +130,11 @@ def test_ac12_recompute_twice_updates_the_one_row_in_place(db):
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 13
+# The best game
 # ---------------------------------------------------------------------------
 
 
-def test_ac13_recompute_after_three_games_picks_the_cheapest_as_best(db):
+def test_recompute_after_three_games_picks_the_cheapest_as_best(db):
     user_id = insert_user(db.connection(), firebase_uid="uid-three-games")
     db.commit()
 
@@ -184,11 +182,11 @@ def test_ac13_recompute_after_three_games_picks_the_cheapest_as_best(db):
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 14
+# The bullwhip average
 # ---------------------------------------------------------------------------
 
 
-def test_ac14_bullwhip_avg_is_null_not_zero_for_constant_demand_only(db):
+def test_bullwhip_avg_is_null_not_zero_for_constant_demand_only(db):
     """With `CONSTANT` demand every role's `bullwhip_ratio` is NULL (D12),
     so a user whose only game used it must show `bullwhip_avg: NULL` -- a
     wrong implementation that folds a missing ratio into the mean as 0
@@ -212,11 +210,11 @@ def test_ac14_bullwhip_avg_is_null_not_zero_for_constant_demand_only(db):
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 15 / failure mode 4
+# A bounded number of statements
 # ---------------------------------------------------------------------------
 
 
-def test_ac15_fm4_recompute_issues_a_bounded_number_of_statements(db, schema_engine):
+def test_recompute_issues_a_bounded_number_of_statements(db, schema_engine):
     user_id = insert_user(db.connection(), firebase_uid="uid-25-games")
     db.commit()
     for seed in range(25):
@@ -232,7 +230,7 @@ def test_ac15_fm4_recompute_issues_a_bounded_number_of_statements(db, schema_eng
         StatsService().recompute_user_stats(db, user_id)
     db.commit()
 
-    # Failure mode 4's own bound: "≤ 3, not 25+".
+    # The bound: "≤ 3, not 25+".
     assert log.total <= 3, (
         f"expected at most 3 statements for 25 games, ran {log.total}: "
         f"{[r.statement for r in log.records]}"
@@ -243,12 +241,12 @@ def test_ac15_fm4_recompute_issues_a_bounded_number_of_statements(db, schema_eng
 
 
 # ---------------------------------------------------------------------------
-# Failure mode 12 (stats half -- the DB-cascade half is section 13's own
-# `test_deleting_a_user_keeps_the_games_they_played`)
+# A deleted user (the stats half -- the DB-cascade half is
+# `tests/test_models`' `test_deleting_a_user_keeps_the_games_they_played`)
 # ---------------------------------------------------------------------------
 
 
-def test_fm12_recompute_for_a_deleted_user_is_a_noop(db):
+def test_recompute_for_a_deleted_user_is_a_noop(db):
     user_id = insert_user(db.connection(), firebase_uid="uid-will-be-deleted")
     db.commit()
     _persist_game_for_user(

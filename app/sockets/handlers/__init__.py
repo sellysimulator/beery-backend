@@ -1,6 +1,6 @@
-"""Socket.IO handler discovery point (00-decisions.md D19).
+"""Socket.IO handler discovery point (D19).
 
-A later section adds behaviour by dropping a module into this package; its
+Behaviour is added by dropping a module into this package; its
 `@sio.event` decorators register as the module is imported. Nothing upstream is
 edited, and the package works while it is empty.
 """

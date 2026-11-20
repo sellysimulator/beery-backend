@@ -70,7 +70,7 @@ async def test_the_lock_actually_serialises_two_coroutines() -> None:
     """Forces a real suspension inside the critical section.
 
     An uncontended `asyncio.Lock` does not suspend, so a naive version of
-    this test passes with no lock at all -- the trap recorded at gate 8.
+    this test passes with no lock at all.
     The `sleep(0)` is what makes the interleaving reachable.
     """
     backend = InMemoryBackend()

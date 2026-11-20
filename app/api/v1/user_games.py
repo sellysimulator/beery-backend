@@ -1,10 +1,10 @@
 """The caller's own profile aggregate and match history
-(``15-results-and-export-api.md`` §3.4-3.6).
+(spec §9.9).
 
-This is a second router under ``/users`` (**D19**): section 02 owns
-``app/api/v1/users.py`` and the ``/users/upsert`` and ``/users/me`` routes.
-FastAPI composes both routers, discovered independently by
-``app/api/v1/__init__.py``, because two routers may share a path prefix.
+This is a second router under ``/users``: ``app/api/v1/users.py`` holds the
+``/users/upsert`` and ``/users/me`` routes. FastAPI composes both routers,
+discovered independently by ``app/api/v1/__init__.py`` (**D19**), because two
+routers may share a path prefix.
 
 Every route here requires a verified Firebase token and answers only for the
 caller's own data -- there is no route that takes a user id, so a caller can
@@ -68,8 +68,8 @@ def _last_week_cost_subquery():  # type: ignore[no-untyped-def]
     """Each `(game_id, role)`'s final `cumulative_cost` -- the same value
     `RoleResult.total_cost` reads off the same rows in `/results` -- reached
     with `MAX(week)` rather than a per-game recompute of `compute_stats`, so
-    a 25-game listing costs one join, not 25 statements (`§3.5`,
-    `[HARD-WON]`).
+    a 25-game listing costs one join, not 25 statements
+    (`[HARD-WON]`).
     """
     last_week = (
         select(
@@ -133,7 +133,7 @@ def get_my_stats(
 ) -> UserStatsResponse:
     """The caller's aggregate statistics. A user with no `user_stats` row --
     including one who has never even upserted a profile -- gets a
-    zero-filled response with HTTP 200, not a 404 (`§3.4`).
+    zero-filled response with HTTP 200, not a 404.
     """
     try:
         user_id = _resolve_user_id(db, claims["uid"])
@@ -173,7 +173,7 @@ def get_my_games(
     page: int = 1,
     page_size: int = 20,
 ) -> MatchHistoryResponse:
-    """The caller's match history, newest first, paginated (`§3.5`).
+    """The caller's match history, newest first, paginated.
 
     `page_size` is clamped to `[1, 100]` rather than rejected. Exactly three
     statements regardless of how many games the caller has played: resolve
@@ -233,7 +233,7 @@ def get_my_game(
     db: Annotated[Session, Depends(get_db)],
     claims: Annotated[dict, Depends(get_current_firebase_user)],
 ) -> ResultsResponse:
-    """One of the caller's own games, in full (`§3.6`).
+    """One of the caller's own games, in full.
 
     404 -- never 403 -- when the caller did not participate, identical to a
     non-existent id, so this route is never a game-existence oracle.

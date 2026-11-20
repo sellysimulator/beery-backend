@@ -1,19 +1,16 @@
-"""Black-box tests for section 14 -- ``app/services/db_service.py``.
+"""Black-box tests for ``app/services/db_service.py`` (spec §10.2).
 
-Covers ``14-end-of-game-persistence.md §4`` acceptance criteria 1-11 and 20,
-and ``§5`` failure modes 1, 2, 3, 5, 6, 7, 8, 9 and 11. Criteria 12-15 live
-in ``test_stats_service.py`` and 16-19 in ``test_guest_claim.py``, together
-with failure modes 4, 10 and 12.
+Career stats live in ``test_stats_service.py`` and the guest claim in
+``test_guest_claim.py``.
 
 Driven entirely through: ``DbService``, ``GameSnapshot``, ``ParticipantSnapshot``
-and ``build_snapshot`` (this section's own frozen surface); the frozen
-surfaces of ``GameEngine``/``WeekRecord`` (07), the room document (09 §2),
-``app/models/game.py`` and ``app/models/user.py`` (13); and
-``app.services.game_service.persist_finished_game``, the seam section 12
-freezes and this section fills the body of. ``app/services/db_service.py``
-itself is never opened.
+and ``build_snapshot``; the surfaces of ``GameEngine``/``WeekRecord``, the room
+document, ``app/models/game.py`` and ``app/models/user.py``; and
+``app.services.game_service.persist_finished_game``, the seam that hands a
+finished game to persistence. ``app/services/db_service.py`` itself is never
+opened.
 
-Needs a real PostgreSQL (Testcontainers, shared with section 13's suite) because
+Needs a real PostgreSQL (Testcontainers, shared with the schema suite) because
 the behaviour under test -- batched raw inserts, an idempotency lookup, an
 all-or-nothing transaction and NUMERIC rounding -- is either unenforced or
 silently "correct for the wrong reason" against a fake.
@@ -70,12 +67,12 @@ pytestmark = pytest.mark.dbschema
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 1
+# A full game's rows
 # ---------------------------------------------------------------------------
 
 
-def test_ac1_persist_writes_full_36_week_game(db):
-    """A finished 36-week Classic MIT game writes every row §4.1 names."""
+def test_persist_writes_full_36_week_game(db):
+    """A finished 36-week Classic MIT game writes every row it should."""
     config = make_config(duration_weeks=36)
     engine = run_full_game(config, seed=42)
     assert engine.weeks_played == 36
@@ -110,16 +107,16 @@ def test_ac1_persist_writes_full_36_week_game(db):
     assert db.query(RoleConfigRow).filter_by(game_id=game_id).count() == 4
     assert db.query(DemandSeries).filter_by(game_id=game_id).count() == 36
     assert db.query(Week).filter_by(game_id=game_id).count() == 144
-    # 4 role players + the host = up to 5, per 13-db-models-and-migrations.md §2.6.
+    # 4 role players + the host = up to 5.
     assert db.query(Participant).filter_by(game_id=game_id).count() == 5
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 2
+# Weeks round-trip
 # ---------------------------------------------------------------------------
 
 
-def test_ac2_weeks_round_trip_to_equal_week_records(db):
+def test_weeks_round_trip_to_equal_week_records(db):
     """Every persisted `weeks` row reconstructs the engine's `WeekRecord`."""
     config = make_config(duration_weeks=8)
     engine = run_full_game(config, seed=7)
@@ -167,11 +164,11 @@ def test_ac2_weeks_round_trip_to_equal_week_records(db):
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 3
+# weeks_played
 # ---------------------------------------------------------------------------
 
 
-def test_ac3_weeks_played_matches_distinct_weeks_in_weeks_table(db):
+def test_weeks_played_matches_distinct_weeks_in_weeks_table(db):
     config = make_config(duration_weeks=10)
     engine = run_full_game(config, seed=3, stop_after=6)
     assert engine.weeks_played == 6
@@ -187,11 +184,11 @@ def test_ac3_weeks_played_matches_distinct_weeks_in_weeks_table(db):
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 4
+# chain_total_cost
 # ---------------------------------------------------------------------------
 
 
-def test_ac4_chain_total_cost_matches_sum_of_final_cumulative_costs(db):
+def test_chain_total_cost_matches_sum_of_final_cumulative_costs(db):
     config = make_config(duration_weeks=12)
     engine = run_full_game(config, seed=5)
     room = make_room_document(config, engine)
@@ -210,11 +207,11 @@ def test_ac4_chain_total_cost_matches_sum_of_final_cumulative_costs(db):
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 5
+# Ended early
 # ---------------------------------------------------------------------------
 
 
-def test_ac5_ended_early_writes_partial_weeks_and_flags(db):
+def test_ended_early_writes_partial_weeks_and_flags(db):
     config = make_config(duration_weeks=36)
     engine = run_full_game(config, seed=11, stop_after=9)
     assert engine.weeks_played == 9
@@ -230,8 +227,8 @@ def test_ac5_ended_early_writes_partial_weeks_and_flags(db):
     assert db.query(Week).filter_by(game_id=game_id).count() == 36  # 9 * 4
 
 
-def test_ac5_forcing_every_week_to_the_end_is_not_ended_early(db):
-    """Force-closing a week is not the same as ending early (§2.1)."""
+def test_forcing_every_week_to_the_end_is_not_ended_early(db):
+    """Force-closing a week is not the same as ending early."""
     config = make_config(duration_weeks=8)
     engine = run_full_game(
         config,
@@ -255,11 +252,11 @@ def test_ac5_forcing_every_week_to_the_end_is_not_ended_early(db):
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 5a
+# Null bullwhip ratios and bot seats
 # ---------------------------------------------------------------------------
 
 
-def test_ac5a_bullwhip_null_for_every_role_in_a_constant_demand_game(db):
+def test_bullwhip_null_for_every_role_in_a_constant_demand_game(db):
     config = make_config(duration_weeks=10)  # ConstantDemand by default
     engine = run_full_game(config, seed=17)
     room = make_room_document(
@@ -278,7 +275,7 @@ def test_ac5a_bullwhip_null_for_every_role_in_a_constant_demand_game(db):
     assert all(row.bullwhip_ratio is None for row in rows)
 
 
-def test_ac5a_bullwhip_null_for_bot_and_host_even_with_a_defined_ratio(db):
+def test_bullwhip_null_for_bot_and_host_even_with_a_defined_ratio(db):
     """A demand shock gives every role a *defined* ratio, so a NULL here can
     only come from the bot/host special-casing, not from D12's CONSTANT rule."""
     config = make_config(
@@ -313,7 +310,7 @@ def test_ac5a_bullwhip_null_for_bot_and_host_even_with_a_defined_ratio(db):
     assert host_rows[0].role is None
 
 
-def test_ac5c_a_seat_swapped_to_a_bot_keeps_its_player(db):
+def test_a_seat_swapped_to_a_bot_keeps_its_player(db):
     """2026-11-02: a player the host swaps out at week 30 of 36 keeps the game.
 
     ``substitute_bot`` sets the seat's ``is_bot`` and leaves its ``identity``,
@@ -390,11 +387,11 @@ def test_ac5c_a_seat_swapped_to_a_bot_keeps_its_player(db):
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 5b
+# Stored weeks reproduce the game stats
 # ---------------------------------------------------------------------------
 
 
-def test_ac5b_reading_weeks_back_reproduces_the_engines_game_stats(db):
+def test_reading_weeks_back_reproduces_the_engines_game_stats(db):
     # Default role costs (0.50 / 1.00 / 0 / 0) are exact multiples of a cent,
     # so the NUMERIC(12,2) round trip introduces no rounding drift here.
     config = make_config(duration_weeks=16)
@@ -451,11 +448,11 @@ def test_ac5b_reading_weeks_back_reproduces_the_engines_game_stats(db):
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 6 / failure mode 6
+# Idempotency
 # ---------------------------------------------------------------------------
 
 
-def test_ac6_persist_game_called_twice_writes_once_and_returns_same_id(session_factory):
+def test_persist_game_called_twice_writes_once_and_returns_same_id(session_factory):
     config = make_config(duration_weeks=8)
     engine = run_full_game(config, seed=29)
     room = make_room_document(config, engine)
@@ -478,7 +475,7 @@ def _snapshot_started_at(room_code: str, started_at: datetime, seed: int):
     return build_snapshot(room, config, engine)
 
 
-def test_ac6_same_room_and_second_is_one_game_whatever_the_microseconds(
+def test_same_room_and_second_is_one_game_whatever_the_microseconds(
     session_factory,
 ):
     """`timestamptz` keeps microseconds, so the idempotency key is only stable
@@ -505,7 +502,7 @@ def test_ac6_same_room_and_second_is_one_game_whatever_the_microseconds(
     assert stored.started_at.utcoffset() == timezone.utc.utcoffset(None)
 
 
-def test_ac6_same_room_in_a_different_second_is_a_second_game(session_factory):
+def test_same_room_in_a_different_second_is_a_second_game(session_factory):
     """A recycled room code is a new game as soon as it started in another
     second: two rows, two ids."""
     room_code = unique_room_code()
@@ -524,7 +521,7 @@ def test_ac6_same_room_in_a_different_second_is_a_second_game(session_factory):
     assert verify_db.query(Game).filter_by(room_code=room_code).count() == 2
 
 
-def test_fm6_a_lost_insert_race_returns_the_winners_id(session_factory, monkeypatch):
+def test_a_lost_insert_race_returns_the_winners_id(session_factory, monkeypatch):
     """The `UNIQUE (room_code, started_at)` backstop: a caller whose lookup ran
     before the winner committed reaches the `INSERT`, hits the constraint, and
     gets the winner's id back instead of an error -- with nothing half
@@ -555,13 +552,13 @@ def test_fm6_a_lost_insert_race_returns_the_winners_id(session_factory, monkeypa
     )
 
 
-def test_fm6_concurrent_persist_calls_write_one_game_row(session_factory):
+def test_concurrent_persist_calls_write_one_game_row(session_factory):
     """Best-effort concurrency probe.
 
     True simultaneous overlap cannot be forced from a black-box test without
     a synchronisation hook into the implementation; the `UNIQUE (room_code,
     started_at)` backstop is exercised deterministically by
-    `test_fm6_a_lost_insert_race_returns_the_winners_id`. Five threads racing
+    `test_a_lost_insert_race_returns_the_winners_id`. Five threads racing
     to persist the same snapshot at least catches an implementation with no
     idempotency guard at all.
     """
@@ -594,18 +591,18 @@ def test_fm6_concurrent_persist_calls_write_one_game_row(session_factory):
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 7 / failure modes 2 and 3
+# All or nothing, and a failure never raises
 # ---------------------------------------------------------------------------
 
 
-def test_ac7_failure_partway_leaves_zero_rows(db):
+def test_failure_partway_leaves_zero_rows(db):
     """Forcing the `weeks` insert to fail leaves no `games` row at all."""
     config = make_config(duration_weeks=8)
     engine = run_full_game(config, seed=37)
     room = make_room_document(config, engine)
     snapshot = build_snapshot(room, config, engine)
     # A duplicate (week, role) violates `uq_weeks_game_id_week_role` --
-    # exactly the insert AC 7 names.
+    # exactly the insert that must roll everything back.
     corrupted = dataclasses.replace(
         snapshot, history=[*snapshot.history, snapshot.history[0]]
     )
@@ -618,7 +615,7 @@ def test_ac7_failure_partway_leaves_zero_rows(db):
 
 
 @pytest.mark.asyncio
-async def test_fm2_fm3_persist_finished_game_logs_error_and_does_not_raise(
+async def test_persist_finished_game_logs_error_and_does_not_raise(
     caplog,
     session_factory,
     app_db_pointed_at_container,
@@ -628,7 +625,7 @@ async def test_fm2_fm3_persist_finished_game_logs_error_and_does_not_raise(
     already emitted `game_finished`; this must return `False`, not raise)."""
     config = make_config(duration_weeks=8)
     engine = run_full_game(config, seed=41)
-    # Public field, deliberately corrupted the same way as AC 7: a duplicate
+    # Public field, deliberately corrupted the same way as above: a duplicate
     # (week, role) pair forces a real, deterministic DB failure.
     engine.history.append(engine.history[0])
     room = make_room_document(config, engine)
@@ -651,13 +648,13 @@ async def test_fm2_fm3_persist_finished_game_logs_error_and_does_not_raise(
 
 
 # ---------------------------------------------------------------------------
-# Failure mode 1
+# Server-side timestamps on raw inserts
 # ---------------------------------------------------------------------------
 
 
-def test_fm1_batched_participants_and_role_configs_get_server_side_timestamps(db):
+def test_batched_participants_and_role_configs_get_server_side_timestamps(db):
     """`participants` and `role_configs` carry `TimestampMixin`; `weeks` and
-    `demand_series` deliberately do not (§2.7/§2.8), so only these two
+    `demand_series` deliberately do not, so only these two
     tables can catch a raw insert that relies on an ORM-side default that
     a batched raw insert bypasses [HARD-WON].
 
@@ -696,11 +693,11 @@ def test_fm1_batched_participants_and_role_configs_get_server_side_timestamps(db
 
 
 # ---------------------------------------------------------------------------
-# Failure mode 5
+# Batched inserts
 # ---------------------------------------------------------------------------
 
 
-def test_fm5_child_tables_are_inserted_with_one_executemany_each(db, schema_engine):
+def test_child_tables_are_inserted_with_one_executemany_each(db, schema_engine):
     config = make_config(duration_weeks=36)
     engine = run_full_game(config, seed=89)
     participants = {
@@ -735,11 +732,11 @@ def test_fm5_child_tables_are_inserted_with_one_executemany_each(db, schema_engi
 
 
 # ---------------------------------------------------------------------------
-# Failure mode 7
+# Money rounding
 # ---------------------------------------------------------------------------
 
 
-def test_fm7_money_rounds_half_up_to_two_decimals_at_the_boundary(db):
+def test_money_rounds_half_up_to_two_decimals_at_the_boundary(db):
     config = make_config(duration_weeks=8)
     shared = {
         "week": 1,
@@ -802,11 +799,11 @@ def test_fm7_money_rounds_half_up_to_two_decimals_at_the_boundary(db):
 
 
 # ---------------------------------------------------------------------------
-# Failure mode 8
+# No lock held across the write
 # ---------------------------------------------------------------------------
 
 
-def test_fm8_persist_game_signature_takes_no_room_dict_or_lock_handle():
+def test_persist_game_signature_takes_no_room_dict_or_lock_handle():
     """`persist_game`'s frozen signature is `(self, db, snapshot)` -- a plain
     `Session` and a `GameSnapshot`, never a live room `dict` or a lock."""
     params = list(inspect.signature(DbService.persist_game).parameters)
@@ -814,14 +811,14 @@ def test_fm8_persist_game_signature_takes_no_room_dict_or_lock_handle():
 
 
 @pytest.mark.asyncio
-async def test_ac20_persistence_runs_with_the_room_lock_released(
+async def test_persistence_runs_with_the_room_lock_released(
     fake_redis, monkeypatch, app_db_pointed_at_container
 ):
     """`persist_finished_game` must never call `state_svc.lock` at all --
-    the same spy-on-`lock` technique section 12's own suite uses for
+    the same spy-on-`lock` technique the socket suite uses for
     `finish_game` (``tests/test_sockets/test_week_broadcast.py::
     test_finish_game_never_acquires_the_room_lock``), applied directly to
-    the function this section's body fills in. Counting real lock
+    the persistence function. Counting real lock
     acquisitions proves the claim regardless of timing, unlike racing a
     concurrent operation against an in-memory fake."""
     state_svc = get_state_service()
@@ -846,11 +843,11 @@ async def test_ac20_persistence_runs_with_the_room_lock_released(
 
 
 # ---------------------------------------------------------------------------
-# Failure mode 9
+# No guest identity leaks
 # ---------------------------------------------------------------------------
 
 
-def test_fm9_no_guest_identity_in_return_value_or_logs(db, caplog):
+def test_no_guest_identity_in_return_value_or_logs(db, caplog):
     config = make_config(duration_weeks=8)
     engine = run_full_game(config, seed=53)
     participants = {
@@ -877,11 +874,11 @@ def test_fm9_no_guest_identity_in_return_value_or_logs(db, caplog):
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criteria 8, 9, 10, 11
+# Config rows and participant identity
 # ---------------------------------------------------------------------------
 
 
-def test_ac8_role_configs_factory_only_columns(db):
+def test_role_configs_factory_only_columns(db):
     config = make_config(duration_weeks=8)
     engine = run_full_game(config, seed=73)
     room = make_room_document(config, engine)
@@ -898,7 +895,7 @@ def test_ac8_role_configs_factory_only_columns(db):
         assert rows[role.value].production_capacity_per_week is None
 
 
-def test_ac9_demand_configs_step_only_columns(db):
+def test_demand_configs_step_only_columns(db):
     config = make_config(
         duration_weeks=10, demand=StepDemand(initial_value=4, step_week=5, step_value=9)
     )
@@ -937,7 +934,7 @@ def _host_row(db, game_id: int) -> Participant:
     )
 
 
-def test_ac10_guest_hosted_game_persists_with_a_guest_host_row(db):
+def test_guest_hosted_game_persists_with_a_guest_host_row(db):
     guest = "guest_00000000-0000-0000-0000-000000000061"
     config = make_config(duration_weeks=8)
     engine = run_full_game(config, seed=61)
@@ -958,8 +955,9 @@ def test_ac10_guest_hosted_game_persists_with_a_guest_host_row(db):
 
 
 def test_registered_host_resolves_to_the_matching_users_row(db):
-    """The positive case AC 10 needs a contrast against: a bug that always
-    nulls the host row's `user_id` would pass AC 10 alone but fails here."""
+    """The positive case the guest-hosted test needs a contrast against: a bug
+    that always nulls the host row's `user_id` would pass that test alone but
+    fails here."""
     firebase_uid = "uid-registered-host"
     user_id = insert_user(
         db.connection(), firebase_uid=firebase_uid, display_name="Prof"
@@ -983,15 +981,15 @@ def test_registered_host_resolves_to_the_matching_users_row(db):
 
 
 # ---------------------------------------------------------------------------
-# Failure mode 11
+# An unregistered Firebase uid
 # ---------------------------------------------------------------------------
 
 
-def test_fm11_unregistered_firebase_uid_gets_a_users_row(db):
+def test_unregistered_firebase_uid_gets_a_users_row(db):
     """A Firebase uid with no `users` row (a signed-in user who never called
     `/users/upsert`) must not raise a foreign-key error, and must not be left
     with neither identity: the write creates a bare `users` row for it, so
-    the result is attributed and shows on that account (§3.6)."""
+    the result is attributed and shows on that account."""
     config = make_config(duration_weeks=8)
     engine = run_full_game(config, seed=59)
     participants = {
@@ -1018,7 +1016,7 @@ def test_fm11_unregistered_firebase_uid_gets_a_users_row(db):
     assert users["uid-never-registered"].display_name is None
 
 
-def test_ac11_bot_participant_has_null_identity_columns(db):
+def test_bot_participant_has_null_identity_columns(db):
     config = make_config(duration_weeks=8)
     engine = run_full_game(config, seed=71, bot_roles=frozenset({Role.RETAILER}))
     participants = {

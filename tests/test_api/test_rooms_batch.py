@@ -1,5 +1,5 @@
 """``POST /api/v1/rooms/batch-create``: N rooms with one config, made at once
-for the multi-game host dashboard (``10-rooms-rest-api.md §3.5c``).
+for the multi-game host dashboard (spec §9.10).
 
 The config is resolved and validated once, before any room exists; the
 room-create budget is charged one hit per room, all or nothing; and a store

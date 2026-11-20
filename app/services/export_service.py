@@ -1,6 +1,6 @@
-"""Pure formatting for the export (``15-results-and-export-api.md`` §3.2).
+"""Pure formatting for the export (spec §9.5).
 
-**No chosen name leaves in the file** (2026-11-14, ``§11``). Players keep
+**No chosen name leaves in the file.** Players keep
 their usernames on every screen, but the export names each one by seat only:
 ``display_name`` holds ``P<N>`` (``seat_alias``: Retailer ``P1`` through
 Factory ``P4``, ``ROLE_ORDER``), the same in every row and in the JSON's
@@ -36,7 +36,7 @@ def seat_alias(role: Role | str) -> str:
     return f"P{ROLE_ORDER.index(Role(role)) + 1}"
 
 
-# The exact column order from §3.2. `is_bot` is the *seat* attribution from
+# The exact column order (spec §9.5). `is_bot` is the *seat* attribution from
 # `participants` (who holds the role as the game ended); `was_bot` is
 # `WeekRecord.was_bot` -- who actually played *that* week. The two differ for
 # every week before a `substitute_bot`, which is exactly what a host reading
@@ -97,8 +97,7 @@ _MONEY_COLUMNS = frozenset(
 )
 
 # A leading one of these turns a spreadsheet cell into a formula. Prefixing it
-# with a single quote defuses it while leaving the value visibly intact
-# (failure mode 9).
+# with a single quote defuses it while leaving the value visibly intact.
 _FORMULA_PREFIXES = ("=", "+", "-", "@")
 
 
@@ -117,7 +116,7 @@ def _sanitise_display_name(value: str) -> str:
 
 
 def _csv_cell(column: str, value: Any) -> Any:
-    """One cell's value, formatted the way §3.2 requires.
+    """One cell's value, formatted the way the export requires.
 
     `None` becomes an empty string (the two Factory-only columns on other
     roles). Money is formatted to exactly two decimals. Everything else is
@@ -149,12 +148,11 @@ class ExportService:
         return payload
 
     def to_csv(self, weeks: list[dict]) -> str:
-        """One row per `(week, role)`, plus a header, in the §3.2 order.
+        """One row per `(week, role)`, plus a header, in the export's column order.
 
         Always goes through `csv.writer` -- never manual `",".join(...)` --
         so a display name carrying a comma, a quote, a newline or a
-        non-ASCII character round-trips through `csv.reader` as one field
-        (failure mode 10).
+        non-ASCII character round-trips through `csv.reader` as one field.
         """
         buffer = io.StringIO()
         writer = csv.writer(buffer)

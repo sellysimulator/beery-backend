@@ -1,4 +1,4 @@
-"""The fixed-length FIFO behind every delay in the game (`05-pipeline.md`).
+"""The fixed-length FIFO behind every delay in the game (spec §8.3).
 
 Pure: this module imports only from the standard library. It performs no I/O,
 reads no clock, holds no RNG and does no logging.

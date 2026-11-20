@@ -1,6 +1,6 @@
-"""Startup-check registry and discovery point (00-decisions.md D19).
+"""Startup-check registry and discovery point (D19).
 
-A later section adds a check by dropping a module into this package that calls
+A check is added by dropping a module into this package that calls
 `register_check` at import time. Nothing upstream is edited, and the package
 works while it is empty.
 """

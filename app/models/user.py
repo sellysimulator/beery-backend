@@ -3,7 +3,7 @@
 Guests are never written here. A guest exists only in Redis room state and is
 attributed by its guest identity string.
 
-Section 13 owns the Alembic revision for this table and imports `User` for the
+The Alembic revision creates this table and the game models import `User` for the
 foreign keys that reference it; the two declarations must agree column for
 column.
 """

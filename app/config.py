@@ -80,11 +80,11 @@ class Settings(BaseSettings):
     REDIS_URL: str = ""
     FIREBASE_SERVICE_ACCOUNT_JSON: str = ""
 
-    # Hard ceilings — see 00-decisions.md §5.
+    # Hard ceilings — see spec §12.1.
     #
-    # Only the display-name cap is a setting. The rest of §5 is deliberately
+    # Only the display-name cap is a setting. The rest are deliberately
     # NOT declared here, because nothing would read it: `app/core` is pure and
-    # must not import `app.config` (00-conventions.md §4), so the order,
+    # must not import `app.config`, so the order,
     # week, delay, quantity, unit-value and player ceilings live on
     # `core.limits.Limits` / `DEFAULT_LIMITS` and arrive by injection,
     # and the room TTL and lock timeout are module constants in
@@ -107,7 +107,7 @@ class Settings(BaseSettings):
         wildcard origin combined with credentials is an invalid, permissive
         combination that browsers themselves refuse to honour -- but only
         after the server has already advertised it. Reject it at config load
-        instead (23-deployment-and-ci.md AC 5, failure mode 2).
+        instead.
         """
         if "*" in value:
             raise ValueError(

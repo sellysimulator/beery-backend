@@ -1,4 +1,4 @@
-"""The orchestrator (`07-game-engine.md`).
+"""The orchestrator (spec §8.6).
 
 `GameEngine` owns the four agents, the demand series, the week counter and the
 phase state machine, and it is the **only** object permitted to mutate game
@@ -7,16 +7,16 @@ state.
 Pure: this module imports only from `app.core` and the standard library. It
 performs no I/O, holds no Redis or database handle, reads no clock and touches
 no global RNG. It is constructed from a config and a state payload, driven by
-method calls, and returns records that section 12 turns into events and section
-14 turns into rows.
+method calls, and returns records that the play loop turns into events and
+end-of-game persistence turns into rows.
 
 The single most important thing in this file is `_run_phase_a`. Settlement is
-split into three passes (`00-decisions.md` D9, `07-game-engine.md` §3.2) so that
+split into three passes (D9, spec §7) so that
 the result is provably independent of the order roles are visited in. Collapsing
 them reintroduces off-by-one-week shipments and an order-dependent supply line.
 
-Money accumulates as `float` and is never rounded here (`00-conventions.md` §4);
-quantities are always `int`.
+Money accumulates as `float` and is never rounded here; quantities are always
+`int`.
 """
 
 from __future__ import annotations
@@ -47,9 +47,9 @@ class GamePhase(str, Enum):
 
     A *constructed* engine is never `AWAITING_START`: `start()` returns one in
     `DECISION` and there is no other public constructor. The member exists
-    because the room has a pre-start state that section 12 reports as a phase,
-    and at that point section 09 stores `"engine": null` — there is no engine to
-    be in it.
+    because the room has a pre-start state that the play loop reports as a
+    phase, and at that point the room document stores `"engine": null` — there
+    is no engine to be in it.
     """
 
     AWAITING_START = "AWAITING_START"
@@ -61,16 +61,15 @@ class GamePhase(str, Enum):
 class WeekRecord:
     """One role's complete record for one week.
 
-    Assembled across Phase A and Phase C, and the unit that section 14
-    persists.
+    Assembled across Phase A and Phase C, and the unit that end-of-game
+    persistence writes.
 
     `orders_in_flight_after` is this role's **own** order pipeline, sampled in
     Phase A pass 3: orders its downstream customer has placed that are still
     travelling *to* this role. It is deliberately *not* the quantity
     `player_view` sends as `orders_in_flight`, which is the **supplier's**
-    pipeline -- this role's own orders going upstream (§3.8). The export names
-    the column `incoming_orders_in_flight_after` for that reason
-    (`15-results-and-export-api.md` §3.2).
+    pipeline -- this role's own orders going upstream. The export names
+    the column `incoming_orders_in_flight_after` for that reason.
 
     `total_week_cost` is the whole week: holding and backlog cost plus this
     week's order cost (`fixed_order_cost + purchase_cost`). It was called
@@ -117,7 +116,7 @@ class EngineStateError(RuntimeError):
 
 
 class OrderOutOfRangeError(ValueError):
-    """An order outside `[low, high]`, refused rather than clamped (§3.3).
+    """An order outside `[low, high]`, refused rather than clamped.
 
     The message is written for the player: the socket layer sends it as is.
     """
@@ -221,7 +220,7 @@ def _record_from_payload(payload: dict) -> WeekRecord:
 
 
 class GameEngine:
-    """The week machine. See `07-game-engine.md` §3."""
+    """The week machine. See spec §7."""
 
     config: GameConfig
     demand_series: list[int]
@@ -233,7 +232,7 @@ class GameEngine:
     pending_by_bot: set[Role]  # which of those a bot placed
     history: list[WeekRecord]
     settlements: dict[Role, WeekSettlement]  # Phase A output for the open week
-    role_order: tuple[Role, ...]  # the settlement seam of §3.2
+    role_order: tuple[Role, ...]  # the settlement seam of `_run_phase_a`
 
     def __init__(
         self,
@@ -247,7 +246,7 @@ class GameEngine:
         It leaves the engine in `AWAITING_START` and with no Phase A run, which
         is a state no caller may observe: `start()` and `from_payload()` are the
         only two entry points, and both move the engine out of it before
-        returning (§3.1).
+        returning.
         """
         self.config = config
         self.demand_series = [int(value) for value in demand_series]
@@ -284,9 +283,9 @@ class GameEngine:
         Returns an engine in `DECISION` phase with `week == 1`.
 
         `role_order` is the order the three settlement passes visit roles in. It
-        exists so that acceptance criterion 4 — the order-independence invariant
-        that D9 is for — can be asserted from the public surface instead of by
-        reaching into the module. Production always passes the default. It is a
+        exists so that the order-independence invariant that D9 is for can be
+        asserted from the public surface instead of by reaching into the
+        module. Production always passes the default. It is a
         construction-time choice, is not part of `to_payload()`, and takes no
         part in `__eq__`.
         """
@@ -300,13 +299,16 @@ class GameEngine:
     # --- the week ---------------------------------------------------------- #
 
     def _run_phase_a(self) -> None:
-        """Settlement for `self.week`, in three passes (§3.2)  [CRITICAL].
+        """Settlement for `self.week`, in three passes  [CRITICAL].
 
         Pass 1 advances **every** role's two pipelines before **any** role
         settles, so that every shipment pushed in pass 2 lands in a pipeline in
-        the same state. Pass 3 samples the supply lines only after the shipment
-        lines have been refilled, because a figure read inside `settle()` would
-        be one shipment short or not depending purely on iteration order.
+        the same state. With today's unbounded `Pipeline.push` a single pass
+        would give the same numbers; the split keeps role order irrelevant by
+        construction if `push` ever changes (D9). Pass 3 is the load-bearing
+        one: it samples the supply lines only after the shipment lines have
+        been refilled, because a figure read inside `settle()` would be one
+        shipment short or not depending purely on iteration order (spec §7).
         """
         week = self.week
         arrivals: dict[Role, tuple[int, int]] = {}
@@ -316,7 +318,7 @@ class GameEngine:
             arriving, incoming = self.agents[role].advance()
             if role is Role.RETAILER:
                 # Customer demand reaches the Retailer immediately; it has no
-                # order pipeline at all (`06-role-agents.md` §3.1).
+                # order pipeline at all (spec §8.4).
                 incoming = self.demand_series[week - 1]
             if incoming is None:
                 raise EngineStateError(
@@ -355,9 +357,9 @@ class GameEngine:
     def weeks_played(self) -> int:
         """Complete weeks in `history` — `len(history) // 4`.
 
-        The single definition of the figure sections 12, 14 and `compute_stats`
-        all take as an argument. Nothing else may derive it from `week`, because
-        `week` and `weeks_played` differ after `end_early()` (§3.5).
+        The single definition of the figure the play loop, persistence and
+        `compute_stats` all take as an argument. Nothing else may derive it from
+        `week`, because `week` and `weeks_played` differ after `end_early()`.
         """
         return len(self.history) // len(ROLE_ORDER)
 
@@ -366,7 +368,7 @@ class GameEngine:
 
         `visibility.max_order_quantity` when set, and the hard ceiling from
         `DEFAULT_LIMITS` always. `GameConfig` carries no `limits`, so the number
-        is read rather than written twice; section 03 has already refused a
+        is read rather than written twice; config validation has already refused a
         visibility value above the same ceiling, so the second bound only ever
         catches a caller, never a config.
         """
@@ -387,7 +389,7 @@ class GameEngine:
         return 0, self._order_ceiling()
 
     def _checked_order(self, qty: int) -> int:
-        """Coerce a decision and refuse it when out of range (§3.3).
+        """Coerce a decision and refuse it when out of range.
 
         Never clamped: a clamped order is an order nobody placed, and the
         player would only find out from a supply line that does not add up.
@@ -410,7 +412,7 @@ class GameEngine:
         Idempotent by role: a second call REPLACES the value. Returns the
         quantity stored, which is always exactly the one passed in.
 
-        Bot roles are not special: section 08's bot produces a quantity and the
+        Bot roles are not special: the bot produces a quantity and the
         caller submits it exactly as a human's -- the play loop caps the bot's
         own figure at `order_bounds()` first, because a heuristic has nobody to
         show a refusal to. The one thing kept is who placed it: the role's bot
@@ -448,11 +450,11 @@ class GameEngine:
 
         Raises `EngineStateError` if phase is not `DECISION`, or if orders are
         missing and `force` is False. With `force=True` a missing order is
-        recorded as 0 and only that role's record carries `was_forced` (§3.6).
+        recorded as 0 and only that role's record carries `was_forced`.
 
         When the closed week was the last, phase becomes `FINISHED` and no new
         week is opened. **The week counter is not incremented on the final
-        close** (§3.4): a finished engine reports `week == duration_weeks`.
+        close**: a finished engine reports `week == duration_weeks`.
         """
         if self.phase is not GamePhase.DECISION:
             raise EngineStateError(
@@ -471,7 +473,7 @@ class GameEngine:
         charges: dict[Role, OrderCharge] = {}
         production: dict[Role, ProductionOutcome] = {}
 
-        # Phase C — record the decision, then route it (§3.4).
+        # Phase C — record the decision, then route it.
         for role in ROLE_ORDER:
             quantity = self.pending_orders.get(role, 0)
             agent = self.agents[role]
@@ -548,9 +550,9 @@ class GameEngine:
         """Abandon the open week and move to `FINISHED`.
 
         The open week has been settled by Phase A but has no decisions, so it
-        produces **no** `WeekRecord` and is not counted in `weeks_played`
-        (§3.5). A half-week with no orders would otherwise contribute a zero
-        order and distort the bullwhip ratio.
+        produces **no** `WeekRecord` and is not counted in `weeks_played`. A
+        half-week with no orders would otherwise contribute a zero order and
+        distort the bullwhip ratio.
 
         Phase A did charge that week's holding and backlog cost, though, and
         every live total reads `accumulated_cost`. So the charge is rolled back
@@ -573,7 +575,7 @@ class GameEngine:
         """Mark a role as bot-played from now on, or, with `is_bot=False`,
         human-played again. Idempotent, legal in any phase.
 
-        Section 12's `substitute_bot` calls it with True and `reclaim_seat`
+        The play loop's `substitute_bot` calls it with True and `reclaim_seat`
         with False: the room document's participant flag is about the seat,
         and only this flag reaches `WeekRecord.was_bot` (through the order
         `submit_order` records next), which is what the export and the results
@@ -593,8 +595,7 @@ class GameEngine:
         Delegates to `GameConfig.order_arrival_lead_weeks`, the one
         implementation, which the host form's config preview also calls
         (`core.preview`). The engine sends the figure because a client
-        assembling it from individual delays gets both ends of the chain wrong
-        (§3.8).
+        assembling it from individual delays gets both ends of the chain wrong.
         """
         return self.config.order_arrival_lead_weeks(role)
 
@@ -645,7 +646,7 @@ class GameEngine:
         """Everything a player of `role` is entitled to see, and nothing more.
 
         Redaction happens **here**, server-side, before anything reaches the
-        socket layer (`00-conventions.md` §3).
+        socket layer (spec §8.8).
 
         `with_history=False` leaves `own_history` out. The per-round
         `your_state` uses it: the week's one new record has already gone out
@@ -704,7 +705,7 @@ class GameEngine:
             "has_submitted": target in self.pending_orders,
             "awaiting_roles": self._awaiting_roles(),
             # The bounds the server actually enforces, never None: the client
-            # cannot derive them, and `00-conventions.md` §4 forbids it trying.
+            # cannot derive them, and must not try.
             # The order form refuses outside them with the same message.
             "min_order_quantity": self.order_bounds()[0],
             "max_order_quantity": self.order_bounds()[1],
@@ -773,7 +774,7 @@ class GameEngine:
 
         Here `orders_in_flight` is the role's **own** order pipeline — the same
         figure as `WeekRecord.orders_in_flight_after`, and not the redacted
-        quantity `player_view` sends under that name (§3.8). `production_queue`
+        quantity `player_view` sends under that name. `production_queue`
         is `0` for the three non-Factory roles rather than `null`, so the host's
         four role cards are one shape. `demand_series` is the full series,
         future weeks included, which is why this view is never broadcast.
@@ -809,9 +810,9 @@ class GameEngine:
             "week": self.week,
             "duration_weeks": self.config.duration_weeks,
             # Complete weeks so far -- the figure the results will report and
-            # what ending now would keep, since `end_early` drops the open week
-            # (§3.5). `week` is one higher while a week is open, and after an
-            # early end; the console reads this, never `week` (2026-11-03).
+            # what ending now would keep, since `end_early` drops the open week.
+            # `week` is one higher while a week is open, and after an early end;
+            # the console reads this, never `week`.
             "weeks_played": self.weeks_played,
             "phase": self.phase.value,
             "currency_symbol": self.config.currency_symbol,
@@ -863,7 +864,7 @@ class GameEngine:
         """Rebuild the engine a `to_payload()` describes.
 
         `from_payload(e.to_payload(), cfg) == e` must hold at every phase a
-        constructed engine can be in (§3.11). This is how the engine survives
+        constructed engine can be in (spec §11.3). This is how the engine survives
         between socket events.
         """
         engine = cls(config, payload["demand_series"], int(payload["seed"]))
@@ -918,7 +919,7 @@ class GameEngine:
 
         `config` is excluded because it is not in the payload, and `role_order`
         because it is a test seam: an engine settled in reverse must compare
-        equal to one settled forward, or criterion 4 asserts nothing.
+        equal to one settled forward, or the order-independence test asserts nothing.
         """
         if not isinstance(other, GameEngine):
             return NotImplemented

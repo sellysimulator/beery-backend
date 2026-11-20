@@ -1,16 +1,16 @@
 """Black-box tests for ``GET /api/v1/games/{room_code}/results``.
 
-Covers ``15-results-and-export-api.md §4`` acceptance criteria 1-9 and
-``§5`` failure modes 1, 3, 7, 8, 11 and 12. Money-as-a-number (failure mode
-8) and the driver-error text (failure mode 11) are tested against this
-route too, since neither the document nor the frozen surface ties them to
-a specific one of the three routes this section owns.
+Covers the payload's shape and figures, unknown and reused room codes, open
+access, and what the payload must never carry (identities, secrets, config
+keys). Money-as-a-number and the driver-error text are tested against this
+route too, since neither is tied to a specific one of the results, export and
+profile routes.
 
 Driven entirely through: the HTTP surface itself; the frozen surfaces of
 ``app.core.enums`` (``Role``, ``ROLE_ORDER``), ``app.core.stats``, and
 ``app.services.db_service`` (``DbService``, ``build_snapshot``); the room
-document shape (``09-state-service.md §2``); and section 13's and 14's own
-test helpers, reused wholesale rather than reinvented
+document shape (spec §11.3); and the model and service suites' own test
+helpers, reused wholesale rather than reinvented
 (``tests/test_models/conftest.py``, ``tests/test_services/conftest.py``).
 
 ``app/api/v1/games.py``, ``app/api/v1/user_games.py``, ``app/schemas/
@@ -57,9 +57,8 @@ def RESULTS_BY_ID_URL(public_id: str) -> str:
 
 CLAIM_URL = "/api/v1/games/claim"
 
-# Config parameters (host teaching knobs) that §3.1 says must never appear in
-# a results/export/profile payload: "Costs and delays are omitted
-# deliberately."
+# Config parameters (host teaching knobs) that must never appear in a
+# results/export/profile payload: costs and delays are omitted deliberately.
 FORBIDDEN_CONFIG_KEYS = {
     "holding_cost_per_unit_week",
     "backlog_cost_per_unit_week",
@@ -70,7 +69,7 @@ FORBIDDEN_CONFIG_KEYS = {
     "information_delay_weeks",
     "production_delay_weeks",
     "production_capacity_per_week",
-    # every demand generator's parameters (13-db-models-and-migrations.md §2.5)
+    # every demand generator's parameters
     "value",
     "initial_value",
     "step_week",
@@ -89,8 +88,7 @@ FORBIDDEN_CONFIG_KEYS = {
     "max_value",
 }
 
-# Identity / secret keys no broadcast or response may ever carry
-# (00-conventions.md §2, §3).
+# Identity / secret keys no broadcast or response may ever carry.
 FORBIDDEN_IDENTITY_KEYS = {
     "identity",
     "guest_identity",
@@ -101,11 +99,11 @@ FORBIDDEN_IDENTITY_KEYS = {
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criteria 1, 2
+# Roles and lengths
 # ---------------------------------------------------------------------------
 
 
-def test_ac1_ac2_all_four_roles_in_order_with_length_matching_weeks_played(
+def test_all_four_roles_in_order_with_length_matching_weeks_played(
     api_client, session_factory, fake_redis
 ):
     game = persist_full_game(session_factory, duration_weeks=10, seed=1)
@@ -129,11 +127,11 @@ def test_ac1_ac2_all_four_roles_in_order_with_length_matching_weeks_played(
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 3
+# Total cost
 # ---------------------------------------------------------------------------
 
 
-def test_ac3_total_cost_equals_the_final_cumulative_cost(
+def test_total_cost_equals_the_final_cumulative_cost(
     api_client, session_factory, fake_redis
 ):
     game = persist_full_game(session_factory, duration_weeks=8, seed=2)
@@ -147,11 +145,11 @@ def test_ac3_total_cost_equals_the_final_cumulative_cost(
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 4
+# Chain total cost
 # ---------------------------------------------------------------------------
 
 
-def test_ac4_chain_total_cost_is_the_sum_of_the_four_total_costs(
+def test_chain_total_cost_is_the_sum_of_the_four_total_costs(
     api_client, session_factory, fake_redis
 ):
     game = persist_full_game(session_factory, duration_weeks=8, seed=3)
@@ -163,11 +161,11 @@ def test_ac4_chain_total_cost_is_the_sum_of_the_four_total_costs(
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 5
+# Bullwhip ratio
 # ---------------------------------------------------------------------------
 
 
-def test_ac5_bullwhip_ratio_is_null_for_constant_demand(
+def test_bullwhip_ratio_is_null_for_constant_demand(
     api_client, session_factory, fake_redis
 ):
     # make_config's default demand is ConstantDemand -- D12's undefined case.
@@ -179,11 +177,11 @@ def test_ac5_bullwhip_ratio_is_null_for_constant_demand(
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 6
+# Unknown room code
 # ---------------------------------------------------------------------------
 
 
-def test_ac6_unknown_room_code_is_404_with_string_detail(api_client, fake_redis):
+def test_unknown_room_code_is_404_with_string_detail(api_client, fake_redis):
     response = api_client.get(RESULTS_URL("NOSUCH01"))
 
     assert response.status_code == 404
@@ -193,11 +191,11 @@ def test_ac6_unknown_room_code_is_404_with_string_detail(api_client, fake_redis)
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 7
+# Reused room code
 # ---------------------------------------------------------------------------
 
 
-def test_ac7_reused_room_code_returns_the_more_recent_game(
+def test_reused_room_code_returns_the_more_recent_game(
     api_client, session_factory, fake_redis
 ):
     room_code = unique_room_code()
@@ -261,11 +259,11 @@ def test_timestamps_are_utc_with_a_z_suffix(api_client, session_factory, fake_re
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 8
+# No authentication
 # ---------------------------------------------------------------------------
 
 
-def test_ac8_results_require_no_authentication(api_client, session_factory, fake_redis):
+def test_results_require_no_authentication(api_client, session_factory, fake_redis):
     game = persist_full_game(session_factory, duration_weeks=8, seed=7)
 
     response = api_client.get(RESULTS_URL(game["room_code"]))
@@ -274,18 +272,18 @@ def test_ac8_results_require_no_authentication(api_client, session_factory, fake
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 9 / failure mode 3
+# Forbidden keys
 # ---------------------------------------------------------------------------
 
 
-def test_ac9_fm3_payload_carries_no_identity_secret_or_config_keys(
+def test_payload_carries_no_identity_secret_or_config_keys(
     api_client, session_factory, fake_redis
 ):
     """A wrong implementation that echoes the joined ``weeks``/``participants``
     row (rather than the documented ``RoleResult``/``ResultsResponse``
     shape) would leak ``identity``, ``guest_identity`` or a cost/delay
     column; this recursive key scan catches that regardless of nesting
-    depth (``00-conventions.md §5`` -- recursive assertions only)."""
+    depth (recursive assertions only)."""
     game = persist_full_game(session_factory, duration_weeks=8, seed=8)
 
     payload = api_client.get(RESULTS_URL(game["room_code"])).json()
@@ -298,11 +296,11 @@ def test_ac9_fm3_payload_carries_no_identity_secret_or_config_keys(
 
 
 # ---------------------------------------------------------------------------
-# Failure mode 1
+# No uid or guest identity
 # ---------------------------------------------------------------------------
 
 
-def test_fm1_no_registered_uid_or_guest_string_anywhere_in_results(
+def test_no_registered_uid_or_guest_string_anywhere_in_results(
     api_client, session_factory, fake_redis
 ):
     """Play with one registered user and one guest, and check that neither
@@ -347,7 +345,7 @@ def test_fm1_no_registered_uid_or_guest_string_anywhere_in_results(
 
 
 # ---------------------------------------------------------------------------
-# Failure mode 7
+# Order indexing
 # ---------------------------------------------------------------------------
 
 _WEEK1_ORDERS = {
@@ -364,7 +362,7 @@ def _distinct_week1_orders(role: Role, week: int) -> int:
     return 4
 
 
-def test_fm7_orders_index_zero_is_week_one_per_role(
+def test_orders_index_zero_is_week_one_per_role(
     api_client, session_factory, fake_redis
 ):
     """A chain-order-of-iteration bug (e.g. reversing ``ROLE_ORDER`` before
@@ -382,11 +380,11 @@ def test_fm7_orders_index_zero_is_week_one_per_role(
 
 
 # ---------------------------------------------------------------------------
-# Failure mode 8
+# Money as a number
 # ---------------------------------------------------------------------------
 
 
-def test_fm8_total_cost_is_a_json_number(api_client, session_factory, fake_redis):
+def test_total_cost_is_a_json_number(api_client, session_factory, fake_redis):
     """Parsed straight off the wire, not through a Pydantic model that would
     coerce a ``Decimal``-as-string back into a float and hide the bug."""
     game = persist_full_game(session_factory, duration_weeks=8, seed=11)
@@ -402,7 +400,7 @@ def test_fm8_total_cost_is_a_json_number(api_client, session_factory, fake_redis
 
 
 # ---------------------------------------------------------------------------
-# Failure mode 11
+# Driver errors
 # ---------------------------------------------------------------------------
 
 _LEAK_HOST = "leaky-postgres-host.example.invalid"
@@ -451,7 +449,7 @@ def broken_db_client():
         app.dependency_overrides.pop(get_db, None)
 
 
-def test_fm11_driver_error_leaks_no_host_port_or_user(broken_db_client):
+def test_driver_error_leaks_no_host_port_or_user(broken_db_client):
     response = broken_db_client.get(RESULTS_URL("ANYCODE1"))
 
     assert _LEAK_HOST not in response.text
@@ -460,12 +458,12 @@ def test_fm11_driver_error_leaks_no_host_port_or_user(broken_db_client):
 
 
 # ---------------------------------------------------------------------------
-# Failure mode 12
+# Unfinished game
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_fm12_unfinished_game_in_redis_is_404_not_a_partial_payload(
+async def test_unfinished_game_in_redis_is_404_not_a_partial_payload(
     api_client, fake_redis
 ):
     """A room that is ``RUNNING`` live in Redis and has no row in PostgreSQL yet

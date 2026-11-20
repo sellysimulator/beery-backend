@@ -1,5 +1,5 @@
-"""Black-box tests for ``POST /rooms/preview`` (``10-rooms-rest-api.md`` §3.5b)
-and the preset cards' generated figures (§3.5, amended 2026-11-03).
+"""Black-box tests for ``POST /rooms/preview`` and the preset cards' generated
+figures.
 
 The host form used to draw its demand preview with its own copy of the
 generators, and its preset cards restated each preset's numbers by hand. The

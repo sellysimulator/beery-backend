@@ -1,8 +1,8 @@
 """Startup check: report whether Firebase ID token verification is available.
 
-Registered purely by being importable — section 01's discovery loop imports this
+Registered purely by being importable — the package's discovery loop imports this
 module and `register_check` wires it into the lifespan, so `app/main.py` is not
-edited (00-decisions.md D19).
+edited (D19).
 
 This logs; it never aborts. Guest play is fully functional without Firebase, so
 refusing to boot would turn a partial degradation into a total outage.

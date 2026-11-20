@@ -1,12 +1,12 @@
-"""The play loop (`12-socket-play.md`).
+"""The play loop.
 
-Owned solely by section 12 (**D19**), alongside `app/sockets/handlers/play.py`.
-This module holds the two rules that dominate the section: **the server is
-authoritative** (`§3.9`) and **redaction happens before send** (`§3.4`) --
-every broadcast built here is assembled key by key, never by spreading a
-room document or a view into an `emit_to_room` payload.
+It works alongside `app/sockets/handlers/play.py`. This module holds the two
+rules that dominate the play loop: **the server is authoritative** and
+**redaction happens before send** (spec §8.8) -- every broadcast built here is
+assembled key by key, never by spreading a room document or a view into an
+`emit_to_room` payload.
 
-The locking contract (`§2.1`) is obeyed throughout: every method that reads,
+The locking contract is obeyed throughout: every method that reads,
 mutates and saves room state does all three inside one
 ``state_svc.lock(room_code)`` acquisition, then returns to its caller, which
 emits and chains into any further ``GameService`` call only after that lock
@@ -14,7 +14,7 @@ has been released. The bot cascade -- a submit closing a week, which plays
 the bots, which may close the next week, and so on -- is driven by the
 private ``_drive`` loop, a plain ``while``, never by two public methods
 calling each other. That is what keeps a 104-week all-bot game from
-recursing (`§2.1`, `§3.2`, acceptance criterion 13).
+recursing.
 """
 
 from __future__ import annotations
@@ -66,13 +66,12 @@ _INVALID_ORDER_MSG = "Order must be a whole number."
 _TOO_MANY_MSG = "Too many submissions for this week."
 
 # Resubmission counters, per (room_code, week, role). Deliberately
-# process-local, not part of the frozen room document (`09-state-service.md
-# §2` -- no new top-level key may be added without a schema bump, which is
-# section 09's call, not this section's). Socket.IO connections are sticky
+# process-local, not part of the frozen room document (no new top-level key
+# may be added without a schema bump). Socket.IO connections are sticky
 # for their lifetime, so every `submit_order` for one sid is handled by the
 # same worker process that would have to enforce this cap anyway; the guard
 # this exists for is a single client looping submissions, not a
-# cross-process invariant (`§3.1`, failure mode 7). Entries are dropped for
+# cross-process invariant (spec §12.1). Entries are dropped for
 # a week as soon as it closes, so this cannot grow without bound.
 _submission_counts: dict[tuple[str, int, str], int] = {}
 
@@ -86,7 +85,7 @@ def _forget_submission_counts(room_code: str, week: int) -> None:
 
 
 def _coerce_order(value: Any) -> tuple[bool, int]:
-    """`§3.1` step 5: accept an `int`, or a `float` that is exactly integral.
+    """Accept an `int`, or a `float` that is exactly integral.
 
     Reject a `bool` (a `bool` is a subclass of `int` in Python but is never
     a valid order), a string, `None`, `NaN` and `inf`. Never coerces an
@@ -145,7 +144,7 @@ def _week_record_payload(record: WeekRecord) -> dict:
 
 
 def stats_to_payload(stats: GameStats) -> dict:
-    """The one serialiser for `GameStats` (`§3.8` step 3).
+    """The one serialiser for `GameStats`.
 
     `GameStats` is a frozen dataclass keyed by the `Role` enum; every field
     that carries a `Role` becomes its string value, and `per_role` is keyed
@@ -176,7 +175,7 @@ def stats_to_payload(stats: GameStats) -> dict:
 async def persist_finished_game(
     room_code: str, room: dict, engine: GameEngine, stats: GameStats
 ) -> str | None:
-    """Persistence seam filled by `14-end-of-game-persistence.md §3.1`.
+    """Persistence seam: writes the finished game to PostgreSQL (spec §10.2).
 
     Called by `finish_game`, after the Redis lock has been released and
     after `game_finished` has already been emitted -- the debrief never
@@ -186,18 +185,18 @@ async def persist_finished_game(
     Never raises. A failure -- building the snapshot, writing it, or
     recomputing stats afterwards -- is logged at ERROR naming `room_code`
     and this returns `None`, so `finish_game` records `persisted: false`
-    and the debrief the clients already received is untouched (`§3.4`).
+    and the debrief the clients already received is untouched.
     On success it returns the game's `public_id`, which `finish_game`
     broadcasts so clients can link to the permanent results URL.
 
-    `stats` is accepted only because section 12 froze this signature; the
+    `stats` is accepted only because this signature is frozen; the
     snapshot's own `GameStats` is `compute_stats` run again over the same
-    `history` and `demand_series` (`§3.5b`) -- the same function, over the
+    `history` and `demand_series` -- the same function, over the
     same data, deliberately not threaded through here to avoid a second copy
     to keep in sync.
 
     Called and read as a bare module-level name, exactly as
-    `state_service.redis_client` is (`09-state-service.md §3`), so a test can
+    `state_service.redis_client` is, so a test can
     monkeypatch `app.services.game_service.persist_finished_game` without
     this module having captured a stale reference. The database session is
     opened the same way: through `db_session.SessionLocal()`, read off the
@@ -244,14 +243,14 @@ async def persist_finished_game(
 
 
 class GameService:
-    """The play loop. See `12-socket-play.md §3`."""
+    """The play loop (spec §7, §11.2)."""
 
     # --- submission ---------------------------------------------------- #
 
     async def submit(self, room_code: str, sid: str, week: Any, order: Any) -> None:
-        """`submit_order` (`§3.1`). Acquires the lock once; every emit, and
+        """`submit_order`. Acquires the lock once; every emit, and
         the cascade into `close_week_if_ready`, happens only after it is
-        released (`§2.1`)."""
+        released."""
         state_svc = get_state_service()
         room_code_out = room_code
         order_submitted_payload: dict | None = None
@@ -340,7 +339,7 @@ class GameService:
             # Refused, never clamped: an order outside the game's bounds is
             # sent back with the bounds in the message (the order form reads
             # the same two numbers from `your_state`), records nothing and
-            # spends no resubmission (`§3.1` step 5a).
+            # spends no resubmission.
             low, high = engine.order_bounds()
             if not low <= coerced <= high:
                 await socket_manager.emit_to_sid(
@@ -402,17 +401,16 @@ class GameService:
     # --- bots ------------------------------------------------------------ #
 
     async def run_bot_decisions(self, room_code: str) -> None:
-        """`§3.2`. Plays every bot role due a decision for the currently
+        """Plays every bot role due a decision for the currently
         open week, and keeps going through any further weeks an all-bot
-        room closes on its own -- iteratively (`§2.1`, acceptance
-        criterion 13).
+        room closes on its own -- iteratively.
 
         Only a `RUNNING` room plays: a call while the room is paused does
         nothing, which is why `resume_game` calls `resume_play` below."""
         await self._drive(room_code)
 
     async def resume_play(self, room_code: str) -> None:
-        """`§3.6`: what a room owes the moment it is running again.
+        """What a room owes the moment it is running again.
 
         Plays every bot seat that has no order for the open week, then closes
         the week if that completed it. A bot swapped in while the room was
@@ -424,7 +422,7 @@ class GameService:
         The close after the drive covers the one case the drive cannot see: a
         week whose four orders were all in before the pause but which never
         closed. Both calls take their own short locks, like every other
-        cascade here (`§2.1`), and both are no-ops for a room with nothing
+        cascade here, and both are no-ops for a room with nothing
         due.
         """
         await self._drive(room_code)
@@ -475,7 +473,7 @@ class GameService:
                 )
                 # The engine refuses an out-of-range order rather than
                 # clamping it, and a bot has nobody to show a refusal to: its
-                # own figure is capped here, the one place it is (`08 §3.5`).
+                # own figure is capped here, the one place it is.
                 # `decide()` already floors at 0.
                 qty = min(qty, engine.order_bounds()[1])
                 engine.submit_order(role, qty)
@@ -509,8 +507,8 @@ class GameService:
 
     async def _drive(self, room_code: str) -> None:
         """The iterative bot cascade shared by `run_bot_decisions` and
-        `close_week_if_ready`. A plain loop of short lock acquisitions
-        (`§2.1`): play whatever bots are due, try to close, and stop the
+        `close_week_if_ready`. A plain loop of short lock acquisitions:
+        play whatever bots are due, try to close, and stop the
         moment a round plays nothing or a close does not happen."""
         while True:
             played = await self._play_bot_round(room_code)
@@ -527,11 +525,11 @@ class GameService:
     # --- closing a week ---------------------------------------------------#
 
     async def close_week_if_ready(self, room_code: str, force: bool = False) -> bool:
-        """`§3.3`. Closes the open week once every role has a decision (or
+        """Closes the open week once every role has a decision (or
         `force`), emits, and -- if the closed week was not the last --
         drives any further all-bot weeks through the same private loop
         `run_bot_decisions` uses, never by calling that public method
-        (`§2.1`: nothing in this section recurses)."""
+        (nothing in the play loop recurses)."""
         closed, finished, room_after = await self._try_close_week(
             room_code, force=force
         )
@@ -550,7 +548,7 @@ class GameService:
         """One lock cycle. Returns `(closed, finished, room)`; `room` is the
         document already saved inside this call, handed back so the caller
         can pass it straight to `finish_game` without a second lock or a
-        second read (`§2.1`)."""
+        second read."""
         state_svc = get_state_service()
         room_code_out = room_code
         week_closed_payload: dict | None = None
@@ -657,7 +655,7 @@ class GameService:
     # --- resync ------------------------------------------------------------#
 
     async def broadcast_state(self, room_code: str) -> None:
-        """`§2.1`: acquires, allocates its sequence numbers, saves, releases,
+        """Acquires, allocates its sequence numbers, saves, releases,
         then emits. Refreshes every seated human's `your_state` and the
         host's `host_state` -- `resume_game`'s use after lifting a pause.
 
@@ -666,8 +664,7 @@ class GameService:
         has to write, and writing a document that was read before the
         caller released its lock silently reverts anything committed in
         between -- a substitution, a disconnect flag, another week. The
-        window is small and the failure leaves no trace, which is exactly the
-        combination this section runs two agents for.
+        window is small and the failure leaves no trace.
         """
         state_svc = get_state_service()
         pending: list[tuple[str, str, dict]] = []
@@ -725,9 +722,9 @@ class GameService:
     # --- the end -------------------------------------------------------- #
 
     async def finish_game(self, room_code: str, room: dict) -> None:
-        """`§3.8`. Never acquires the lock; persistence never runs under
+        """Never acquires the lock; persistence never runs under
         one either. A persistence failure must not break the results
-        screen (step 5): it is logged, `persisted` is `False`, and the
+        screen: it is logged, `persisted` is `False`, and the
         clients keep the `game_finished` payload they already received."""
         state_svc = get_state_service()
         engine = state_svc.load_engine(room)
@@ -754,7 +751,7 @@ class GameService:
             "orders_by_role": orders_by_role,
         }
 
-        # The debrief goes out BEFORE persistence, not after (§3.8 step 5).
+        # The debrief goes out BEFORE persistence, not after (spec §10.2).
         # Persistence is a database round trip that may be slow and may fail;
         # the results screen must not wait on it and must not be lost with it.
         await socket_manager.emit_to_room(

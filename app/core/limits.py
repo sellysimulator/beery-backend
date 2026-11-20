@@ -1,4 +1,4 @@
-"""The hard ceilings of `00-decisions.md` §5, in a module of their own.
+"""The hard ceilings (spec §6.6, §12.1), in a module of their own.
 
 They used to live inside `config_models.py`. They are here so that a caller
 needing one ceiling does not import the whole config model to get it;
@@ -13,7 +13,7 @@ form.
 
 Pure: imports nothing but pydantic and the standard library. The limits arrive
 in the domain as an injected `Limits` rather than through `app.config`, which
-`app/core` may not import (`00-conventions.md` §4).
+`app/core` may not import.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ __all__ = ["DEFAULT_LIMITS", "Limits"]
 
 
 class Limits(BaseModel):
-    """The hard ceilings from `00-decisions.md` §5, injected rather than imported,
+    """The hard ceilings (spec §12.1), injected rather than imported,
     so `app/core` stays free of `app.config`."""
 
     model_config = ConfigDict(frozen=True)

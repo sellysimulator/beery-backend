@@ -1,10 +1,10 @@
-"""Room creation and configuration routes (``10-rooms-rest-api.md``).
+"""Room creation and configuration routes (spec §11.1).
 
-Creating a room requires no authentication (``00-decisions.md`` D3):
+Creating a room requires no authentication (D3):
 authority over it is the ``host_secret`` this module mints, once, and checks
 with ``hmac.compare_digest`` on every privileged call. There is no REST
 endpoint that re-issues a lost secret -- that recovery path is socket-only
-(D18, section 11) because it depends on the handshake-established identity
+(D18) because it depends on the handshake-established identity
 that a REST call cannot prove for a guest.
 """
 
@@ -59,10 +59,10 @@ _OVER_STATES = {RoomState.FINISHED.value, RoomState.ABANDONED.value}
 
 _room_service = RoomService()
 
-# Human copy for the host UI's preset picker (10-rooms-rest-api.md §3.5): a
-# label and a tagline, and no figure. The figures are written out of each
-# preset's own config by `scenario_summary` (2026-11-03), so a card cannot
-# promise a preset the engine does not play.
+# Human copy for the host UI's preset picker: a label and a tagline, and no
+# figure. The figures are written out of each preset's own config by
+# `scenario_summary`, so a card cannot promise a preset the engine does not
+# play.
 _PRESET_META: dict[str, tuple[str, str]] = {
     "CLASSIC_MIT": (
         "Classic MIT",
@@ -79,7 +79,7 @@ _PRESET_META: dict[str, tuple[str, str]] = {
 }
 
 # A room may be reconfigured in any of these states; anything else (RUNNING,
-# PAUSED, FINISHED, ABANDONED) is frozen (10-rooms-rest-api.md §3.3 step 3).
+# PAUSED, FINISHED, ABANDONED) is frozen.
 _CONFIGURABLE_STATES = {
     RoomState.LOBBY.value,
     RoomState.CONFIGURING.value,
@@ -93,7 +93,7 @@ def _check_host_secret(room: dict, provided: str | None) -> None:
     Both sides are checked for emptiness first, so a room whose secret is
     somehow `""` can never be authorised by an equally-empty header --
     `hmac.compare_digest("", "")` is `True`, and that would otherwise be a
-    real bypass rather than a hypothetical one (§5 failure mode 3).
+    real bypass rather than a hypothetical one.
     """
     stored = room.get("host_secret") or ""
     supplied = provided or ""
@@ -103,8 +103,8 @@ def _check_host_secret(room: dict, provided: str | None) -> None:
         )
 
 
-# The merge itself lives in `app/services/config_merge.py`, so that section
-# 11's `config_update` -- which must merge identically (`11 §3.4`) -- can call
+# The merge itself lives in `app/services/config_merge.py`, so that the
+# lobby's `config_update` -- which must merge identically -- can call
 # the same function instead of carrying a second copy of it.
 _merge_config = merge_config_patch
 
@@ -192,7 +192,7 @@ async def create_room(payload: RoomCreateRequest | None = None) -> RoomCreateRes
 async def create_room_batch(
     payload: RoomBatchCreateRequest, request: Request
 ) -> RoomBatchCreateResponse:
-    """Create `count` rooms that all start with one config (`10 §3.5c`).
+    """Create `count` rooms that all start with one config.
 
     The multi-game host dashboard's create button. No authentication, like
     `/create`. In order, and nothing is created until every check has passed:
@@ -290,8 +290,8 @@ def _summary(room_code: str, room: dict) -> RoomSummary:
 
 @router.post("/summary", response_model=RoomSummaryResponse)
 async def summarise_rooms(payload: RoomSummaryRequest) -> RoomSummaryResponse:
-    """State, seats, week and `can_start` for each room the caller hosts
-    (`10 §3.5d`). One answer per entry, in order.
+    """State, seats, week and `can_start` for each room the caller hosts.
+    One answer per entry, in order.
 
     The multi-game dashboard polls this. Read-only: no lock, no save, so
     polling never extends a room's TTL. A room that is not there and a wrong
@@ -319,7 +319,7 @@ async def summarise_rooms(payload: RoomSummaryRequest) -> RoomSummaryResponse:
 
 @router.get("/{room_code}/status", response_model=RoomStatusResponse)
 async def room_status(room_code: str) -> RoomStatusResponse:
-    """Is this room joinable? Public, and deliberately thin (§3.2).
+    """Is this room joinable? Public, and deliberately thin.
 
     Always HTTP 200: a 404 for "does not exist" would be a room-code oracle,
     and evaluating the conditions in the document's stated order keeps a
@@ -367,7 +367,7 @@ async def update_config(
     payload: ConfigUpdateRequest,
     x_host_secret: str = Header(default="", alias="X-Host-Secret"),
 ) -> ConfigResponse:
-    """Set parameters while configuring (§3.3). Requires `X-Host-Secret`."""
+    """Set parameters while configuring. Requires `X-Host-Secret`."""
     state_svc = get_state_service()
     try:
         async with state_svc.lock(room_code):
@@ -411,7 +411,7 @@ async def get_config(
     room_code: str,
     x_host_secret: str = Header(default="", alias="X-Host-Secret"),
 ) -> ConfigResponse:
-    """Read the current config back (§3.4). Requires `X-Host-Secret`."""
+    """Read the current config back. Requires `X-Host-Secret`."""
     try:
         room = await get_state_service().get_room(room_code)
     except Exception:
@@ -436,7 +436,7 @@ async def get_config(
 
 @router.get("/presets", response_model=PresetListResponse)
 async def list_presets() -> PresetListResponse:
-    """The three presets, for the host UI (§3.5). No authentication."""
+    """The three presets, for the host UI. No authentication."""
     summaries = [
         PresetSummary(
             name=name,

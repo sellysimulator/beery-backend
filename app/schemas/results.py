@@ -1,7 +1,7 @@
 """Response and request models for the results, export and profile API
-(``15-results-and-export-api.md`` §2).
+(spec §9.8, §9.5, §9.9).
 
-These shapes are FROZEN: the shipped frontend (``21 §2.0``, ``22 §2.0``)
+These shapes are FROZEN: the shipped frontend
 already expects exactly these field names and this nullability. Money fields
 are declared ``float`` -- never ``Decimal`` -- so pydantic coerces whatever
 ``Decimal`` the database hands back into a plain JSON number; a ``Decimal``

@@ -1,13 +1,12 @@
-"""Black-box tests for section 07 -- ``app/core/game_engine.py``.
+"""Black-box tests for ``app/core/game_engine.py`` (spec §7, §8.6).
 
-Covers ``07-game-engine.md §5`` acceptance criteria 1-3, 5-13, 17 and 21-26,
-and ``§6`` failure modes 1-8 and 12-17.  Criteria 4, 14, 15 and 16 live in
-``test_engine_determinism.py``; criteria 18-20 and failure modes 9-11 live in
-``test_stats.py``.
+Covers the week's phases, order bounds, force close, end early, the views'
+redaction and ``set_bot``.  Determinism lives in ``test_engine_determinism.py``
+and the statistics in ``test_stats.py``.
 
-Everything is driven through the frozen public surface of ``§2`` plus the
-public surfaces of sections 03, 05 and 06.  No private name and no log
-message is asserted on.
+Everything is driven through the engine's frozen public surface plus the
+public surfaces of the config, the pipeline and the role agents.  No private
+name and no log message is asserted on.
 """
 
 from __future__ import annotations
@@ -55,7 +54,7 @@ VISIBILITY_FLAGS = (
 
 
 # --------------------------------------------------------------------------
-# Helpers -- built only from section 03's public surface
+# Helpers -- built only from the config's public surface
 # --------------------------------------------------------------------------
 
 
@@ -70,9 +69,9 @@ def make_config(
 ) -> GameConfig:
     """A ``GameConfig`` assembled through ``GameConfig.from_host_input``.
 
-    ``from_host_input`` accepts "plain JSON or already-built config models"
-    (``03-game-config.md §2``), which is what lets a test vary one parameter
-    without reaching past the frozen surface.
+    ``from_host_input`` accepts "plain JSON or already-built config models",
+    which is what lets a test vary one parameter without reaching past the
+    frozen surface.
     """
     base = dict(role_kwargs or {})
     factory_base = {**base, **dict(factory_kwargs or {})}
@@ -139,7 +138,7 @@ def records_for(records: list[WeekRecord], role: Role) -> list[WeekRecord]:
 
 
 # --------------------------------------------------------------------------
-# AC 1 -- what start() returns
+# What start() returns
 # --------------------------------------------------------------------------
 
 
@@ -166,7 +165,7 @@ def test_start_demand_series_length_follows_duration_weeks() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 2 -- start() has already run Phase A for week 1
+# start() has already run Phase A for week 1
 # --------------------------------------------------------------------------
 
 
@@ -195,7 +194,7 @@ def test_start_has_already_settled_week_one() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 3 -- the §4 worked example, and FM 1 (supply line sampled mid-pass)
+# The worked example, and the supply line sampled mid-pass
 # --------------------------------------------------------------------------
 
 
@@ -259,8 +258,8 @@ def test_worked_example_week_one_records() -> None:
     assert engine.phase == GamePhase.DECISION
 
 
-def test_fm1_retailer_supply_line_after_is_eight_not_four() -> None:
-    """FM 1 -- sampling the supply line inside settle() gives 4 here."""
+def test_retailer_supply_line_after_is_eight_not_four() -> None:
+    """Sampling the supply line inside settle() would give 4 here."""
     engine = GameEngine.start(get_preset("CLASSIC_MIT"), SEED)
     records = play_week(engine, {role: 4 for role in ROLE_ORDER})
     retailer = records_for(records, Role.RETAILER)[0]
@@ -268,11 +267,11 @@ def test_fm1_retailer_supply_line_after_is_eight_not_four() -> None:
 
 
 # --------------------------------------------------------------------------
-# FM 2 -- single-pass settlement moves the arrival week
+# Single-pass settlement moves the arrival week
 # --------------------------------------------------------------------------
 
 
-def test_fm2_retailer_week_one_order_arrives_in_week_three() -> None:
+def test_retailer_week_one_order_arrives_in_week_three() -> None:
     config = make_config(
         {
             "shipping_delay_weeks": 1,
@@ -301,11 +300,11 @@ def test_fm2_retailer_week_one_order_arrives_in_week_three() -> None:
 
 
 # --------------------------------------------------------------------------
-# FM 3, FM 4 -- the Retailer's demand comes from the series, index 0 for week 1
+# The Retailer's demand comes from the series, index 0 for week 1
 # --------------------------------------------------------------------------
 
 
-def test_fm3_retailer_ignores_its_own_order_pipeline() -> None:
+def test_retailer_ignores_its_own_order_pipeline() -> None:
     config = make_config(
         demand=ConstantDemand(value=4),
         duration_weeks=12,
@@ -320,7 +319,7 @@ def test_fm3_retailer_ignores_its_own_order_pipeline() -> None:
     assert records_for(records, Role.RETAILER)[0].incoming_order == 4
 
 
-def test_fm4_week_one_uses_demand_series_index_zero() -> None:
+def test_week_one_uses_demand_series_index_zero() -> None:
     values = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120]
     config = make_config(
         {"initial_inventory": 9_000, "initial_pipeline_quantity": 0},
@@ -339,11 +338,11 @@ def test_fm4_week_one_uses_demand_series_index_zero() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 5, FM 12 -- order bounds: refused, never clamped (amended 2026-11-02)
+# Order bounds: refused, never clamped (spec §12.1)
 # --------------------------------------------------------------------------
 
 
-def test_ac5_default_bounds_are_zero_to_nine_nine_nine_nine() -> None:
+def test_default_bounds_are_zero_to_nine_nine_nine_nine() -> None:
     engine = GameEngine.start(get_preset("CLASSIC_MIT"), SEED)
     assert engine.order_bounds() == (0, 9_999)
     assert engine.submit_order(Role.RETAILER, 12) == 12
@@ -352,7 +351,7 @@ def test_ac5_default_bounds_are_zero_to_nine_nine_nine_nine() -> None:
 
 
 @pytest.mark.parametrize("quantity", [10_000, 1_000_000, -1, -5, -9_999_999])
-def test_ac5_an_order_out_of_bounds_is_refused_and_records_nothing(
+def test_an_order_out_of_bounds_is_refused_and_records_nothing(
     quantity: int,
 ) -> None:
     """A clamped order is an order nobody placed. The refusal carries the
@@ -370,7 +369,7 @@ def test_ac5_an_order_out_of_bounds_is_refused_and_records_nothing(
     assert Role.WHOLESALER not in engine.pending_orders
 
 
-def test_ac5_a_configured_max_order_quantity_lowers_the_ceiling() -> None:
+def test_a_configured_max_order_quantity_lowers_the_ceiling() -> None:
     config = make_config(
         visibility=VisibilityConfig(max_order_quantity=50),
         duration_weeks=12,
@@ -386,7 +385,7 @@ def test_ac5_a_configured_max_order_quantity_lowers_the_ceiling() -> None:
     assert (view["min_order_quantity"], view["max_order_quantity"]) == (0, 50)
 
 
-def test_fm12_there_are_no_negative_orders_even_for_a_legacy_config() -> None:
+def test_there_are_no_negative_orders_even_for_a_legacy_config() -> None:
     """``allow_negative_orders`` was removed: a stored config that still says
     ``true`` loads, and its floor is still 0."""
     stored = get_preset("CLASSIC_MIT").to_payload()
@@ -469,11 +468,11 @@ def test_submit_order_rejects_a_non_integer_and_a_non_role() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 6 -- idempotency by role
+# Idempotency by role
 # --------------------------------------------------------------------------
 
 
-def test_ac6_second_submission_replaces_the_first() -> None:
+def test_second_submission_replaces_the_first() -> None:
     engine = GameEngine.start(get_preset("CLASSIC_MIT"), SEED)
     engine.submit_order(Role.RETAILER, 4)
     assert engine.submit_order(Role.RETAILER, 9) == 9
@@ -490,7 +489,7 @@ def test_ac6_second_submission_replaces_the_first() -> None:
     assert records_for(records, Role.RETAILER)[0].order == 11
 
 
-def test_ac6_all_orders_in_needs_four_distinct_roles() -> None:
+def test_all_orders_in_needs_four_distinct_roles() -> None:
     engine = GameEngine.start(get_preset("CLASSIC_MIT"), SEED)
     for _ in range(4):
         engine.submit_order(Role.RETAILER, 4)
@@ -498,11 +497,11 @@ def test_ac6_all_orders_in_needs_four_distinct_roles() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 7, AC 23, FM 14, FM 17 -- close_week and force
+# close_week and force
 # --------------------------------------------------------------------------
 
 
-def test_ac7_close_week_with_a_missing_order_raises() -> None:
+def test_close_week_with_a_missing_order_raises() -> None:
     engine = GameEngine.start(get_preset("CLASSIC_MIT"), SEED)
     for role in (Role.RETAILER, Role.WHOLESALER, Role.DISTRIBUTOR):
         engine.submit_order(role, 4)
@@ -512,7 +511,7 @@ def test_ac7_close_week_with_a_missing_order_raises() -> None:
     assert engine.history == []
 
 
-def test_ac7_force_records_zero_for_the_missing_role() -> None:
+def test_force_records_zero_for_the_missing_role() -> None:
     engine = GameEngine.start(get_preset("CLASSIC_MIT"), SEED)
     engine.submit_order(Role.RETAILER, 4)
     records = engine.close_week(force=True)
@@ -523,7 +522,7 @@ def test_ac7_force_records_zero_for_the_missing_role() -> None:
     assert by_role[Role.FACTORY].order == 0
 
 
-def test_fm14_force_keeps_the_three_submitted_orders() -> None:
+def test_force_keeps_the_three_submitted_orders() -> None:
     engine = GameEngine.start(get_preset("CLASSIC_MIT"), SEED)
     submitted = {Role.RETAILER: 7, Role.WHOLESALER: 13, Role.FACTORY: 29}
     for role, quantity in submitted.items():
@@ -541,7 +540,7 @@ def test_fm14_force_keeps_the_three_submitted_orders() -> None:
         assert by_role[role].was_forced is False
 
 
-def test_ac23_unforced_week_after_a_forced_one_is_all_false() -> None:
+def test_unforced_week_after_a_forced_one_is_all_false() -> None:
     engine = GameEngine.start(get_preset("CLASSIC_MIT"), SEED)
     engine.submit_order(Role.RETAILER, 4)
     forced = engine.close_week(force=True)
@@ -551,7 +550,7 @@ def test_ac23_unforced_week_after_a_forced_one_is_all_false() -> None:
     assert all(record.was_forced is False for record in later)
 
 
-def test_fm17_was_forced_is_false_when_every_order_is_in() -> None:
+def test_was_forced_is_false_when_every_order_is_in() -> None:
     engine = GameEngine.start(get_preset("CLASSIC_MIT"), SEED)
     unforced = play_week(engine, {role: 4 for role in ROLE_ORDER})
     assert all(record.was_forced is False for record in unforced)
@@ -563,11 +562,11 @@ def test_fm17_was_forced_is_false_when_every_order_is_in() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 8 -- close_week returns four records in ROLE_ORDER
+# close_week returns four records in ROLE_ORDER
 # --------------------------------------------------------------------------
 
 
-def test_ac8_close_week_returns_records_in_role_order() -> None:
+def test_close_week_returns_records_in_role_order() -> None:
     engine = GameEngine.start(get_preset("CLASSIC_MIT"), SEED)
     for _ in range(3):
         records = play_week(engine, {role: 4 for role in ROLE_ORDER})
@@ -578,11 +577,11 @@ def test_ac8_close_week_returns_records_in_role_order() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 9, AC 10, FM 5 -- cost arithmetic
+# Cost arithmetic
 # --------------------------------------------------------------------------
 
 
-def test_ac9_total_week_cost_is_the_sum_of_its_four_components() -> None:
+def test_total_week_cost_is_the_sum_of_its_four_components() -> None:
     config = make_config(
         {"fixed_order_cost": 1.5, "unit_purchase_cost": 0.25},
         demand=get_preset("CLASSIC_MIT").demand,
@@ -601,7 +600,7 @@ def test_ac9_total_week_cost_is_the_sum_of_its_four_components() -> None:
             )
 
 
-def test_ac10_cumulative_cost_accumulates_week_by_week() -> None:
+def test_cumulative_cost_accumulates_week_by_week() -> None:
     config = make_config(
         {"fixed_order_cost": 1.5, "unit_purchase_cost": 0.25},
         demand=get_preset("CLASSIC_MIT").demand,
@@ -618,7 +617,7 @@ def test_ac10_cumulative_cost_accumulates_week_by_week() -> None:
             previous[record.role] = record.cumulative_cost
 
 
-def test_fm5_an_order_is_charged_exactly_once_per_week() -> None:
+def test_an_order_is_charged_exactly_once_per_week() -> None:
     """Hand-computed: carrying 6.00 + one fixed order cost of 1.00 a week."""
     config = make_config(
         {"fixed_order_cost": 1.0},
@@ -640,7 +639,7 @@ def test_fm5_an_order_is_charged_exactly_once_per_week() -> None:
             )
 
 
-def test_fm5_a_zero_order_is_not_charged_the_fixed_cost() -> None:
+def test_a_zero_order_is_not_charged_the_fixed_cost() -> None:
     config = make_config(
         {"fixed_order_cost": 1.0},
         demand=ConstantDemand(value=4),
@@ -717,11 +716,11 @@ def test_after_the_last_week_the_figures_are_that_week_s_record() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 11, AC 22, FM 13, FM 16 -- the end of the game
+# The end of the game
 # --------------------------------------------------------------------------
 
 
-def test_ac11_the_week_counter_stops_at_duration_weeks() -> None:
+def test_the_week_counter_stops_at_duration_weeks() -> None:
     config = make_config(demand=ConstantDemand(value=4), duration_weeks=12)
     engine = GameEngine.start(config, SEED)
     play_flat(engine, 4, 12)
@@ -735,7 +734,7 @@ def test_ac11_the_week_counter_stops_at_duration_weeks() -> None:
 
 
 @pytest.mark.parametrize("role", list(ROLE_ORDER))
-def test_fm16_player_view_week_does_not_overrun(role: Role) -> None:
+def test_player_view_week_does_not_overrun(role: Role) -> None:
     config = make_config(demand=ConstantDemand(value=4), duration_weeks=12)
     engine = GameEngine.start(config, SEED)
     play_flat(engine, 4, 12)
@@ -746,7 +745,7 @@ def test_fm16_player_view_week_does_not_overrun(role: Role) -> None:
     assert engine.host_view()["week"] == 12
 
 
-def test_fm13_a_finished_game_accepts_nothing() -> None:
+def test_a_finished_game_accepts_nothing() -> None:
     config = make_config(demand=ConstantDemand(value=4), duration_weeks=8)
     engine = GameEngine.start(config, SEED)
     play_flat(engine, 4, 8)
@@ -760,7 +759,7 @@ def test_fm13_a_finished_game_accepts_nothing() -> None:
         engine.submit_order(Role.RETAILER, 4)
 
 
-def test_ac22_weeks_played_tracks_history_after_every_close() -> None:
+def test_weeks_played_tracks_history_after_every_close() -> None:
     config = make_config(demand=ConstantDemand(value=4), duration_weeks=12)
     engine = GameEngine.start(config, SEED)
     assert engine.weeks_played == len(engine.history) // 4 == 0
@@ -772,11 +771,11 @@ def test_ac22_weeks_played_tracks_history_after_every_close() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 12 -- end_early()
+# end_early()
 # --------------------------------------------------------------------------
 
 
-def test_ac12_end_early_abandons_the_open_week() -> None:
+def test_end_early_abandons_the_open_week() -> None:
     config = make_config(demand=ConstantDemand(value=4), duration_weeks=36)
     engine = GameEngine.start(config, SEED)
     play_flat(engine, 4, 9)
@@ -795,7 +794,7 @@ def test_ac12_end_early_abandons_the_open_week() -> None:
         engine.end_early()
 
 
-def test_ac12_end_early_immediately_after_start() -> None:
+def test_end_early_immediately_after_start() -> None:
     config = make_config(demand=ConstantDemand(value=4), duration_weeks=12)
     engine = GameEngine.start(config, SEED)
     engine.end_early()
@@ -805,7 +804,7 @@ def test_ac12_end_early_immediately_after_start() -> None:
     assert engine.weeks_played == 0
 
 
-def test_ac12_end_early_discards_pending_orders_for_the_open_week() -> None:
+def test_end_early_discards_pending_orders_for_the_open_week() -> None:
     config = make_config(demand=ConstantDemand(value=4), duration_weeks=12)
     engine = GameEngine.start(config, SEED)
     play_flat(engine, 4, 3)
@@ -815,7 +814,7 @@ def test_ac12_end_early_discards_pending_orders_for_the_open_week() -> None:
     assert all(record.week <= 3 for record in engine.history)
 
 
-def test_ac12a_end_early_rolls_the_open_week_out_of_every_live_total() -> None:
+def test_end_early_rolls_the_open_week_out_of_every_live_total() -> None:
     """Classic ended in week 10 showed the host $180 live and $164 on the
     results: the abandoned week's holding and backlog were in the live totals
     and in no record. After ``end_early`` every live figure equals the
@@ -859,7 +858,7 @@ def test_ac12a_end_early_rolls_the_open_week_out_of_every_live_total() -> None:
     assert restored == engine
 
 
-def test_ac12a_end_early_in_week_one_leaves_every_total_at_zero() -> None:
+def test_end_early_in_week_one_leaves_every_total_at_zero() -> None:
     config = make_config(demand=ConstantDemand(value=4), duration_weeks=12)
     engine = GameEngine.start(config, SEED)
     assert engine.host_view()["chain_total_cost"] > 0
@@ -868,11 +867,11 @@ def test_ac12a_end_early_in_week_one_leaves_every_total_at_zero() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 13 -- the six invariants of 06-role-agents.md §3.7, every week
+# The six agent invariants (spec §7.2), every week
 # --------------------------------------------------------------------------
 
 
-def test_ac13_agent_invariants_hold_over_a_full_classic_mit_game() -> None:
+def test_agent_invariants_hold_over_a_full_classic_mit_game() -> None:
     engine = GameEngine.start(get_preset("CLASSIC_MIT"), SEED)
     script = [4, 4, 4, 4, 8, 12, 16, 12, 8, 4, 0, 0] * 3
     assert len(script) == 36
@@ -902,7 +901,7 @@ def test_ac13_agent_invariants_hold_over_a_full_classic_mit_game() -> None:
             if role is Role.FACTORY:
                 assert engine.agents[Role.FACTORY].production_queue >= 0  # type: ignore[attr-defined]
 
-        # 5 -- pipeline lengths, in the shape §3.2 leaves them in.  Mid-game
+        # 5 -- pipeline lengths, in the shape the week leaves them in.  Mid-game
         # the engine is inside a week: Phase A pass 1 has advanced both
         # pipelines, pass 2 has refilled the three downstream shipment lines,
         # and nothing refills the order lines or the Factory's production
@@ -920,11 +919,11 @@ def test_ac13_agent_invariants_hold_over_a_full_classic_mit_game() -> None:
 
 
 # --------------------------------------------------------------------------
-# FM 6 -- pipeline length drift over a long game
+# Pipeline length drift over a long game
 # --------------------------------------------------------------------------
 
 
-def test_fm6_no_pipeline_drift_after_one_hundred_and_four_weeks() -> None:
+def test_no_pipeline_drift_after_one_hundred_and_four_weeks() -> None:
     config = make_config(
         {"shipping_delay_weeks": 3, "information_delay_weeks": 4},
         {"production_delay_weeks": 2},
@@ -949,11 +948,11 @@ def test_fm6_no_pipeline_drift_after_one_hundred_and_four_weeks() -> None:
 
 
 # --------------------------------------------------------------------------
-# FM 7 -- no other role's order quantity in a player view
+# No other role's order quantity in a player view (spec §8.8)
 # --------------------------------------------------------------------------
 
 
-def test_fm7_player_view_never_carries_another_roles_order() -> None:
+def test_player_view_never_carries_another_roles_order() -> None:
     engine = GameEngine.start(get_preset("CLASSIC_MIT"), SEED)
     # Quantities no view carries for another reason. (The Retailer's was 5
     # until 2026-11-03, when `order_arrival_week` -- week 1 + a 4-week lead,
@@ -977,7 +976,7 @@ def test_fm7_player_view_never_carries_another_roles_order() -> None:
             ), f"{role.value} view leaked {other.value}'s order {quantity}"
 
 
-def test_fm7_awaiting_roles_carries_names_only() -> None:
+def test_awaiting_roles_carries_names_only() -> None:
     engine = GameEngine.start(get_preset("CLASSIC_MIT"), SEED)
     engine.submit_order(Role.RETAILER, 5)
     engine.submit_order(Role.WHOLESALER, 7)
@@ -992,12 +991,12 @@ def test_fm7_awaiting_roles_carries_names_only() -> None:
 
 
 # --------------------------------------------------------------------------
-# FM 8 -- future demand never leaks
+# Future demand never leaks
 # --------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("role", list(ROLE_ORDER))
-def test_fm8_customer_demand_series_is_truncated_to_the_open_week(role: Role) -> None:
+def test_customer_demand_series_is_truncated_to_the_open_week(role: Role) -> None:
     config = make_config(
         demand=get_preset("CLASSIC_MIT").demand,
         duration_weeks=36,
@@ -1014,7 +1013,7 @@ def test_fm8_customer_demand_series_is_truncated_to_the_open_week(role: Role) ->
 
 
 @pytest.mark.parametrize("role", list(ROLE_ORDER))
-def test_fm8_customer_demand_series_absent_when_not_shared(role: Role) -> None:
+def test_customer_demand_series_absent_when_not_shared(role: Role) -> None:
     config = make_config(
         demand=get_preset("CLASSIC_MIT").demand,
         duration_weeks=36,
@@ -1026,12 +1025,12 @@ def test_fm8_customer_demand_series_absent_when_not_shared(role: Role) -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 17 -- all 64 visibility combinations
+# All 64 visibility combinations
 # --------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("combination", list(product([False, True], repeat=6)))
-def test_ac17_no_order_quantity_leaks_under_any_visibility(
+def test_no_order_quantity_leaks_under_any_visibility(
     combination: tuple[bool, ...],
 ) -> None:
     flags = dict(zip(VISIBILITY_FLAGS, combination))
@@ -1071,11 +1070,11 @@ def test_ac17_no_order_quantity_leaks_under_any_visibility(
 
 
 # --------------------------------------------------------------------------
-# AC 25, FM 15 -- orders_in_flight is the SUPPLIER's order pipeline
+# orders_in_flight is the SUPPLIER's order pipeline
 # --------------------------------------------------------------------------
 
 
-def test_fm15_player_view_reports_the_suppliers_order_pipeline() -> None:
+def test_player_view_reports_the_suppliers_order_pipeline() -> None:
     config = make_config(
         {"information_delay_weeks": 2},
         demand=ConstantDemand(value=4),
@@ -1115,7 +1114,7 @@ def test_fm15_player_view_reports_the_suppliers_order_pipeline() -> None:
         assert engine.agents[role].orders_in_flight() == own_figure[role]
 
 
-def test_ac25_orders_in_flight_equals_the_suppliers_pipeline_total() -> None:
+def test_orders_in_flight_equals_the_suppliers_pipeline_total() -> None:
     engine = GameEngine.start(get_preset("CLASSIC_MIT"), SEED)
     script = [4, 9, 2, 14, 7]
     for quantity in script:
@@ -1135,7 +1134,7 @@ def test_ac25_orders_in_flight_equals_the_suppliers_pipeline_total() -> None:
 
 
 # --------------------------------------------------------------------------
-# §3.8 -- the per-round view leaves the history out
+# The per-round view leaves the history out
 # --------------------------------------------------------------------------
 
 
@@ -1156,7 +1155,7 @@ def test_player_view_without_history_is_the_full_view_minus_own_history(
 
 
 # --------------------------------------------------------------------------
-# §3.8 -- the rest of the player view's fixed keys
+# The rest of the player view's fixed keys
 # --------------------------------------------------------------------------
 
 
@@ -1322,11 +1321,11 @@ def test_player_view_balance_follows_starting_capital() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 26, §3.9 -- host_view()
+# host_view() (spec §9.6)
 # --------------------------------------------------------------------------
 
 
-def test_ac26_host_view_production_queue_is_zero_away_from_the_factory() -> None:
+def test_host_view_production_queue_is_zero_away_from_the_factory() -> None:
     config = make_config(
         factory_kwargs={"production_capacity_per_week": 2},
         demand=ConstantDemand(value=4),
@@ -1403,7 +1402,7 @@ def test_host_view_keys_and_unredacted_series() -> None:
 
 
 def test_host_view_orders_in_flight_is_the_roles_own_pipeline() -> None:
-    """§3.9 -- the host sees the unredacted figure, not player_view's."""
+    """The host sees the unredacted figure, not player_view's."""
     config = make_config(
         {"information_delay_weeks": 2},
         demand=ConstantDemand(value=4),
@@ -1424,11 +1423,11 @@ def test_host_view_orders_in_flight_is_the_roles_own_pipeline() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 24 -- set_bot
+# set_bot
 # --------------------------------------------------------------------------
 
 
-def test_ac24_set_bot_marks_only_subsequent_records() -> None:
+def test_set_bot_marks_only_subsequent_records() -> None:
     config = make_config(demand=ConstantDemand(value=4), duration_weeks=12)
     engine = GameEngine.start(config, SEED)
 
@@ -1456,7 +1455,7 @@ def test_ac24_set_bot_marks_only_subsequent_records() -> None:
     assert restored.host_view()["roles"][Role.WHOLESALER]["is_bot"] is True
 
 
-def test_ac24_set_bot_is_idempotent_and_reversible() -> None:
+def test_set_bot_is_idempotent_and_reversible() -> None:
     config = make_config(demand=ConstantDemand(value=4), duration_weeks=12)
     engine = GameEngine.start(config, SEED)
     engine.set_bot(Role.FACTORY)
@@ -1485,7 +1484,7 @@ def test_start_bot_roles_are_marked_from_week_one() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 21 -- app/core/game_engine.py imports only app.core and the stdlib
+# app/core/game_engine.py imports only app.core and the stdlib
 # --------------------------------------------------------------------------
 
 
@@ -1507,7 +1506,7 @@ def imported_modules(path: Path, package: str) -> set[str]:
 
 
 @pytest.mark.parametrize("module_name", ["game_engine", "stats"])
-def test_ac21_domain_modules_import_only_app_core_and_the_stdlib(
+def test_domain_modules_import_only_app_core_and_the_stdlib(
     module_name: str,
 ) -> None:
     path = Path(__file__).resolve().parents[2] / "app" / "core" / f"{module_name}.py"
@@ -1520,7 +1519,7 @@ def test_ac21_domain_modules_import_only_app_core_and_the_stdlib(
             or name.startswith("app.core.")
             or (root in sys.stdlib_module_names)
         ), f"{module_name}.py imports {name}"
-        # 00-conventions.md §4 -- neither is a domain module
+        # Neither is a domain module
         assert name != "app.core.checks"
         assert not name.startswith("app.core.checks.")
         assert name != "app.core.firebase"

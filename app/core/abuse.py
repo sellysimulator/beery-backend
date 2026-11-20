@@ -20,8 +20,8 @@ It is wired in at four single points and nowhere else:
 * ``socket_event_allowed`` -- inside ``@guarded`` (``app/sockets/errors.py``),
   which every socket event handler already wears.
 
-The numbers are module constants, not settings (the §5 rule in
-``CLAUDE.md``). They are sized for a classroom behind one NAT address --
+The numbers are module constants, not settings (the hard-limits rule
+in ``CLAUDE.md``). They are sized for a classroom behind one NAT address --
 about forty people sharing one IP -- not for one person.
 """
 

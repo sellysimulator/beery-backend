@@ -1,10 +1,7 @@
-"""Black-box tests for section 07 -- ``app/core/stats.py``.
+"""Black-box tests for ``app/core/stats.py``, against the definitions in
+spec §8.9 / D12.
 
-Covers ``07-game-engine.md §5`` acceptance criteria 18, 19 and 20, and ``§6``
-failure modes 9, 10 and 11, against the definitions in ``§3.10`` /
-``00-decisions.md D12``.
-
-Driven through the frozen public surfaces of ``§2`` plus sections 03 and 06.
+Driven through the public surfaces of the engine, config and agent modules.
 """
 
 from __future__ import annotations
@@ -66,7 +63,7 @@ def drive_flat(engine: GameEngine, script: list[int]) -> None:
 
 
 def drive_anchor_and_panic(engine: GameEngine, weeks: int) -> None:
-    """The normative policy of acceptance criterion 20.
+    """The normative anchor-and-panic policy of the bullwhip test.
 
     Each role, every week, from its own ``player_view``: replace what was
     demanded and close the whole inventory gap in one order, with no
@@ -92,11 +89,11 @@ def orders_of(engine: GameEngine, role: Role) -> list[int]:
 
 
 # --------------------------------------------------------------------------
-# FM 10 -- population variance, ddof = 0
+# Population variance, ddof = 0
 # --------------------------------------------------------------------------
 
 
-def test_fm10_population_variance_is_not_a_sample_variance() -> None:
+def test_population_variance_is_not_a_sample_variance() -> None:
     assert population_variance([2, 4]) == pytest.approx(1.0)
     assert population_variance([2, 4]) != pytest.approx(2.0)
 
@@ -111,11 +108,11 @@ def test_population_variance_edge_cases_and_known_values() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 18 -- total_cost agrees with the sum of total_week_cost
+# total_cost agrees with the sum of total_week_cost
 # --------------------------------------------------------------------------
 
 
-def test_ac18_total_cost_equals_the_sum_of_week_costs() -> None:
+def test_total_cost_equals_the_sum_of_week_costs() -> None:
     config = make_config(
         {"fixed_order_cost": 1.25, "unit_purchase_cost": 0.35},
         demand=get_preset("CLASSIC_MIT").demand,
@@ -146,11 +143,11 @@ def test_ac18_total_cost_equals_the_sum_of_week_costs() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 19, FM 11 -- the bullwhip ratio and its zero-variance case
+# The bullwhip ratio and its zero-variance case
 # --------------------------------------------------------------------------
 
 
-def test_fm11_constant_demand_gives_a_null_ratio_not_infinity() -> None:
+def test_constant_demand_gives_a_null_ratio_not_infinity() -> None:
     config = make_config(demand=ConstantDemand(value=4), duration_weeks=12)
     engine = GameEngine.start(config, SEED)
     drive_flat(engine, [4, 9, 2, 14, 7, 3, 11, 5, 8, 0, 6, 4])
@@ -163,7 +160,7 @@ def test_fm11_constant_demand_gives_a_null_ratio_not_infinity() -> None:
         assert role_stats.order_variance > 0.0
 
 
-def test_ac19_step_demand_gives_a_positive_float_ratio() -> None:
+def test_step_demand_gives_a_positive_float_ratio() -> None:
     config = make_config(
         demand=StepDemand(initial_value=4, step_week=5, step_value=8),
         duration_weeks=36,
@@ -186,11 +183,11 @@ def test_ac19_step_demand_gives_a_positive_float_ratio() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 20 -- the pedagogical result
+# The pedagogical result
 # --------------------------------------------------------------------------
 
 
-def test_ac20_bullwhip_increases_strictly_from_retailer_to_factory() -> None:
+def test_bullwhip_increases_strictly_from_retailer_to_factory() -> None:
     engine = GameEngine.start(get_preset("CLASSIC_MIT"), SEED)
     drive_anchor_and_panic(engine, 36)
     assert engine.phase == GamePhase.FINISHED
@@ -205,11 +202,11 @@ def test_ac20_bullwhip_increases_strictly_from_retailer_to_factory() -> None:
 
 
 # --------------------------------------------------------------------------
-# FM 9 -- end_early must not count the partial week
+# end_early must not count the partial week
 # --------------------------------------------------------------------------
 
 
-def test_fm9_end_early_divides_by_the_completed_weeks() -> None:
+def test_end_early_divides_by_the_completed_weeks() -> None:
     config = make_config(
         demand=get_preset("CLASSIC_MIT").demand,
         duration_weeks=36,
@@ -243,7 +240,7 @@ def test_fm9_end_early_divides_by_the_completed_weeks() -> None:
 
 
 # --------------------------------------------------------------------------
-# §3.10 / D12 -- the remaining per-role figures
+# D12 -- the remaining per-role figures
 # --------------------------------------------------------------------------
 
 
@@ -315,7 +312,7 @@ def test_fill_rate_is_none_when_nothing_was_ever_demanded() -> None:
 
 
 # --------------------------------------------------------------------------
-# §3.10 -- compute_stats reads history, not live agent state
+# compute_stats reads history, not live agent state
 # --------------------------------------------------------------------------
 
 

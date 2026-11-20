@@ -1,4 +1,4 @@
-"""End-of-game statistics (`07-game-engine.md` §3.10, `00-decisions.md` D12).
+"""End-of-game statistics (spec §8.9, D12).
 
 Pure: this module imports only from `app.core` and the standard library. It
 performs no I/O, reads no clock and holds no RNG.
@@ -74,7 +74,7 @@ def compute_stats(
 
     Because `cumulative_cost` comes from the records, an abandoned week
     (`end_early`) adds nothing here -- and the engine rolls that week's charge
-    back out of its live totals too, so the two agree (`07 §3.5`).
+    back out of its live totals too, so the two agree (spec §7).
 
     `fill_rate` is `sum(shipped) / sum(obligation)`, where each week's
     obligation includes the backlog carried into it (D12). People read it as

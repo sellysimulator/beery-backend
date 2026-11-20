@@ -1,10 +1,10 @@
-"""Guest -> account claim on the results screen (`14-end-of-game-persistence.md §3.8`).
+"""Guest -> account claim on the results screen (spec §3.1).
 
 A guest identity is a credential-shaped value that arrives from the client's
 `localStorage` and is therefore attacker-controllable. It is never logged and
 never returned in a payload: this module's public method returns only a row
-count. Does not touch `app/services/user_service.py`; it calls
-`UserService.upsert_user` as a dependency (**D19**).
+count. It calls `UserService.upsert_user` as a dependency rather than
+duplicating it.
 """
 
 from __future__ import annotations
@@ -21,9 +21,9 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["ClaimService"]
 
-# `user_id IS NULL` makes a second claim of the same guest id a no-op
-# (`§3.8` step 2): a row already claimed is never re-attributed even if
-# `guest_identity` still happens to match (failure mode 10).
+# `user_id IS NULL` makes a second claim of the same guest id a no-op: a
+# row already claimed is never re-attributed even if `guest_identity` still
+# happens to match.
 _COUNT_MATCHING_PARTICIPANTS = text("""
     SELECT COUNT(*) FROM participants
     WHERE guest_identity = :guest_identity AND user_id IS NULL

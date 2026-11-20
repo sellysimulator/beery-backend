@@ -1,18 +1,16 @@
-"""Black-box tests for section 09 -- ``app/services/state_service.py``'s
-``StateService`` and the Redis-backed behaviour of the module.
+"""Black-box tests for ``app/services/state_service.py``'s ``StateService``
+and the Redis-backed behaviour of the module (spec §11.3).
 
-Covers ``09-state-service.md §5`` acceptance criteria 1, 3, 5-12 and 14-18,
-and ``§6`` failure modes 2, 3, 4, 6, 7 and 8. Criteria 2, 4 and 13, and
-failure mode 1, live in ``test_room_schema.py`` because they need none of
-the Redis machinery.
+The room document's shape is tested in ``test_room_schema.py``, which needs
+none of the Redis machinery.
 
-Driven entirely through the frozen public surface of section 09 (``§3``)
-plus the public surfaces of sections 01, 03, 07 and 08, and the shared
+Driven entirely through the public surface of ``state_service`` plus those of
+the config, engine and bot modules, and the shared
 ``fake_redis`` harness from ``tests/conftest.py`` (``FakeRedis``,
 ``_FakeLock``). ``app/services/state_service.py`` itself is never opened.
 No private name, no internal data structure and no unspecified log message
 is asserted on; independent-emit ordering does not apply here since this
-section emits nothing.
+service emits nothing.
 """
 
 from __future__ import annotations
@@ -66,8 +64,8 @@ EXPECTED_TOP_LEVEL_KEYS = {
 
 
 def make_config(duration_weeks: int = 8, demand=None) -> GameConfig:
-    """A minimal, valid ``GameConfig`` built only through section 03's
-    frozen surface, mirroring section 07's own test helper."""
+    """A minimal, valid ``GameConfig`` built only through ``GameConfig``'s
+    public surface, mirroring the engine suite's own test helper."""
     roles = {
         Role.RETAILER.value: RoleConfig(),
         Role.WHOLESALER.value: RoleConfig(),
@@ -101,12 +99,12 @@ def install_setex_spy(fake_redis) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# AC 1 -- create_room's document shape
+# create_room's document shape
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_ac1_create_room_key_set_and_fresh_defaults(fake_redis):
+async def test_create_room_key_set_and_fresh_defaults(fake_redis):
     svc = get_state_service()
     room = await svc.create_room(make_config(), "Host")
 
@@ -119,12 +117,12 @@ async def test_ac1_create_room_key_set_and_fresh_defaults(fake_redis):
 
 
 # ---------------------------------------------------------------------------
-# AC 3 -- create_room retries on a forced collision
+# create_room retries on a forced collision
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_ac3_create_room_retries_on_forced_collision(fake_redis, monkeypatch):
+async def test_create_room_retries_on_forced_collision(fake_redis, monkeypatch):
     svc = get_state_service()
 
     first_room = await svc.create_room(make_config(), "Host One")
@@ -146,12 +144,12 @@ async def test_ac3_create_room_retries_on_forced_collision(fake_redis, monkeypat
 
 
 # ---------------------------------------------------------------------------
-# AC 5, AC 6 -- get_room lookup
+# get_room lookup
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_ac5_get_room_lookup_is_case_insensitive(fake_redis):
+async def test_get_room_lookup_is_case_insensitive(fake_redis):
     svc = get_state_service()
     room = await svc.create_room(make_config(), "Host")
     code = room["room_code"]
@@ -164,18 +162,18 @@ async def test_ac5_get_room_lookup_is_case_insensitive(fake_redis):
 
 
 @pytest.mark.asyncio
-async def test_ac6_get_room_returns_none_for_an_absent_code(fake_redis):
+async def test_get_room_returns_none_for_an_absent_code(fake_redis):
     svc = get_state_service()
     assert await svc.get_room("ZZZZZZ") is None
 
 
 # ---------------------------------------------------------------------------
-# AC 7, AC 8 / FM 2 -- stale-schema resurrection
+# Stale-schema resurrection
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_ac7_get_room_deletes_a_document_with_wrong_schema_version(fake_redis):
+async def test_get_room_deletes_a_document_with_wrong_schema_version(fake_redis):
     svc = get_state_service()
     room = await svc.create_room(make_config(), "Host")
     code = room["room_code"]
@@ -189,7 +187,7 @@ async def test_ac7_get_room_deletes_a_document_with_wrong_schema_version(fake_re
 
 
 @pytest.mark.asyncio
-async def test_ac8_and_fm2_get_room_deletes_a_document_missing_schema_version(
+async def test_get_room_deletes_a_document_missing_schema_version(
     fake_redis,
 ):
     svc = get_state_service()
@@ -211,12 +209,12 @@ async def test_ac8_and_fm2_get_room_deletes_a_document_missing_schema_version(
 
 
 # ---------------------------------------------------------------------------
-# AC 9 -- round-trip fidelity over a full game
+# Round-trip fidelity over a full game
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_ac9_round_trip_fidelity_over_a_full_classic_mit_game(fake_redis):
+async def test_round_trip_fidelity_over_a_full_classic_mit_game(fake_redis):
     svc = get_state_service()
     config = get_preset("CLASSIC_MIT")
     seed = 20260919
@@ -249,12 +247,12 @@ async def test_ac9_round_trip_fidelity_over_a_full_classic_mit_game(fake_redis):
 
 
 # ---------------------------------------------------------------------------
-# AC 10 / FM 4 -- save_room refreshes the TTL via setex, never set
+# save_room refreshes the TTL via setex, never set
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_ac10_save_room_calls_setex_with_room_ttl_on_every_write(fake_redis):
+async def test_save_room_calls_setex_with_room_ttl_on_every_write(fake_redis):
     svc = get_state_service()
     room = await svc.create_room(make_config(), "Host")
     code = room["room_code"]
@@ -269,7 +267,7 @@ async def test_ac10_save_room_calls_setex_with_room_ttl_on_every_write(fake_redi
 
 
 @pytest.mark.asyncio
-async def test_fm4_save_room_uses_setex_not_a_bare_set(fake_redis):
+async def test_save_room_uses_setex_not_a_bare_set(fake_redis):
     svc = get_state_service()
     room = await svc.create_room(make_config(), "Host")
     code = room["room_code"]
@@ -287,12 +285,12 @@ async def test_fm4_save_room_uses_setex_not_a_bare_set(fake_redis):
 
 
 # ---------------------------------------------------------------------------
-# AC 11, AC 12 -- locking
+# Locking
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_ac11_lock_serialises_fifty_concurrent_increments(fake_redis):
+async def test_lock_serialises_fifty_concurrent_increments(fake_redis):
     svc = get_state_service()
     room = await svc.create_room(make_config(), "Host")
     code = room["room_code"]
@@ -318,7 +316,7 @@ async def test_ac11_lock_serialises_fifty_concurrent_increments(fake_redis):
 
 
 @pytest.mark.asyncio
-async def test_ac12_lock_is_independent_per_room_code(fake_redis):
+async def test_lock_is_independent_per_room_code(fake_redis):
     svc = get_state_service()
     room_a = await svc.create_room(make_config(), "Host A")
     room_b = await svc.create_room(make_config(), "Host B")
@@ -346,11 +344,11 @@ async def test_ac12_lock_is_independent_per_room_code(fake_redis):
 
 
 # ---------------------------------------------------------------------------
-# AC 14 -- next_seq
+# next_seq
 # ---------------------------------------------------------------------------
 
 
-def test_ac14_next_seq_starts_at_one_and_increments_by_one():
+def test_next_seq_starts_at_one_and_increments_by_one():
     svc = get_state_service()
     room = {"seq": 0}
 
@@ -361,12 +359,12 @@ def test_ac14_next_seq_starts_at_one_and_increments_by_one():
 
 
 # ---------------------------------------------------------------------------
-# AC 15 -- room_exists routes through get_room
+# room_exists routes through get_room
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_ac15_room_exists_is_false_for_a_stale_schema_room(fake_redis):
+async def test_room_exists_is_false_for_a_stale_schema_room(fake_redis):
     svc = get_state_service()
     room = await svc.create_room(make_config(), "Host")
     code = room["room_code"]
@@ -379,19 +377,19 @@ async def test_ac15_room_exists_is_false_for_a_stale_schema_room(fake_redis):
 
 
 @pytest.mark.asyncio
-async def test_ac15_room_exists_is_true_for_a_live_room(fake_redis):
+async def test_room_exists_is_true_for_a_live_room(fake_redis):
     svc = get_state_service()
     room = await svc.create_room(make_config(), "Host")
     assert await svc.room_exists(room["room_code"]) is True
 
 
 # ---------------------------------------------------------------------------
-# AC 16 -- load_config
+# load_config
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_ac16_load_config_reconstructs_the_original_config(fake_redis):
+async def test_load_config_reconstructs_the_original_config(fake_redis):
     svc = get_state_service()
     config = get_preset("CLASSIC_MIT")
     room = await svc.create_room(config, "Host")
@@ -400,25 +398,25 @@ async def test_ac16_load_config_reconstructs_the_original_config(fake_redis):
 
 
 # ---------------------------------------------------------------------------
-# AC 17 -- get_state_service singleton
+# get_state_service singleton
 # ---------------------------------------------------------------------------
 
 
-def test_ac17_get_state_service_returns_the_same_instance():
+def test_get_state_service_returns_the_same_instance():
     assert get_state_service() is get_state_service()
 
 
 # ---------------------------------------------------------------------------
-# AC 18 -- redis_client is read dynamically, at call time
+# redis_client is read dynamically, at call time
 # ---------------------------------------------------------------------------
 
 
-def test_ac18_module_level_name_is_exactly_redis_client():
+def test_module_level_name_is_exactly_redis_client():
     assert hasattr(state_service_module, "redis_client")
 
 
 @pytest.mark.asyncio
-async def test_ac18_state_service_reads_redis_client_at_call_time(fake_redis):
+async def test_state_service_reads_redis_client_at_call_time(fake_redis):
     # get_state_service() may have been called by an earlier test, before
     # *this* test's fake_redis existed. If StateService captured the
     # client at construction instead of reading the module-level name on
@@ -432,7 +430,7 @@ async def test_ac18_state_service_reads_redis_client_at_call_time(fake_redis):
 
 
 # ---------------------------------------------------------------------------
-# Engine/bot round-trip helpers (§3, adjacent to AC 9)
+# Engine/bot round-trip helpers
 # ---------------------------------------------------------------------------
 
 
@@ -454,12 +452,12 @@ async def test_store_and_load_bots_round_trip(fake_redis):
 
 
 # ---------------------------------------------------------------------------
-# FM 3 -- lost update
+# Lost update
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_fm3_lock_prevents_a_lost_update(fake_redis):
+async def test_lock_prevents_a_lost_update(fake_redis):
     svc = get_state_service()
     room = await svc.create_room(make_config(), "Host")
     code = room["room_code"]
@@ -468,8 +466,9 @@ async def test_fm3_lock_prevents_a_lost_update(fake_redis):
         async with svc.lock(code):
             current = await svc.get_room(code)
             # Force genuine interleaving inside the critical section -- see
-            # the comment in test_ac11 for why this is necessary against
-            # FakeRedis, which never truly suspends on its own.
+            # the comment in test_lock_serialises_fifty_concurrent_increments for
+            # why this is necessary against FakeRedis, which never truly
+            # suspends on its own.
             await asyncio.sleep(0)
             current["participants"][alias] = {
                 "alias": alias,
@@ -492,11 +491,11 @@ async def test_fm3_lock_prevents_a_lost_update(fake_redis):
 
 
 @pytest.mark.asyncio
-async def test_fm3_demonstration_without_the_lock_a_write_can_be_lost(fake_redis):
-    """Demonstration only, per 09-state-service.md §6 FM 3's note: this does
-    not call ``svc.lock`` at all, so it exercises no code path the
-    implementation has -- it only shows why the test above matters. It must
-    not be read as asserting anything about ``StateService`` itself.
+async def test_demonstration_without_the_lock_a_write_can_be_lost(fake_redis):
+    """Demonstration only: this does not call ``svc.lock`` at all, so it
+    exercises no code path the implementation has -- it only shows why the
+    test above matters. It must not be read as asserting anything about
+    ``StateService`` itself.
     """
     svc = get_state_service()
     room = await svc.create_room(make_config(), "Host")
@@ -520,11 +519,11 @@ async def test_fm3_demonstration_without_the_lock_a_write_can_be_lost(fake_redis
 
 
 # ---------------------------------------------------------------------------
-# FM 6 -- no undocumented helper leaks a secret
+# No undocumented helper leaks a secret
 # ---------------------------------------------------------------------------
 
 
-def test_fm6_no_undocumented_secret_leaking_helper_exists():
+def test_no_undocumented_secret_leaking_helper_exists():
     documented = {
         "SCHEMA_VERSION",
         "ROOM_CODE_ALPHABET",
@@ -578,12 +577,12 @@ def test_fm6_no_undocumented_secret_leaking_helper_exists():
 
 
 # ---------------------------------------------------------------------------
-# FM 7 -- engine payload growth stays bounded
+# Engine payload growth stays bounded
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_fm7_document_size_stays_under_512kb_after_104_weeks(fake_redis):
+async def test_document_size_stays_under_512kb_after_104_weeks(fake_redis):
     svc = get_state_service()
     base_config = get_preset("CLASSIC_MIT")
     config_payload = base_config.to_payload()
@@ -620,12 +619,12 @@ async def test_fm7_document_size_stays_under_512kb_after_104_weeks(fake_redis):
 
 
 # ---------------------------------------------------------------------------
-# FM 8 -- normalisation applied consistently across the whole lifecycle
+# Normalisation applied consistently across the whole lifecycle
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_fm8_lower_case_code_works_across_the_whole_lifecycle(fake_redis):
+async def test_lower_case_code_works_across_the_whole_lifecycle(fake_redis):
     svc = get_state_service()
     room = await svc.create_room(make_config(), "Host")
     code = room["room_code"]

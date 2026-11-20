@@ -1,8 +1,7 @@
-"""Host controls and ``request_state`` (``12-socket-play.md §3.6``, ``§3.7``).
+"""Host controls and ``request_state`` (spec §9.6, §12).
 
-Covers acceptance criteria 14, 15, 16, 17, 18, 18a, 26 and 28, and failure
-modes 10 and 14. Only symbols from section 12's frozen *Public surface* are
-imported, plus section 11's lobby handlers to drive a room to ``RUNNING``.
+Only symbols from the play handlers' public surface are imported, plus the
+lobby handlers to drive a room to ``RUNNING``.
 ``app/sockets/handlers/play.py`` and ``app/services/game_service.py`` are
 never read, only imported.
 """
@@ -47,7 +46,7 @@ def _host_secret_payload(game, **extra):
     }
 
 
-# --- AC 14 / failure mode 10 ------------------------------------------------ #
+# --- pause_game ------------------------------------------------------------- #
 
 
 async def test_pause_game_sets_paused_and_blocks_submission(
@@ -68,7 +67,7 @@ async def test_pause_game_sets_paused_and_blocks_submission(
         {"room_id": game["room_code"], "week": engine.week, "order": 5},
     )
 
-    # Failure mode 10: the order must not be recorded, not merely unacknowledged.
+    # The order must not be recorded, not merely unacknowledged.
     _stored2, engine_after = await _current(state_svc, game["room_code"])
     assert Role.RETAILER not in engine_after.pending_orders
     error = next(
@@ -79,7 +78,7 @@ async def test_pause_game_sets_paused_and_blocks_submission(
     assert error["code"] == "GAME_PAUSED"
 
 
-# --- AC 15 ------------------------------------------------------------------ #
+# --- resume_game ------------------------------------------------------------ #
 
 
 async def test_resume_game_restores_running_and_allows_submission(
@@ -102,7 +101,7 @@ async def test_resume_game_restores_running_and_allows_submission(
     assert engine_after.pending_orders[Role.RETAILER] == 5
 
 
-# --- AC 16 ------------------------------------------------------------------- #
+# --- force_close_week -------------------------------------------------------- #
 
 
 async def test_force_close_week_records_zero_and_was_forced_for_missing_roles(
@@ -140,7 +139,7 @@ async def test_force_close_week_records_zero_and_was_forced_for_missing_roles(
     assert forced_order_submitted == set()
 
 
-# --- AC 17 -------------------------------------------------------------------- #
+# --- force_close_week while paused -------------------------------------------- #
 
 
 async def test_force_close_week_while_paused_is_rejected(
@@ -167,7 +166,7 @@ async def test_force_close_week_while_paused_is_rejected(
     assert error["code"] == "GAME_PAUSED"
 
 
-# --- AC 18 -------------------------------------------------------------------- #
+# --- substitute_bot ----------------------------------------------------------- #
 
 
 async def test_substitute_bot_marks_role_emits_and_plays_immediately(
@@ -230,7 +229,7 @@ async def test_a_bot_order_above_the_ceiling_is_capped_not_refused(
     assert not any(event == "error" for _t, event, _d in fake_socket_manager.sid_emits)
 
 
-# --- AC 18a ------------------------------------------------------------------- #
+# --- was_bot after a substitution --------------------------------------------- #
 
 
 async def test_week_record_after_substitution_carries_was_bot_true_history_unchanged(
@@ -277,8 +276,8 @@ async def test_substitute_bot_on_an_already_bot_role_is_a_noop(
 
     await substitute_bot(game["host_sid"], _host_secret_payload(game, role="FACTORY"))
 
-    # A no-op, not an error: no second bot_substituted broadcast is required
-    # by the document, but nothing may error either.
+    # A no-op, not an error: no second bot_substituted broadcast is required,
+    # but nothing may error either.
     assert not any(
         event == "error"
         for target, event, _d in fake_socket_manager.sid_emits
@@ -286,7 +285,7 @@ async def test_substitute_bot_on_an_already_bot_role_is_a_noop(
     )
 
 
-# --- AC 26 -------------------------------------------------------------------- #
+# --- request_state ------------------------------------------------------------ #
 
 
 def _without_seq(room: dict) -> dict:
@@ -356,7 +355,7 @@ async def test_request_state_reply_carries_a_seq_higher_than_any_sent_before(
     assert after["seq"] == replies[1]["seq"]
 
 
-# --- AC 28 / failure mode 14 -------------------------------------------------- #
+# --- a wrong host_secret ------------------------------------------------------ #
 
 
 def _last_error_code(fake_socket_manager, sid: str) -> str:
@@ -370,7 +369,7 @@ def _last_error_code(fake_socket_manager, sid: str) -> str:
 async def test_all_host_controls_reject_a_wrong_secret(
     make_room, start_running_game, state_svc, fake_socket_manager
 ):
-    """§3.6: a wrong or missing ``host_secret`` is ``error
+    """A wrong or missing ``host_secret`` is ``error
     {code: "INVALID_HOST_SECRET"}`` for all four controls, with the same
     message whichever it was."""
     room = await make_room(role_assignment_mode="PLAYER_CHOOSES")

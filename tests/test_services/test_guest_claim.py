@@ -1,14 +1,12 @@
-"""Black-box tests for section 14 -- ``app/services/claim_service.py``.
+"""Black-box tests for ``app/services/claim_service.py`` (spec §3.1, §10.4).
 
-Covers ``14-end-of-game-persistence.md §4`` acceptance criteria 16-19 and
-``§5`` failure mode 10. Criteria 1-11, 20 and failure modes 1, 2, 3, 5, 6,
-7, 8, 9, 11 live in ``test_db_service.py``; 12-15 and the stats half of 12
-in ``test_stats_service.py``. ``app/services/claim_service.py`` itself is
-never opened.
+Persistence itself is tested in ``test_db_service.py``, career stats in
+``test_stats_service.py``. ``app/services/claim_service.py`` itself is never
+opened.
 
 Guest-owned fixture rows are produced through ``DbService.persist_game``,
 exactly as a real finished game would leave them, rather than by hand.
-Failure mode 10's edge case is the one exception: a participant row with
+The already-attributed row is the one exception: a participant row with
 *both* a real `user_id` and a matching `guest_identity` is not a shape any
 public call can produce (the claim itself clears `guest_identity` on
 success), so it is built with a raw insert purely to prove
@@ -58,11 +56,11 @@ def _persist_game_for_guest(
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criteria 16 and 17
+# Claiming every matching row, idempotently
 # ---------------------------------------------------------------------------
 
 
-def test_ac16_ac17_claim_attributes_every_matching_row_and_is_idempotent(db):
+def test_claim_attributes_every_matching_row_and_is_idempotent(db):
     guest_identity = "guest_11111111-2222-3333-4444-555555555555"
     game1_id = _persist_game_for_guest(
         db, guest_identity=guest_identity, role=Role.RETAILER, seed=1
@@ -82,7 +80,7 @@ def test_ac16_ac17_claim_attributes_every_matching_row_and_is_idempotent(db):
     count = ClaimService().claim_guest_results(db, firebase_uid, guest_identity)
     db.commit()
 
-    assert count == 2  # AC 16: every matching row, and only those rows
+    assert count == 2  # every matching row, and only those rows
 
     user = db.query(User).filter_by(firebase_uid=firebase_uid).one()
     # Each persisted game also carries its own synthesised HOST participant
@@ -103,7 +101,7 @@ def test_ac16_ac17_claim_attributes_every_matching_row_and_is_idempotent(db):
     assert other_row.user_id is None
     assert other_row.guest_identity == "guest_unrelated-0000-0000-0000-000000000000"
 
-    # AC 17: a second claim of the same, now-fully-claimed guest id is a no-op.
+    # A second claim of the same, now-fully-claimed guest id is a no-op.
     second_count = ClaimService().claim_guest_results(
         db, "uid-second-claimer", guest_identity
     )
@@ -122,19 +120,15 @@ def test_ac16_ac17_claim_attributes_every_matching_row_and_is_idempotent(db):
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 18
+# An unknown guest identity
 # ---------------------------------------------------------------------------
 
 
-def test_ac18_unknown_guest_id_returns_zero_and_creates_no_rows(db):
-    """AC 18, read together with §2's frozen docstring for
-    `claim_guest_results` -- "Returns 0 and writes nothing when the guest
-    identity is unknown" -- which is unambiguous that "no rows" covers a
-    `users` row too, not just participant attribution. (§3.8's own numbered
-    steps list "resolve `users.id`... create it if absent" unconditionally,
-    *before* step 2 looks for a matching `guest_identity`; read literally
-    that would create a `users` row even here, in tension with both AC 18
-    and §2's own docstring. The frozen §2 docstring governs.)
+def test_unknown_guest_id_returns_zero_and_creates_no_rows(db):
+    """`claim_guest_results` "returns 0 and writes nothing when the guest
+    identity is unknown", and "no rows" covers a `users` row too, not just
+    participant attribution: the match is checked before the user is
+    resolved or created.
     """
     firebase_uid = "uid-never-seen-before"
     count = ClaimService().claim_guest_results(
@@ -147,11 +141,11 @@ def test_ac18_unknown_guest_id_returns_zero_and_creates_no_rows(db):
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 19
+# Stats recomputed on claim
 # ---------------------------------------------------------------------------
 
 
-def test_ac19_claim_recomputes_the_claiming_users_stats(db):
+def test_claim_recomputes_the_claiming_users_stats(db):
     guest_identity = "guest_stats-check-0000-0000-000000000000"
     _persist_game_for_guest(
         db, guest_identity=guest_identity, role=Role.RETAILER, seed=11
@@ -168,11 +162,11 @@ def test_ac19_claim_recomputes_the_claiming_users_stats(db):
 
 
 # ---------------------------------------------------------------------------
-# Failure mode 10
+# An already-attributed row
 # ---------------------------------------------------------------------------
 
 
-def test_fm10_a_row_with_a_non_null_user_id_is_not_re_attributed(db):
+def test_a_row_with_a_non_null_user_id_is_not_re_attributed(db):
     original_owner_id = insert_user(db.connection(), firebase_uid="uid-original-owner")
     game_id = insert_game(db.connection())
     guest_identity = "guest_edge-case-0000-0000-0000-000000000000"

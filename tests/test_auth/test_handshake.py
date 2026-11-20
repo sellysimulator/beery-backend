@@ -1,18 +1,15 @@
 """The socket handshake -- identity is established once, by the server.
 
-Covers acceptance criteria 1-6, 15 and 17 (socket half), and failure modes 1,
-2, 3, 5, 6 and 7 (``02-identity-and-auth.md §5``, ``§6``).
-
-``identity`` is the server-only third identifier of ``00-conventions.md §2``:
+``identity`` is the server-only third identifier (spec §14):
 never on the wire, established at the handshake, and never afterwards accepted
 from the client.  Conflating it with the public ``alias`` or with the secret
 ``session_token`` produced three separate critical findings in the Tequila
 Game -- impersonation, account-state forgery and UID broadcast -- which is why
 this file is as suspicious as it is.
 
-``firebase_tokens`` is section 01's shared fake, unconfigured until a test says
-``configure()``; ``verify_firebase_id_token`` and ``resolve_identity`` run
-un-mocked on top of it.
+``firebase_tokens`` is the shared fake from ``tests/conftest.py``, unconfigured
+until a test says ``configure()``; ``verify_firebase_id_token`` and
+``resolve_identity`` run un-mocked on top of it.
 """
 
 from __future__ import annotations
@@ -30,7 +27,7 @@ from app.sockets.handlers.connection import (
     resolve_identity,
 )
 
-# The shape §3.3 specifies, written out independently of the implementation's
+# The shape spec §3.1 specifies, written out independently of the implementation's
 # own constant so that a loosened regex is caught rather than followed.
 GUEST_RE = re.compile(r"^guest_[0-9a-f-]{36}$")
 
@@ -40,12 +37,12 @@ GUEST_RE = re.compile(r"^guest_[0-9a-f-]{36}$")
 FIREBASE_UID_SHAPED = "aZ3kQ9pLmN2bV7cX1yT4uR6wE0sD"
 
 
-# --- AC 1 --------------------------------------------------------------------
+# --- a verified token --------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_valid_id_token_becomes_the_identity(sock_mgr, firebase_tokens):
-    """AC 1: a verified token's ``uid`` is the identity for that sid."""
+    """A verified token's ``uid`` is the identity for that sid."""
     firebase_tokens.configure()
     firebase_tokens.add("good-token", uid="firebase-uid-123", email="a@example.com")
 
@@ -55,7 +52,7 @@ async def test_valid_id_token_becomes_the_identity(sock_mgr, firebase_tokens):
     assert sock_mgr.sid_to_identity["sid-1"] == "firebase-uid-123"
 
 
-# --- AC 2 --------------------------------------------------------------------
+# --- an unverifiable token ---------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -67,7 +64,7 @@ async def test_valid_id_token_becomes_the_identity(sock_mgr, firebase_tokens):
 async def test_unverifiable_id_token_is_rejected_and_stores_nothing(
     sock_mgr, firebase_tokens, token
 ):
-    """AC 2: the handshake returns ``False`` and writes no identity.
+    """The handshake returns ``False`` and writes no identity.
 
     Returning anything other than ``False`` from a Socket.IO ``connect``
     handler *accepts* the connection, so "reject" has exactly one spelling.
@@ -81,15 +78,15 @@ async def test_unverifiable_id_token_is_rejected_and_stores_nothing(
     assert "sid-1" not in sock_mgr.sid_to_identity
 
 
-# --- AC 3 --------------------------------------------------------------------
+# --- a well-formed guest id --------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_well_formed_guest_id_is_accepted_verbatim(sock_mgr, firebase_tokens):
-    """AC 3: a ``guest_<uuid4>`` is taken exactly as presented.
+    """A ``guest_<uuid4>`` is taken exactly as presented.
 
     That stability across reloads is what makes guest reconnection work
-    (§3.5); it carries no authority of any kind.
+    (spec §3.1); it carries no authority of any kind.
     """
     guest_id = f"guest_{uuid.uuid4()}"
 
@@ -99,7 +96,7 @@ async def test_well_formed_guest_id_is_accepted_verbatim(sock_mgr, firebase_toke
     assert sock_mgr.sid_to_identity["sid-1"] == guest_id
 
 
-# --- AC 4 --------------------------------------------------------------------
+# --- a malformed guest id ----------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -127,7 +124,7 @@ async def test_well_formed_guest_id_is_accepted_verbatim(sock_mgr, firebase_toke
 async def test_malformed_guest_id_is_replaced_by_a_fresh_one(
     sock_mgr, firebase_tokens, supplied
 ):
-    """AC 4: a malformed ``guestId`` yields a fresh ``guest_<uuid4>``.
+    """A malformed ``guestId`` yields a fresh ``guest_<uuid4>``.
 
     The supplied value is never honoured -- otherwise ``guestId`` would be a
     free-text identity field, which is the client-asserted identity bug in a
@@ -150,7 +147,7 @@ async def test_malformed_guest_id_is_replaced_by_a_fresh_one(
 async def test_a_non_string_guest_id_is_replaced_rather_than_crashing(
     sock_mgr, firebase_tokens, supplied
 ):
-    """§3.3: "a non-string ``guestId`` is replaced rather than crashing".
+    """A non-string ``guestId`` is replaced rather than crashing (spec §3.1).
 
     ``GUEST_ID_RE.match(12345)`` raises ``TypeError``, and the truth table is
     exhaustive over client-supplied payloads -- a client can put anything in a
@@ -163,7 +160,7 @@ async def test_a_non_string_guest_id_is_replaced_rather_than_crashing(
     assert GUEST_RE.match(sock_mgr.sid_to_identity["sid-1"])
 
 
-# --- AC 5 --------------------------------------------------------------------
+# --- no usable auth ----------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -175,7 +172,7 @@ async def test_a_non_string_guest_id_is_replaced_rather_than_crashing(
 async def test_absent_or_unusable_auth_yields_a_fresh_guest(
     sock_mgr, firebase_tokens, auth
 ):
-    """AC 5: no ``auth`` at all is a guest, not a rejection.
+    """No ``auth`` at all is a guest, not a rejection.
 
     Guest play is a first-class path (**D2**, **D3**), so the handshake must
     mint an identity rather than refuse the connection.
@@ -186,14 +183,14 @@ async def test_absent_or_unusable_auth_yields_a_fresh_guest(
     assert GUEST_RE.match(sock_mgr.sid_to_identity["sid-1"])
 
 
-# --- AC 6 --------------------------------------------------------------------
+# --- distinct fresh guest ids ------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_two_anonymous_handshakes_get_different_identities(
     sock_mgr, firebase_tokens
 ):
-    """AC 6: fresh guest ids are distinct.
+    """Fresh guest ids are distinct.
 
     A shared or constant guest id would put every anonymous visitor into one
     identity, so two browsers would fight over a single seat per room.
@@ -204,14 +201,14 @@ async def test_two_anonymous_handshakes_get_different_identities(
     assert sock_mgr.sid_to_identity["sid-1"] != sock_mgr.sid_to_identity["sid-2"]
 
 
-# --- the rest of the §3.3 truth table ---------------------------------------
+# --- the rest of the handshake truth table (spec §3.1) -----------------------
 
 
 @pytest.mark.asyncio
 async def test_a_verified_token_wins_over_a_supplied_guest_id(
     sock_mgr, firebase_tokens
 ):
-    """§3.3: both present and the token verifies -> the token's uid."""
+    """Both present and the token verifies -> the token's uid."""
     guest_id = f"guest_{uuid.uuid4()}"
     firebase_tokens.configure()
     firebase_tokens.add("good-token", uid="firebase-uid-123")
@@ -222,7 +219,7 @@ async def test_a_verified_token_wins_over_a_supplied_guest_id(
 
 
 def test_resolve_identity_matches_the_truth_table(firebase_tokens):
-    """The pure helper, exercised directly: §3.3 row by row."""
+    """The pure helper, exercised directly: the truth table row by row."""
     firebase_tokens.configure()
     firebase_tokens.add("good-token", uid="firebase-uid-123")
     guest_id = f"guest_{uuid.uuid4()}"
@@ -242,7 +239,7 @@ def test_resolve_identity_matches_the_truth_table(firebase_tokens):
 
 
 def test_the_guest_id_pattern_cannot_match_a_firebase_uid():
-    """§3.3: "a Firebase uid can never satisfy" ``GUEST_ID_RE``.
+    """A Firebase uid can never satisfy ``GUEST_ID_RE``.
 
     The frozen public constant is asserted directly, because everything else
     in this file rests on it.
@@ -252,19 +249,18 @@ def test_the_guest_id_pattern_cannot_match_a_firebase_uid():
     assert not GUEST_ID_RE.match(f"guest_{FIREBASE_UID_SHAPED}")
 
 
-# --- AC 15 / failure mode 6 --------------------------------------------------
+# --- disconnect clears the sid maps ------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_disconnect_clears_all_three_sid_maps(sock_mgr, firebase_tokens):
-    """AC 15: ``disconnect`` removes the sid from all three maps (§3.4).
+    """``disconnect`` removes the sid from all three maps.
 
-    ``sid_to_room`` and ``sid_to_alias`` are filled by section 11's ``join``,
-    which does not exist yet; both are declared public attributes of the
-    section 01 manager, so the test puts in the two entries ``disconnect`` is
-    required to take out.  A map that keeps growing is a leak in a
-    long-running process, and a stale ``sid_to_identity`` entry is worse than
-    a leak: a recycled sid would inherit somebody else's identity.
+    ``sid_to_room`` and ``sid_to_alias`` are filled by ``join``; both are
+    declared public attributes of the manager, so the test puts in the two
+    entries ``disconnect`` is required to take out.  A map that keeps growing
+    is a leak in a long-running process, and a stale ``sid_to_identity`` entry
+    is worse than a leak: a recycled sid would inherit somebody else's identity.
     """
     firebase_tokens.configure()
     firebase_tokens.add("good-token", uid="firebase-uid-123")
@@ -291,9 +287,9 @@ async def test_disconnect_clears_all_three_sid_maps(sock_mgr, firebase_tokens):
 
 @pytest.mark.asyncio
 async def test_disconnect_does_not_leak_the_identity_map(sock_mgr, firebase_tokens):
-    """Failure mode 6: after ``disconnect``, ``sid_to_identity`` has no entry.
+    """After ``disconnect``, ``sid_to_identity`` has no entry.
 
-    Stated separately from AC 15 because this is the map whose staleness is a
+    Stated separately from the test above because this is the map whose staleness is a
     security problem rather than a memory one.
     """
     firebase_tokens.configure()
@@ -316,14 +312,14 @@ async def test_disconnect_of_an_unknown_sid_is_harmless(sock_mgr, firebase_token
     assert "never-connected" not in sock_mgr.sid_to_identity
 
 
-# --- failure mode 1: THE test ------------------------------------------------
+# --- an invalid token is never downgraded: THE test --------------------------
 
 
 @pytest.mark.asyncio
 async def test_invalid_token_with_valid_guest_id_is_rejected_not_downgraded(
     sock_mgr, firebase_tokens
 ):
-    """**Failure mode 1 -- the single most important test in the section.**
+    """**The single most important test in this file.**
 
     ``{"idToken": "<invalid>", "guestId": "<valid>"}`` must be **rejected**.
 
@@ -337,8 +333,8 @@ async def test_invalid_token_with_valid_guest_id_is_rejected_not_downgraded(
     looks harmless -- they are "only" a guest -- but it converts the one
     unforgeable credential in the system into an optional field: presenting a
     bad token becomes indistinguishable from presenting none, and the
-    handshake stops being the place where identity is decided.  Every later
-    section trusts ``sid_to_identity`` precisely because this cannot happen.
+    handshake stops being the place where identity is decided.  Every socket
+    handler trusts ``sid_to_identity`` precisely because this cannot happen.
     """
     guest_id = f"guest_{uuid.uuid4()}"
     firebase_tokens.configure()
@@ -356,14 +352,14 @@ async def test_invalid_token_with_valid_guest_id_is_rejected_not_downgraded(
     assert sock_mgr.sid_to_identity == {}
 
 
-# --- failure mode 2 ----------------------------------------------------------
+# --- a client-asserted identity ----------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_a_client_asserted_identity_key_has_no_effect(sock_mgr, firebase_tokens):
-    """Failure mode 2: ``{"identity": "SOMEONE_ELSE_UID"}`` is inert.
+    """``{"identity": "SOMEONE_ELSE_UID"}`` is inert.
 
-    ``identity`` is server-only (``00-conventions.md §2`` rule 2).  There are
+    ``identity`` is server-only (spec §3.1, §14).  There are
     exactly two inputs the handshake reads -- ``idToken`` and ``guestId`` --
     and a payload naming the field directly must not be one of them.
     """
@@ -390,7 +386,7 @@ async def test_a_client_asserted_identity_key_has_no_effect(sock_mgr, firebase_t
 
 @pytest.mark.asyncio
 async def test_neighbouring_identity_fields_are_ignored_too(sock_mgr, firebase_tokens):
-    """Failure mode 2, adjacent spellings: ``uid``, ``user_id`` and ``sub`` are
+    """Adjacent spellings: ``uid``, ``user_id`` and ``sub`` are
     the names a decoded token uses, and none of them is an input."""
     await connect(
         "sid-1",
@@ -406,12 +402,12 @@ async def test_neighbouring_identity_fields_are_ignored_too(sock_mgr, firebase_t
     assert "SOMEONE_ELSE_UID" not in sock_mgr.sid_to_identity.values()
 
 
-# --- failure mode 3 ----------------------------------------------------------
+# --- a guest cannot claim a Firebase uid -------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_a_guest_cannot_claim_a_firebase_uid(sock_mgr, firebase_tokens):
-    """Failure mode 3: a uid-shaped ``guestId`` fails the regex.
+    """A uid-shaped ``guestId`` fails the regex.
 
     ``guest_<uuid4>`` and a Firebase uid are disjoint by construction, so a
     guest can never end up holding a string that a signed-in user's results,
@@ -433,19 +429,19 @@ async def test_a_guest_cannot_claim_a_firebase_uid(sock_mgr, firebase_tokens):
     assert GUEST_RE.match(identity_2)
 
 
-# --- failure mode 5 ----------------------------------------------------------
+# --- Firebase unconfigured ---------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_unconfigured_firebase_rejects_tokens_but_still_admits_guests(
     sock_mgr, firebase_tokens
 ):
-    """Failure mode 5: no service account is not "trust everyone".
+    """No service account is not "trust everyone".
 
     ``firebase_tokens`` is left unconfigured while holding a token that *would*
     verify.  A missing ``FIREBASE_SERVICE_ACCOUNT_JSON`` degrades the app to
     guest-only play -- which is why the startup check logs at CRITICAL rather
-    than aborting (§3.7).  What it must never do is accept an unverifiable
+    than aborting.  What it must never do is accept an unverifiable
     token, because with nothing to verify against, "trust the raw value" hands
     out any uid on request.
     """
@@ -465,19 +461,19 @@ async def test_unconfigured_firebase_rejects_tokens_but_still_admits_guests(
     assert GUEST_RE.match(sock_mgr.sid_to_identity["sid-3"])
 
 
-# --- AC 17 (socket half) / failure mode 7 ------------------------------------
+# --- a decode without a usable uid -------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_decoded_claims_without_a_uid_are_rejected(sock_mgr, firebase_tokens):
-    """Failure mode 7: ``None`` is not the same as falsy.
+    """``None`` is not the same as falsy.
 
     A token that verifies to ``{}`` is a *successful* decode, so
     ``verify_firebase_id_token`` returns ``{}`` and not ``None`` -- the two
-    are different answers and §3.2 says so.  A caller written as
+    are different answers.  A caller written as
     ``if decoded:`` cannot tell them apart; one written as
     ``if decoded is not None:`` can, and must then find that there is no
-    ``uid`` to use.  Either way the handshake rejects (§3.3, row 3).
+    ``uid`` to use.  Either way the handshake rejects (spec §3.1).
     """
     firebase_tokens.configure()
     firebase_tokens.add("verifies-but-empty")
@@ -498,7 +494,7 @@ async def test_decoded_claims_without_a_uid_are_rejected(sock_mgr, firebase_toke
 )
 @pytest.mark.asyncio
 async def test_a_falsy_or_non_string_uid_is_rejected(sock_mgr, firebase_tokens, uid):
-    """AC 17, socket half: the check is on the **value**, not on the key.
+    """The check is on the **value**, not on the key.
 
     An implementation testing ``"uid" not in claims`` accepts ``""`` as an
     identity, and every connection presenting such a token would then share
@@ -522,7 +518,7 @@ async def test_a_falsy_or_non_string_uid_is_rejected(sock_mgr, firebase_tokens, 
 async def test_a_falsy_uid_does_not_downgrade_to_a_supplied_guest_id(
     sock_mgr, firebase_tokens
 ):
-    """AC 17 meets failure mode 1: a token that verifies to a falsy uid is a
+    """A token that verifies to a falsy uid is a
     rejection, not a licence to fall back on the ``guestId`` beside it."""
     firebase_tokens.configure()
     firebase_tokens.add("bad-uid-token", uid="")

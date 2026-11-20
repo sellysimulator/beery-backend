@@ -1,22 +1,21 @@
-"""Move a finished game out of Redis and into PostgreSQL (`14-end-of-game-persistence.md`).
+"""Move a finished game out of Redis and into PostgreSQL (spec §10.2).
 
 This is the only path that writes game data to the database (**D4**). Nothing
 here runs under the Redis lock: `build_snapshot` copies everything it needs
 out of the room document while the lock is still held by the caller
 (`app/services/game_service.py::finish_game`), and everything below this
-point in the call graph is lock-free (`§3.1`, `§2.1`).
+point in the call graph is lock-free.
 
 `persist_game` is idempotent by `(room_code, started_at)` and all-or-nothing:
-one transaction, so a failure part-way leaves no half-written game (`§3.3`).
+one transaction, so a failure part-way leaves no half-written game.
 Every child table with more than one row per game is written with a single
-batched raw insert, never a loop (`§3.2`, `[HARD-WON]`) -- and that raw insert
+batched raw insert, never a loop (`[HARD-WON]`) -- and that raw insert
 never names `created_at` or `updated_at` on `participants` or `role_configs`,
 the two batched tables that carry `TimestampMixin`; `weeks` and
-`demand_series` have no timestamp columns at all (`13-db-models-and-
-migrations.md §2.7`, §2.8`).
+`demand_series` have no timestamp columns at all.
 
 Money crosses from `float` to `NUMERIC(12, 2)` here, and only here, rounded
-half-up at the moment of the insert (`00-conventions.md §4`, `§3.5`).
+half-up at the moment of the insert.
 """
 
 from __future__ import annotations
@@ -56,7 +55,7 @@ __all__ = [
 
 def round_money(value: float | Decimal) -> Decimal:
     """Round half-up to two decimals -- the one place `float` crosses to
-    `NUMERIC(12, 2)` (`00-conventions.md §4`, `§3.5`). The engine's
+    `NUMERIC(12, 2)`. The engine's
     accumulated values are never rounded mid-game, so `sum(total_week_cost)` may
     differ from `cumulative_cost` by less than a cent; that is expected and
     is not "fixed" here by re-summing.
@@ -80,7 +79,7 @@ def _decimal(value: float | Decimal | None) -> Decimal | None:
 
 
 # --------------------------------------------------------------------------- #
-# The snapshot (FROZEN shape, `§2`).
+# The snapshot (FROZEN shape).
 # --------------------------------------------------------------------------- #
 
 
@@ -91,7 +90,7 @@ class ParticipantSnapshot:
     original human's identity for a role the host later swapped to a bot --
     `substitute_bot` sets `is_bot` and leaves `identity` alone. That identity
     is what keeps the game in the player's match history and `user_stats`
-    (`§3.6`, `§3.7`), so a swapped seat is attributed exactly like a human
+    (spec §10.4, §10.5), so a swapped seat is attributed exactly like a human
     one; only the per-week `was_bot` says which weeks the bot played."""
 
     alias: str
@@ -123,9 +122,9 @@ class GameSnapshot:
 
 
 def _parse_timestamp(value: Any) -> datetime:
-    """Room document timestamps are `datetime.isoformat()` strings (`09-
-    state-service.md §2`). A finished game always has both set; a missing one
-    is a bug elsewhere and must not be silently invented.
+    """Room document timestamps are `datetime.isoformat()` strings. A finished
+    game always has both set; a missing one is a bug elsewhere and must not be
+    silently invented.
 
     Returned timezone-aware in UTC (a naive value is taken to be UTC, which
     every writer of the room document uses), because `games.started_at` and
@@ -133,7 +132,7 @@ def _parse_timestamp(value: Any) -> datetime:
 
     Truncated to whole seconds. `timestamptz` keeps microseconds, so this is
     what makes the idempotency key `(room_code, started_at)` stable
-    (`persist_game`, `§3.3`, and the `uq_games_room_code_started_at`
+    (`persist_game` and the `uq_games_room_code_started_at`
     constraint): every caller, and the stored row, agree on the same
     second-precision value whatever fraction the room document carried.
     """
@@ -150,14 +149,13 @@ def _parse_timestamp(value: Any) -> datetime:
 
 def build_snapshot(room: dict, config: GameConfig, engine: GameEngine) -> GameSnapshot:
     """The one place `ended_early`, `duration_weeks`'s source and the
-    `order_qty` rename are decided (`§2.1`). Everything here is a pure read of
+    `order_qty` rename are decided. Everything here is a pure read of
     `room` and `engine`; nothing is mutated.
 
-    The host is not a key of `room["participants"]` -- section 11 never gives
-    it an alias, so it may not appear in either sid-to-alias map
-    (`00-conventions.md §2`). It is still one of the "up to five" rows
-    `13-db-models-and-migrations.md §2.6` describes, so it is synthesised here
-    with the fixed alias ``"HOST"`` and `role=None`.
+    The host is not a key of `room["participants"]` -- the lobby never gives
+    it an alias, so it may not appear in either sid-to-alias map. It is still
+    one of a game's "up to five" `participants` rows (spec §10.1), so it is
+    synthesised here with the fixed alias ``"HOST"`` and `role=None`.
     """
     weeks_played = engine.weeks_played
     ended_early = weeks_played < config.duration_weeks
@@ -281,7 +279,7 @@ _INSERT_WEEKS = _insert_statement("weeks", _WEEK_COLUMNS)
 
 
 class DbService:
-    """Writes a finished game and everything under it (`§2`, `§3`)."""
+    """Writes a finished game and everything under it (spec §10.2)."""
 
     def __init__(self, user_service: UserService | None = None) -> None:
         self._user_service = user_service or UserService()
@@ -290,13 +288,13 @@ class DbService:
         """Write a finished game and everything under it. Returns `games.id`.
 
         Idempotent by `(room_code, started_at)`: a second call for the same
-        snapshot returns the existing id and writes nothing (`§3.3`). All or
+        snapshot returns the existing id and writes nothing. All or
         nothing: any failure part-way rolls back the whole transaction, so a
         partially written game never exists.
 
         The lookup below is the fast path; `games` also carries a real
         `UNIQUE (room_code, started_at)` constraint as the database-level
-        backstop (`§3.3`). Two callers racing to persist the same finished
+        backstop. Two callers racing to persist the same finished
         game (a retried request, a doubly rendered results page) both pass
         the lookup, but only one `INSERT` wins the constraint -- the loser's
         `IntegrityError` is caught, its transaction rolled back, and the
@@ -320,7 +318,7 @@ class DbService:
         except IntegrityError:
             db.rollback()
             # Only a genuine (room_code, started_at) collision is recoverable
-            # here: an unrelated constraint violation (e.g. AC 7's forced
+            # here: an unrelated constraint violation (e.g. a test's forced
             # duplicate `weeks` row) leaves no `games` row to find, so
             # `_find_existing` returns `None` and the original error is
             # re-raised rather than swallowed.
@@ -403,13 +401,12 @@ class DbService:
     def _insert_demand_config(
         self, db: Session, game_id: int, config: GameConfig
     ) -> None:
-        """One row, the union of every generator's parameters (`13 §2.5`).
+        """One row, the union of every generator's parameters.
 
         Dumping through `model_dump(mode="json")` and reading every possible
         column with `.get` -- rather than branching on `kind` -- is what keeps
-        every generator's *other* columns `NULL` for free (acceptance
-        criterion 9): a `ConstantDemand` simply has no `step_week` key to
-        find.
+        every generator's *other* columns `NULL` for free: a `ConstantDemand`
+        simply has no `step_week` key to find.
         """
         fields: dict[str, Any] = config.demand.model_dump(mode="json")
         kind = fields.pop("kind")
@@ -504,8 +501,9 @@ class DbService:
     def _resolve_attribution(
         self, db: Session, participant: ParticipantSnapshot
     ) -> tuple[int | None, str | None]:
-        """`§3.6`. A seat with no identity -- a bot from the start -- is
-        `(None, None)`, a guest `(None, guest_identity)`.
+        """Who a seat is attributed to (spec §10.4). A seat with no identity --
+        a bot from the start -- is `(None, None)`, a guest
+        `(None, guest_identity)`.
 
         Attribution follows `identity`, not `is_bot`. A seat the host swapped
         to a bot mid-game is `is_bot` and still carries the displaced player's
@@ -516,7 +514,7 @@ class DbService:
 
         A Firebase uid always resolves to a `users` row: one that has none yet
         -- a signed-in user who never hit `/users/upsert` -- gets a bare row
-        inside this transaction (failure mode 11). Storing `user_id` NULL
+        inside this transaction. Storing `user_id` NULL
         instead would leave the row with neither identity, which no later
         sign-in or claim can ever attribute."""
         if participant.identity is None:
@@ -530,11 +528,10 @@ class DbService:
     def _bullwhip_ratio(
         participant: ParticipantSnapshot, stats: GameStats
     ) -> Decimal | None:
-        """`§3.5a`: NULL for a seat that was a bot from the start (no
+        """The stored bullwhip ratio: NULL for a seat that was a bot from the start (no
         identity), for the host (no role), and for any role whose ratio is
         `None` (a `CONSTANT`-demand game). A swapped seat keeps its player's
-        identity and therefore its ratio, bot weeks included, like its cost
-        (`§3.7`)."""
+        identity and therefore its ratio, bot weeks included, like its cost."""
         if participant.identity is None or participant.role is None:
             return None
         role_stats = stats.per_role.get(participant.role)
@@ -574,7 +571,7 @@ class DbService:
                 "closing_backlog": record.closing_backlog,
                 "supply_line_after": record.supply_line_after,
                 "orders_in_flight_after": record.orders_in_flight_after,
-                # `order` is a PostgreSQL reserved word -- the one rename (`§2.1`).
+                # `order` is a PostgreSQL reserved word -- the one rename.
                 "order_qty": record.order,
                 "was_bot": record.was_bot,
                 "was_forced": record.was_forced,

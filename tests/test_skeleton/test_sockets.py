@@ -1,7 +1,4 @@
-"""``app/sockets/manager.py`` -- the Socket.IO server (01 §2, §3.3).
-
-Acceptance criteria 5 and 10.
-"""
+"""``app/sockets/manager.py`` -- the Socket.IO server."""
 
 from __future__ import annotations
 
@@ -22,10 +19,10 @@ from app.sockets.manager import SocketManager, sio, socket_manager
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-# Printed by a fresh interpreter so the DEBUG-true half of AC 10 can be
-# observed: python-socketio sets each logger's level only while it is still
+# Printed by a fresh interpreter so the DEBUG-true half of the logger tests can
+# be observed: python-socketio sets each logger's level only while it is still
 # NOTSET, so the first AsyncServer built in a process wins and no second
-# server constructed in *this* process would prove anything (§3.3).
+# server constructed in *this* process would prove anything.
 LEVEL_PROBE = (
     "import json\n"
     "from app.sockets.manager import sio\n"
@@ -49,11 +46,11 @@ def _probe_logger_levels(debug: str) -> list[int]:
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
-# --- AC 5 -------------------------------------------------------------------
+# --- the handshake ----------------------------------------------------------
 
 
 def test_socketio_polling_handshake_completes():
-    """AC 5: a socket.io client can complete a handshake against
+    """A socket.io client can complete a handshake against
     ``application``.  This is the engine.io v4 opening handshake, which is the
     first thing any client does."""
     with TestClient(application) as c:
@@ -67,7 +64,7 @@ def test_socketio_polling_handshake_completes():
 
 
 def test_socketio_path_is_mounted_where_clients_expect_it():
-    """§3.3: ``socketio_path="socket.io"`` -- the exact value the ASGI mount
+    """``socketio_path="socket.io"`` -- the exact value the ASGI mount
     needs for a correct HTTP 101 upgrade."""
     with TestClient(application) as c:
         missing = c.get("/socket.io/?EIO=4&transport=polling")
@@ -76,11 +73,11 @@ def test_socketio_path_is_mounted_where_clients_expect_it():
         assert elsewhere.status_code != 200
 
 
-# --- AC 10 ------------------------------------------------------------------
+# --- logger levels follow DEBUG ---------------------------------------------
 
 
 def test_socketio_loggers_are_quiet_when_debug_is_false():
-    """AC 10 / 00-conventions.md §7: engine.io logs every packet's full
+    """Engine.io logs every packet's full
     payload -- including player ids -- at INFO.  With ``DEBUG`` false both
     loggers sit at ``ERROR`` and the socket.io one is not enabled for INFO.
 
@@ -93,11 +90,11 @@ def test_socketio_loggers_are_quiet_when_debug_is_false():
 
 
 def test_socketio_loggers_are_verbose_when_debug_is_true():
-    """AC 10, second half: in a **fresh interpreter** with ``DEBUG=true`` in
+    """The second half: in a **fresh interpreter** with ``DEBUG=true`` in
     the environment, both loggers are at INFO.
 
     A fresh interpreter is required, not a preference: each level is set only
-    while it is still ``NOTSET`` (§3.3), so a second ``AsyncServer`` built in
+    while it is still ``NOTSET``, so a second ``AsyncServer`` built in
     this process with different flags would change nothing and assert
     nothing.  This is also what fails if the flags are hardcoded rather than
     read from ``settings.DEBUG``."""
@@ -105,13 +102,13 @@ def test_socketio_loggers_are_verbose_when_debug_is_true():
 
 
 def test_socketio_loggers_stay_quiet_in_a_fresh_interpreter_by_default():
-    """AC 10: the same probe with ``DEBUG=false`` -- the pair of runs is what
+    """The same probe with ``DEBUG=false`` -- the pair of runs is what
     shows the levels *follow* the setting rather than happening to match it."""
     assert _probe_logger_levels("false") == [logging.ERROR, logging.ERROR]
 
 
 def test_socket_cors_is_not_a_wildcard():
-    """AC 11: "Keep in sync with sockets/manager.py" -- the socket server may
+    """Kept in sync with sockets/manager.py -- the socket server may
     not open up an origin the REST app refuses."""
     eio = getattr(sio, "eio", None)
     origins = getattr(eio, "cors_allowed_origins", None)
@@ -120,7 +117,7 @@ def test_socket_cors_is_not_a_wildcard():
     assert "*" not in origins
 
 
-# --- frozen public surface (§2) --------------------------------------------
+# --- frozen public surface --------------------------------------------------
 
 
 def test_socket_manager_singleton_surface():

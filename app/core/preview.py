@@ -8,7 +8,7 @@ will this config play?" by calling **the functions the engine itself calls**
 never a second implementation of either. `POST /api/v1/rooms/preview` serves
 it.
 
-Pure (`00-conventions.md` §4): no I/O, no clock, no global RNG.
+Pure: no I/O, no clock, no global RNG.
 """
 
 from __future__ import annotations
@@ -23,8 +23,8 @@ __all__ = ["EXAMPLE_SEED", "ConfigPreview", "preview_config"]
 
 # The seed an example draw uses when the host left `random_seed` blank. Fixed,
 # so the preview stays still while a host reads it rather than redrawing on
-# every keystroke. A blank seed is chosen at random when the game starts
-# (`11 §3.6`), so no seed here could show the series that will be played.
+# every keystroke. A blank seed is chosen at random when the game starts,
+# so no seed here could show the series that will be played.
 EXAMPLE_SEED = 0
 
 

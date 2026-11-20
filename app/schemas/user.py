@@ -19,7 +19,7 @@ class UserResponse(BaseModel):
     """A profile as returned to its owner.
 
     `firebase_uid` is deliberately absent: the identity is server-only and never
-    goes on the wire (00-conventions.md §2).
+    goes on the wire.
     """
 
     model_config = ConfigDict(from_attributes=True)

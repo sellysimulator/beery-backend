@@ -1,4 +1,4 @@
-"""A store failure must reach the player, not vanish (`12 §3.10`).
+"""A store failure must reach the player, not vanish.
 
 The defect these cover: every handler wraps a read-modify-write of the room
 document, nothing caught a failure of that store, and the exception
@@ -113,7 +113,7 @@ async def test_the_failure_is_logged_with_its_traceback(
     monkeypatch,
     caplog,
 ):
-    """Reported to the player **and** logged -- never swallowed (`14 §3.4`)."""
+    """Reported to the player **and** logged -- never swallowed."""
     from app.sockets.handlers.play import submit_order
 
     game = await _running(make_room_from_config, start_running_game)
@@ -135,7 +135,7 @@ async def test_the_error_message_carries_no_driver_detail(
     fake_socket_manager,
     monkeypatch,
 ):
-    """`15 §3.7`'s rule, on the socket side: never `str(e)` on the wire."""
+    """The REST rule, on the socket side: never `str(e)` on the wire."""
     from app.sockets.handlers.play import submit_order
 
     game = await _running(make_room_from_config, start_running_game)

@@ -1,15 +1,13 @@
 """Shared test fixtures for the Beery backend suite.
 
-Ported from ``Selly_Backend/tests/conftest.py`` as required by
-``01-backend-skeleton.md §4``:
+Ported from ``Selly_Backend/tests/conftest.py``:
 
 * ``FakeRedis`` / ``_FakeLock`` -- an in-memory async-redis stand-in good
-  enough to drive the *real* ``StateService`` once section 09 lands, with a
-  real per-key ``asyncio.Lock`` so concurrent ``async with`` usages against
+  enough to drive the *real* ``StateService``, with a real per-key
+  ``asyncio.Lock`` so concurrent ``async with`` usages against
   the same room id serialise exactly as the real Redis lock would.
 * ``fake_redis`` -- the instance, patched over the real client **only when
-  the module it patches already exists** (``app/services/state_service.py``
-  does not exist until section 09).
+  the module it patches already exists**.
 * ``client`` -- ``TestClient(app)`` that **depends on nothing**, so no route
   test drags the Redis patch (or the lifespan) in behind it.
 * ``lifespan_client`` -- ``with TestClient(app) as c`` for startup tests.
@@ -21,9 +19,8 @@ Ported from ``Selly_Backend/tests/conftest.py`` as required by
   ``(target, event, data)`` instead of touching transport.
 
 ``firebase_tokens`` and ``fake_socket_manager`` live here, in the shared file,
-because sections 02, 11 and 12 all need them and **D19** forbids a later
-section editing this one: a per-section copy would be three implementations of
-one fake, drifting apart.
+because the auth, lobby and play tests all need them: a per-area copy would be
+three implementations of one fake, drifting apart.
 
 It also neutralises ``Beery_Backend/.env`` before ``app`` is ever imported --
 see ``TEST_ENVIRONMENT`` below.
@@ -46,20 +43,20 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-# --- .env neutralisation (01-backend-skeleton.md §4) ------------------------
+# --- .env neutralisation -----------------------------------------------------
 #
 # ``Settings`` reads ``.env`` relative to the working directory, and the
 # developer's ``.env`` points at a REAL, REACHABLE managed PostgreSQL and a REAL
 # managed Redis.  A suite run from ``Beery_Backend`` therefore talks to
 # production unless it is stopped: ``/api/v1/health/deep`` answers
-# ``database: true`` and AC 4 fails for a reason that has nothing to do with
-# the code, and from section 13 onward a migration or a batch insert would run
+# ``database: true`` and the deep-health test fails for a reason that has
+# nothing to do with the code, and a migration or a batch insert would run
 # against live data.
 #
 # An environment variable takes priority over a ``.env`` entry in
 # pydantic-settings, so setting these here -- at the very top of the file,
 # before any ``from app...`` import anywhere in the suite -- wins without
-# deleting or editing anybody's ``.env``.  Section 13's Testcontainers suite
+# deleting or editing anybody's ``.env``.  The ``dbschema`` Testcontainers suite
 # overrides them again with its throwaway container's own coordinates.
 #
 # The ports are deliberately ones nothing listens on locally, so "unreachable"
@@ -156,16 +153,15 @@ def fake_redis(monkeypatch) -> FakeRedis:
     """A ``FakeRedis``, patched over the real client when it exists.
 
     ``monkeypatch.setattr("app.services.state_service.redis_client", ...)``
-    *imports* its target module, and ``app/services/state_service.py`` is not
-    written until section 09.  Written naively this fixture would raise
-    ``ModuleNotFoundError`` in every section-01 test that touched it, so the
-    patch is conditional (``01-backend-skeleton.md §4``).
+    *imports* its target module.  Written naively this fixture would raise
+    ``ModuleNotFoundError`` in a checkout without that module, so the patch is
+    conditional.
     """
     fr = FakeRedis()
     try:
         import app.services.state_service  # noqa: F401
     except ModuleNotFoundError:
-        pass  # section 09 has not landed yet
+        pass  # no state service in this checkout
     else:
         monkeypatch.setattr("app.services.state_service.redis_client", fr)
     _FakeLock._locks.clear()
@@ -176,8 +172,8 @@ def fake_redis(monkeypatch) -> FakeRedis:
 def client():
     """``TestClient`` driving the real ASGI app. Depends on nothing.
 
-    Deliberately *not* used as a context manager: no route in this section
-    needs anything from the lifespan handler, and skipping it keeps the
+    Deliberately *not* used as a context manager: no route test needs
+    anything from the lifespan handler, and skipping it keeps the
     CRITICAL "Firebase is not configured" boot message out of every route
     test's captured log.  A test that asserts on *startup* behaviour must use
     ``lifespan_client`` instead -- a bare ``TestClient`` never runs lifespan.
@@ -219,7 +215,7 @@ def _reset_process_caches():
     yield
 
 
-# --- Firebase (01-backend-skeleton.md §4, 00-conventions.md §5) -------------
+# --- Firebase ----------------------------------------------------------------
 
 # Shaped like a real service account file so that anything which parses it
 # before handing it to the SDK sees what it expects.  It is not a key: the
@@ -302,8 +298,7 @@ def firebase_tokens(monkeypatch) -> FirebaseTokens:
     -- runs as real, un-mocked code; mocking those instead would make the
     reject path prove nothing.
 
-    Like ``fake_redis``, it tolerates the module it reaches for not existing
-    yet: ``app/core/firebase.py`` is section 02's.
+    Like ``fake_redis``, it tolerates ``app/core/firebase.py`` not existing.
     """
     firebase_admin = pytest.importorskip("firebase_admin")
     firebase_auth = importlib.import_module("firebase_admin.auth")
@@ -346,7 +341,7 @@ def firebase_tokens(monkeypatch) -> FirebaseTokens:
     try:
         firebase_module = importlib.import_module("app.core.firebase")
     except ModuleNotFoundError:
-        pass  # section 02 has not landed yet
+        pass  # no app.core.firebase in this checkout
     else:
         # Covers a `from firebase_admin.auth import verify_id_token` style
         # re-export, which patching the SDK module alone would not reach.
@@ -368,7 +363,7 @@ def _invalid_id_token_error(firebase_auth: Any) -> Exception:
         return ValueError(message)
 
 
-# --- Socket.IO (01-backend-skeleton.md §4) ---------------------------------
+# --- Socket.IO ---------------------------------------------------------------
 
 
 class FakeSocketManager:
@@ -443,7 +438,7 @@ def fake_socket_manager(monkeypatch) -> FakeSocketManager:
     try:
         manager_module = importlib.import_module("app.sockets.manager")
     except ModuleNotFoundError:
-        return fsm  # a section-01-only checkout must still collect
+        return fsm  # a checkout without the manager must still collect
 
     monkeypatch.setattr(manager_module, "socket_manager", fsm, raising=False)
     for name, module in list(sys.modules.items()):
@@ -463,11 +458,10 @@ def project_root() -> Path:
 def make_empty_package(tmp_path: Path) -> Callable[[str], object]:
     """Import a copy of a package's ``__init__.py`` with **no members**.
 
-    ``app/api/v1/`` already ships ``health.py`` in this very section, so the
-    "works while empty" guarantee cannot be observed on the live package.
-    Copying just the discovery ``__init__.py`` into a throwaway package
-    reproduces the state section 02 would otherwise be the first to hit --
-    and keeps the test honest for every future section too.
+    ``app/api/v1/`` already ships ``health.py``, so the "works while empty"
+    guarantee cannot be observed on the live package.  Copying just the
+    discovery ``__init__.py`` into a throwaway package reproduces an empty
+    package and keeps the test honest whatever the package later holds.
     """
     created: list[str] = []
     root = tmp_path / "empty_packages"
@@ -503,8 +497,8 @@ def make_empty_package(tmp_path: Path) -> Callable[[str], object]:
 def drop_module():
     """Write a module into a live package and re-run its discovery loop.
 
-    This is how ``01-backend-skeleton.md §5`` items 16 and 17 are specified to
-    be asserted: "a temporary module written by the test".  Sibling modules
+    This is how auto-discovery is asserted: with a temporary module written
+    by the test.  Sibling modules
     are purged from ``sys.modules`` before the reload so that *every* member
     re-registers, and the file (and the package's state) is restored
     afterwards whatever the test does.

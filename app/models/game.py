@@ -1,23 +1,23 @@
 """The durable game record: the eight tables written when a game finishes.
 
 Nothing here is written while a game is live -- Redis is authoritative for that
-(**D4**). Section 14 batch-inserts these rows at game end and section 15 reads
-them back.
+(**D4**). End-of-game persistence batch-inserts these rows and the results API
+reads them back.
 
 Configuration is fully normalised (**D5**): one column per parameter, never a
 JSON blob. The awkward case is `demand_configs`, which is the nullable union of
 six generators' parameters; it is still normalised so that a query can filter on
 `kind` together with a specific generator parameter.
 
-`users` is section 02's model (`app/models/user.py`); it is imported here so the
+`users` is modelled in `app/models/user.py`; it is imported here so the
 two foreign keys that reference it resolve and so the whole schema is registered
 on `Base.metadata` by importing this one module. The `users` **migration** lives
-with this section's revision.
+in the same baseline revision.
 
 Column naming: `order` is a PostgreSQL reserved word and `min` / `max` are
 aggregate names that read badly as columns, so the columns are `order_qty`,
 `min_value` and `max_value`. A quoted identifier would be a permanent tax on
-every raw query section 14 and 15 write.
+every raw query the persistence and results code write.
 """
 
 from datetime import datetime
@@ -100,9 +100,8 @@ class Game(Base, TimestampMixin):
     # Denormalised so a match-history listing does not have to sum `weeks`.
     chain_total_cost: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
 
-    # Authorised late addition by section 14 (`14-end-of-game-persistence.md
-    # §3.3`): the documented idempotency key, `(room_code, started_at)`, as a
-    # real database constraint rather than a check-then-insert with no
+    # The documented idempotency key (spec §10.2), `(room_code, started_at)`,
+    # as a real database constraint rather than a check-then-insert with no
     # backstop. `timestamptz` keeps microseconds, so the key is only stable
     # because `persist_game` truncates `started_at` to whole seconds before
     # writing or comparing it: two games in the same room starting in the
@@ -244,17 +243,18 @@ class DemandConfigRow(Base, TimestampMixin):
 class Participant(Base, TimestampMixin):
     """A host, player or bot that took part in a game.
 
-    Exactly one of `user_id` and `guest_identity` is set for a human; both are
-    NULL for a bot. `guest_identity` holds the server-only `guest_<uuid4>`
-    string -- it is what attribution needs and what section 14's guest-claim
+    Exactly one of `user_id` and `guest_identity` is set for a human, and for a
+    seat the host swapped to a bot (it keeps its player); both are NULL for a
+    seat that was a bot from the start. `guest_identity` holds the server-only `guest_<uuid4>`
+    string -- it is what attribution needs and what the guest-claim
     flow looks the row up by. It is never returned by any endpoint.
 
-    `bullwhip_ratio` is an authorised late addition by section 14
-    (`14-end-of-game-persistence.md §3.5a`): the one `RoleStats` figure that is
-    persisted twice, because `user_stats.bullwhip_avg` needs it in a single
-    grouped SQL query and recomputing `Var(orders)/Var(demand)` in SQL would be
-    a second implementation of `population_variance`. NULL for a bot, for the
-    host, and for a `CONSTANT`-demand game.
+    `bullwhip_ratio` is the one `RoleStats` figure that is persisted twice,
+    because `user_stats.bullwhip_avg` needs it in a single grouped SQL query
+    and recomputing `Var(orders)/Var(demand)` in SQL would be a second
+    implementation of `population_variance`. NULL for a seat that was a bot
+    from the start, for the host, and for a `CONSTANT`-demand game; a swapped
+    seat keeps its ratio, bot weeks included.
     """
 
     __tablename__ = "participants"
@@ -276,8 +276,8 @@ class Participant(Base, TimestampMixin):
         nullable=True,
     )
     guest_identity: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    # A ratio, so precision matters more than range (**D12**); NULL for a bot,
-    # the host, or a CONSTANT-demand game (`14 §3.5a`).
+    # A ratio, so precision matters more than range (**D12**); NULL for a seat
+    # that was a bot from the start, the host, or a CONSTANT-demand game.
     bullwhip_ratio: Mapped[Decimal | None] = mapped_column(
         Numeric(10, 4), nullable=True
     )
@@ -320,7 +320,7 @@ class Week(Base):
     `orders_in_flight_after` is the role's OWN incoming-order pipeline:
     orders its downstream customer placed that are still travelling to it.
     The export renames it `incoming_orders_in_flight_after` at the boundary
-    (`15 §3.2`); the player's on-screen "orders in flight" are something else,
+    (spec §9.5); the player's on-screen "orders in flight" are something else,
     their own orders going upstream.
     """
 
@@ -372,7 +372,7 @@ class Week(Base):
 
 
 class UserStats(Base, TimestampMixin):
-    """Aggregate career statistics, recomputed by section 14 after each game."""
+    """Aggregate career statistics, recomputed after each finished game (spec §10.5)."""
 
     __tablename__ = "user_stats"
 

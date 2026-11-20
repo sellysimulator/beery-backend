@@ -1,12 +1,9 @@
-"""Black-box tests for ``PUT``/``GET /rooms/{code}/config``
-(``10-rooms-rest-api.md``).
+"""Black-box tests for ``PUT``/``GET /rooms/{code}/config`` (spec §11.1).
 
-Covers ``§4`` acceptance criteria 11-18 and 20, and ``§5`` failure modes 3,
-4, 7, 8 and 10. Failure modes 1, 2, 5, 6 and 9, and criteria 1-10 and 19,
-live in ``test_rooms.py``.
+Authorisation, the partial merge, range refusal, the running-room lock and the
+demand-kind switch; the other room routes are tested in ``test_rooms.py``.
 
-Driven entirely through the frozen public surface of this section plus the
-already-shipped surfaces of sections 01, 03 and 09, and the shared
+Driven entirely through the public REST surface and the shared
 ``client``/``fake_redis`` fixtures from ``tests/conftest.py``.
 """
 
@@ -21,10 +18,10 @@ def _headers(secret: str) -> dict[str, str]:
     return {"X-Host-Secret": secret}
 
 
-# --- AC 11 -----------------------------------------------------------------
+# --- Authorisation ---------------------------------------------------------
 
 
-def test_ac11_put_without_the_secret_header_is_403(client, fake_redis):
+def test_put_without_the_secret_header_is_403(client, fake_redis):
     room_code, _secret = create_room(client)
 
     response = client.put(
@@ -35,10 +32,7 @@ def test_ac11_put_without_the_secret_header_is_403(client, fake_redis):
     assert isinstance(response.json()["detail"], str)
 
 
-# --- AC 12 -----------------------------------------------------------------
-
-
-def test_ac12_put_with_the_wrong_secret_is_403_and_changes_nothing(client, fake_redis):
+def test_put_with_the_wrong_secret_is_403_and_changes_nothing(client, fake_redis):
     room_code, secret = create_room(client)
     before = client.get(config_url(room_code), headers=_headers(secret)).json()
 
@@ -54,12 +48,10 @@ def test_ac12_put_with_the_wrong_secret_is_403_and_changes_nothing(client, fake_
     assert after["config"] == before["config"]
 
 
-# --- AC 13 -----------------------------------------------------------------
+# --- Partial merge ---------------------------------------------------------
 
 
-def test_ac13_put_merges_a_partial_update_and_keeps_untouched_fields(
-    client, fake_redis
-):
+def test_put_merges_a_partial_update_and_keeps_untouched_fields(client, fake_redis):
     room_code, secret = create_room(client, preset="CLASSIC_MIT")
 
     response = client.put(
@@ -78,12 +70,12 @@ def test_ac13_put_merges_a_partial_update_and_keeps_untouched_fields(
     assert config["demand"]["step_week"] == 5
 
 
-# --- AC 14 -----------------------------------------------------------------
+# --- Ranges ----------------------------------------------------------------
 
 
-def test_ac14_out_of_range_values_are_refused_not_clamped(client, fake_redis):
-    """Amended 2026-11-02: a value outside its range is a 422 naming the field
-    and the range, and the stored config is left as it was."""
+def test_out_of_range_values_are_refused_not_clamped(client, fake_redis):
+    """A value outside its range is a 422 naming the field and the range, and
+    the stored config is left as it was (spec §6.6)."""
     room_code, secret = create_room(client)
 
     response = client.put(
@@ -116,10 +108,7 @@ def test_limits_endpoint_serves_every_range_the_forms_check(client):
     assert body["max_order_quantity"] == 9_999
 
 
-# --- AC 15 -----------------------------------------------------------------
-
-
-def test_ac15_a_too_short_custom_demand_is_422_naming_demand_values(client, fake_redis):
+def test_a_too_short_custom_demand_is_422_naming_demand_values(client, fake_redis):
     room_code, secret = create_room(client)
 
     response = client.put(
@@ -139,14 +128,14 @@ def test_ac15_a_too_short_custom_demand_is_422_naming_demand_values(client, fake
     assert "demand.values" in detail
 
 
-# --- AC 16 / FM 4 -----------------------------------------------------------
+# --- Running room -----------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_ac16_and_fm4_put_on_a_running_room_rejects_every_field_and_changes_nothing(
+async def test_put_on_a_running_room_rejects_every_field_and_changes_nothing(
     client, fake_redis
 ):
-    """AC 16 plus failure mode 4: the most important test in this file.
+    """The most important test in this file.
     Every field family is attempted against a ``RUNNING`` room; each must
     400, and the stored config (and the untouched ``engine`` slot) must be
     byte-for-byte the same afterwards.
@@ -189,10 +178,10 @@ async def test_ac16_and_fm4_put_on_a_running_room_rejects_every_field_and_change
     assert after["state"] == "RUNNING"
 
 
-# --- AC 17 -----------------------------------------------------------------
+# --- Demand kind switch ----------------------------------------------------
 
 
-def test_ac17_switching_demand_kind_replaces_the_block_with_no_leftover_key(
+def test_switching_demand_kind_replaces_the_block_with_no_leftover_key(
     client, fake_redis
 ):
     room_code, secret = create_room(client, preset="CLASSIC_MIT")
@@ -213,12 +202,7 @@ def test_ac17_switching_demand_kind_replaces_the_block_with_no_leftover_key(
     assert demand["period_weeks"] == 12  # SeasonalDemand's own default
 
 
-# --- FM 8 -------------------------------------------------------------------
-
-
-def test_fm8_demand_kind_round_trip_does_not_leak_the_earlier_step_week(
-    client, fake_redis
-):
+def test_demand_kind_round_trip_does_not_leak_the_earlier_step_week(client, fake_redis):
     """``STEP`` (customised) -> ``SEASONAL`` -> ``STEP`` must land back on the
     ``STEP`` *default* ``step_week`` (5), not the 9 set on the first hop.
     A merge that treats ``demand`` like any other deep-mergeable block would
@@ -248,10 +232,10 @@ def test_fm8_demand_kind_round_trip_does_not_leak_the_earlier_step_week(
     assert demand["step_week"] == 5
 
 
-# --- AC 18 -----------------------------------------------------------------
+# --- GET -------------------------------------------------------------------
 
 
-def test_ac18_get_without_the_secret_is_403(client, fake_redis):
+def test_get_without_the_secret_is_403(client, fake_redis):
     room_code, _secret = create_room(client)
 
     response = client.get(config_url(room_code))
@@ -260,7 +244,7 @@ def test_ac18_get_without_the_secret_is_403(client, fake_redis):
     assert isinstance(response.json()["detail"], str)
 
 
-def test_ac18_get_with_the_secret_returns_exactly_what_put_stored(client, fake_redis):
+def test_get_with_the_secret_returns_exactly_what_put_stored(client, fake_redis):
     room_code, secret = create_room(client)
 
     put_response = client.put(
@@ -274,7 +258,7 @@ def test_ac18_get_with_the_secret_returns_exactly_what_put_stored(client, fake_r
     assert get_response.json()["config"] == put_response.json()["config"]
 
 
-# --- 404s (§3.3 step 1 / §3.4) and AC 20 -----------------------------------
+# --- Unknown room code -----------------------------------------------------
 
 
 def test_put_and_get_config_404_on_an_unknown_room_code(client, fake_redis):
@@ -291,11 +275,11 @@ def test_put_and_get_config_404_on_an_unknown_room_code(client, fake_redis):
     assert isinstance(get_response.json()["detail"], str)
 
 
-# --- FM 3 -------------------------------------------------------------------
+# --- Empty secret -----------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_fm3_an_empty_stored_secret_and_an_empty_header_are_rejected(
+async def test_an_empty_stored_secret_and_an_empty_header_are_rejected(
     client, fake_redis
 ):
     """``host_secret == ""`` should be impossible in practice, but a naive
@@ -318,10 +302,10 @@ async def test_fm3_an_empty_stored_secret_and_an_empty_header_are_rejected(
     assert without_header_at_all.status_code == 403
 
 
-# --- FM 7 -------------------------------------------------------------------
+# --- Deep merge -------------------------------------------------------------
 
 
-def test_fm7_deep_merge_does_not_clobber_untouched_role_fields(client, fake_redis):
+def test_deep_merge_does_not_clobber_untouched_role_fields(client, fake_redis):
     room_code, secret = create_room(client, preset="CLASSIC_MIT")
     before = client.get(config_url(room_code), headers=_headers(secret)).json()[
         "config"

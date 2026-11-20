@@ -1,4 +1,4 @@
-"""The three host-selectable configuration presets (`03-game-config.md` §3.8).
+"""The three host-selectable configuration presets (spec §6).
 
 Pure: no I/O, no clock, no RNG, and nothing imported from outside `app.core`.
 

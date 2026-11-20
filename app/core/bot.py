@@ -1,7 +1,7 @@
-"""Sterman's anchor-and-adjust heuristic bot (`08-bot-agent.md`).
+"""Sterman's anchor-and-adjust heuristic bot (spec §8.5).
 
 A `BotAgent` fills an empty role, or stands in for a player who has dropped
-out (`00-decisions.md` D7). It plays a plausible human, not an optimal one:
+out (D7). It plays a plausible human, not an optimal one:
 the whole pedagogical point of the beer game is the bullwhip effect a real
 person produces, and a bot that flattened it would destroy the lesson
 (`beer-game-spec.md` §8.5).
@@ -43,7 +43,7 @@ class BotMemory:
 
     Serialised into the room document alongside the engine. Not frozen:
     `observe()` mutates it in place, which is the one place any mutation is
-    allowed to happen (§3.6).
+    allowed to happen.
     """
 
     expected_demand: float
@@ -78,7 +78,7 @@ class BotAgent:
                      + alpha * (target_stock - inventory_t + backlog_t - beta * supply_line_t))
     ```
 
-    `beta` is the whole point (§3.1): how much of its supply line the bot
+    `beta` is the whole point: how much of its supply line the bot
     credits before ordering more. At 0.0 it ignores the beer already on its
     way and keeps re-ordering for a shortfall it has already covered, the way a
     losing human does; at 1.0 it counts every unit of it, and its swings are
@@ -112,11 +112,11 @@ class BotAgent:
         """Build a bot for `role`, deriving its parameters from `config`.
 
         `target_stock` is per role: `initial_inventory * target_stock_multiplier`
-        for *this* role's own configuration (§3.2). The initial anchor is
+        for *this* role's own configuration. The initial anchor is
         `initial_order_in_pipeline`, the steady-state quantity the game was
         pre-loaded with -- including for the Retailer, whose own order
         pipeline does not exist but whose configured quantity is still the
-        right opening belief (§3.3).
+        right opening belief.
         """
         self.role = role
         role_config = config.role_config(role)
@@ -139,7 +139,7 @@ class BotAgent:
         Called once per week, BEFORE `decide()`. The smoothing is
         deliberately lagged: `expected_demand` is updated against the
         *previous* observation, never the one just passed in, so the bot
-        never gets to use this week's demand in this week's anchor (§3.4).
+        never gets to use this week's demand in this week's anchor.
         """
         if self.memory.last_observed_demand is not None:
             self.memory.expected_demand = (
@@ -152,11 +152,10 @@ class BotAgent:
         """Return the order quantity for the open week.
 
         Pure: identical inputs and identical memory always give an identical
-        answer, and nothing is mutated (§3.6). The floor is 0, the same floor
+        answer, and nothing is mutated. The floor is 0, the same floor
         every order has. `max_order_quantity` is never applied here: the play
         loop caps the bot's figure at `GameEngine.order_bounds()` just before
-        submitting it (`12-socket-play.md` §3.2), so there is one cap and one
-        place it lives (§3.5).
+        submitting it, so there is one cap and one place it lives.
         """
         raw = self.memory.expected_demand + self.alpha * (
             self.target_stock - inventory + backlog - self.beta * supply_line
@@ -183,7 +182,7 @@ class BotAgent:
     def __eq__(self, other: object) -> bool:
         """Value equality over `role` and `memory`.
 
-        Declared because criterion 13 compares two bots and the default
+        Declared because a determinism test compares two bots and the default
         identity comparison would make it vacuous. `BotMemory` is a plain
         dataclass, so its own `==` is generated.
         """

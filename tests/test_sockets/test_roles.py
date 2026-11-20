@@ -1,8 +1,5 @@
 """Role assignment -- ``claim_role``, ``release_role``, ``assign_role`` and
-``set_role_mode`` (``11-socket-lobby.md §3.5``).
-
-Covers acceptance criteria 22-26, 24a, 24b, and failure modes 10 (partial)
-and 11.
+``set_role_mode`` (spec §5).
 """
 
 from __future__ import annotations
@@ -42,7 +39,7 @@ async def _seat_two(make_room, connect_identity, mode="PLAYER_CHOOSES"):
     return room
 
 
-# --- AC 22 -------------------------------------------------------------------- #
+# --- claim_role --------------------------------------------------------------- #
 
 
 async def test_claim_role_seats_caller_and_blocks_a_second_claimant(
@@ -59,7 +56,7 @@ async def test_claim_role_seats_caller_and_blocks_a_second_claimant(
     assert fake_socket_manager.events_for("sid-2") == ["join_error"]
 
 
-# --- AC 23 / failure mode 11 --------------------------------------------------- #
+# --- concurrent claims --------------------------------------------------------- #
 
 
 async def test_concurrent_claim_role_for_same_role_yields_exactly_one_holder(
@@ -97,7 +94,7 @@ async def test_concurrent_claim_role_for_same_role_yields_exactly_one_holder(
     assert len(errors) == 1
 
 
-# --- AC 24 -------------------------------------------------------------------- #
+# --- claim_role outside PLAYER_CHOOSES ---------------------------------------- #
 
 
 async def test_claim_role_rejected_in_host_assigns_mode(
@@ -145,7 +142,7 @@ async def test_host_assigns_and_random_reject_with_different_messages(
     assert message_host_assigns != message_random
 
 
-# --- AC 24a ------------------------------------------------------------------- #
+# --- set_role_mode clears assignments ----------------------------------------- #
 
 
 @pytest.mark.parametrize("new_mode", ["PLAYER_CHOOSES", "HOST_ASSIGNS"])
@@ -194,7 +191,7 @@ async def test_set_role_mode_clears_even_when_new_mode_equals_old(
     assert stored["participants"]["P1"]["role"] is None
 
 
-# --- AC 24b ------------------------------------------------------------------- #
+# --- set_role_mode after start ------------------------------------------------ #
 
 
 async def test_set_role_mode_after_start_is_rejected(
@@ -223,7 +220,7 @@ async def test_set_role_mode_after_start_is_rejected(
     assert fake_socket_manager.events_for("sid-x") == ["join_error"]
 
 
-# --- AC 25 -------------------------------------------------------------------- #
+# --- assign_role -------------------------------------------------------------- #
 
 
 async def test_assign_role_refuses_a_role_someone_else_holds(
@@ -272,7 +269,7 @@ async def test_assign_role_refuses_a_role_someone_else_holds(
     assert stored["participants"]["P2"]["role"] == "FACTORY"
 
 
-# --- AC 26 -------------------------------------------------------------------- #
+# --- assign_role to null ------------------------------------------------------ #
 
 
 async def test_assign_role_null_unseats(make_room, connect_identity, state_svc):
@@ -334,7 +331,7 @@ async def test_release_role_gives_up_the_seat(make_room, connect_identity, state
     assert stored["participants"]["P1"]["role"] is None
 
 
-# --- failure mode 10 (partial): roles_assigned / lobby_update carry no secrets - #
+# --- roles_assigned / lobby_update carry no secrets ---------------------------- #
 
 
 async def test_role_events_never_carry_secrets(

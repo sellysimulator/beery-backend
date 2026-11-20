@@ -1,7 +1,7 @@
 """The Socket.IO handshake: identity, established exactly once.
 
 `identity` is server-only — a verified Firebase uid, or a `guest_<uuid4>` — and is
-never on the wire (00-conventions.md §2). It is resolved here, at `connect`, and
+never on the wire. It is resolved here, at `connect`, and
 every later handler reads `socket_manager.sid_to_identity[sid]` rather than
 accepting anything the client says about who it is.
 """
@@ -103,10 +103,9 @@ async def connect(sid: str, environ: dict, auth: Any = None) -> Any:
 async def disconnect(sid: str) -> None:
     """Drop every per-sid mapping, so the identity map cannot leak.
 
-    Section 12's room-level cleanup runs first, while `sid_to_room` and
-    `sid_to_alias` still hold this sid -- afterwards there is no room code
-    left to look the participant up by (`12-socket-play.md`, module
-    docstring).
+    The play loop's room-level cleanup (`on_participant_disconnected`) runs
+    first, while `sid_to_room` and `sid_to_alias` still hold this sid --
+    afterwards there is no room code left to look the participant up by.
     """
     try:
         await on_participant_disconnected(sid)

@@ -1,17 +1,16 @@
-"""Disconnection -- D7 (``12-socket-play.md §3.5``).
+"""Disconnection -- D7 (spec §9.6).
 
-Covers acceptance criteria 20, 21, 22, 23, 24 and 25, and failure modes 8, 9
-and 15. Only symbols from section 12's frozen *Public surface* are imported,
-plus section 02's frozen ``connection.disconnect`` (the real integration
-point this section's cleanup hook is wired behind) and section 11's lobby
-handlers to drive a room to ``RUNNING``. ``app/sockets/handlers/play.py`` and
+Only the play loop's public surface is imported, plus
+``connection.disconnect`` (the real integration point the play loop's
+cleanup hook is wired behind) and the lobby handlers to drive a room to
+``RUNNING``. ``app/sockets/handlers/play.py`` and
 ``app/services/game_service.py`` are never read, only imported.
 
 Every test below calls ``app.sockets.handlers.connection.disconnect(sid)``
 rather than ``play.on_participant_disconnected(sid)`` directly, because the
-document's own ordering rule (``§0`` header: this hook "must be called
-BEFORE ``socket_manager.disconnect(sid)``") is a property of the *wiring*
-between the two sections, not of ``on_participant_disconnected`` in
+ordering rule (this hook must be called BEFORE
+``socket_manager.disconnect(sid)``) is a property of the *wiring* between
+the two modules, not of ``on_participant_disconnected`` in
 isolation -- calling the hook directly would prove nothing about whether
 that wiring is correct.
 """
@@ -55,7 +54,7 @@ def _host_secret_payload(game, **extra):
     return {"room_id": game["room_code"], "host_secret": game["host_secret"], **extra}
 
 
-# --- AC 20 -------------------------------------------------------------------- #
+# --- a seated human disconnects ----------------------------------------------- #
 
 
 async def test_disconnect_of_seated_human_pauses_and_names_the_role(
@@ -85,7 +84,7 @@ async def test_disconnect_of_seated_human_pauses_and_names_the_role(
     )
 
 
-# --- AC 21 -------------------------------------------------------------------- #
+# --- pause_on_disconnect off -------------------------------------------------- #
 
 
 async def test_disconnect_with_pause_on_disconnect_false_does_not_pause(
@@ -102,7 +101,7 @@ async def test_disconnect_with_pause_on_disconnect_false_does_not_pause(
     assert "game_paused" not in fake_socket_manager.events_for(game["room_code"])
 
 
-# --- AC 22 -------------------------------------------------------------------- #
+# --- a bot seat --------------------------------------------------------------- #
 
 
 async def test_disconnect_of_a_bot_role_never_pauses(
@@ -120,7 +119,7 @@ async def test_disconnect_of_a_bot_role_never_pauses(
     assert "game_paused" not in fake_socket_manager.events_for(game["room_code"])
 
 
-# --- AC 23 -------------------------------------------------------------------- #
+# --- the host disconnects ----------------------------------------------------- #
 
 
 async def test_disconnect_of_host_alerts_but_never_pauses_and_secret_reclaims(
@@ -187,7 +186,7 @@ async def test_host_reclaim_in_the_lobby_announces_nothing(
     assert "host_reconnected" not in fake_socket_manager.events_for(room["room_code"])
 
 
-# --- AC 24 / failure mode 15 -------------------------------------------------- #
+# --- host secret gone: identity recovery (D18) -------------------------------- #
 
 
 async def test_host_secret_gone_recovers_by_identity_and_can_then_resume(
@@ -195,7 +194,7 @@ async def test_host_secret_gone_recovers_by_identity_and_can_then_resume(
 ):
     """D18's whole reason to exist: with the secret discarded, the *only*
     recovery path left is verified identity. Without it this test would hang
-    at a room nobody can unpause (failure mode 15)."""
+    at a room nobody can unpause."""
     room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
     game = await start_running_game(room)
     await disconnect(game["host_sid"])
@@ -220,7 +219,7 @@ async def test_host_secret_gone_recovers_by_identity_and_can_then_resume(
     assert stored["state"] == "RUNNING"
 
 
-# --- AC 25 / failure mode 8 --------------------------------------------------- #
+# --- reconnecting never auto-resumes ------------------------------------------ #
 
 
 async def test_reconnect_does_not_auto_resume_a_paused_game(
@@ -247,7 +246,7 @@ async def test_reconnect_does_not_auto_resume_a_paused_game(
     )
 
 
-# --- failure mode 9 ------------------------------------------------------------ #
+# --- never an automatic bot --------------------------------------------------- #
 
 
 async def test_disconnect_never_auto_substitutes_a_bot(

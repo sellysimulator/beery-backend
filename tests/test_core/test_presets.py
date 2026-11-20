@@ -1,12 +1,12 @@
-"""Black-box tests for section 03 -- ``app/core/presets.py``.
+"""Black-box tests for ``app/core/presets.py``.
 
-Covers ``§3.8``, ``§5`` items 11, 12 and 13, and the ``§4`` worked example that
-starts from ``get_preset("CLASSIC_MIT")``.
+Covers the preset registry, the three presets (spec §6), and the worked example
+that starts from ``get_preset("CLASSIC_MIT")``.
 
 ``CLASSIC_MIT`` is checked field for field against ``beer-game-spec.md §6``
 (``§6.1`` game-level, ``§6.2`` per-role starting conditions, ``§6.3`` costs,
-``§6.4`` demand pattern, ``§6.5`` visibility), as amended by ``00-decisions.md``
-``D6`` (no timer), ``D14`` (no chat) and ``D5``.
+``§6.4`` demand pattern, ``§6.5`` visibility), as amended by ``D6`` (no timer),
+``D14`` (no chat) and ``D5``.
 """
 
 from __future__ import annotations
@@ -34,12 +34,12 @@ from app.core.enums import (
 )
 from app.core.presets import PRESETS, get_preset, preset_names
 
-# §2: ``preset_names()`` is sorted alphabetically.
+# ``preset_names()`` is sorted alphabetically.
 EXPECTED_NAMES = sorted(["CLASSIC_MIT", "FAST_GAME", "CHAOS"])
 
 
 # ---------------------------------------------------------------------------
-# The registry -- AC 11, AC 13
+# The registry
 # ---------------------------------------------------------------------------
 
 
@@ -48,7 +48,7 @@ def test_the_three_presets_exist() -> None:
 
 
 def test_preset_names_is_sorted_alphabetically() -> None:
-    """``§2``: sorted, "so the host UI's preset picker has a stable order across
+    """Sorted, "so the host UI's preset picker has a stable order across
     processes rather than one that depends on dict insertion"."""
     names = preset_names()
     assert isinstance(names, list)
@@ -96,7 +96,7 @@ def test_every_preset_carries_its_own_key_in_preset_name(name: str) -> None:
 
 @pytest.mark.parametrize("name", EXPECTED_NAMES)
 def test_every_preset_survives_from_host_input_unchanged(name: str) -> None:
-    """``§3.8``: a preset that its own validator would alter is a bug."""
+    """A preset that its own validator would alter is a bug."""
     cfg = get_preset(name)
     assert GameConfig.from_host_input(cfg.to_payload(), DEFAULT_LIMITS) == cfg
 
@@ -133,7 +133,7 @@ def test_every_preset_has_a_playable_duration_and_delays(name: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# CLASSIC_MIT versus beer-game-spec.md §6 -- AC 12
+# CLASSIC_MIT versus beer-game-spec.md §6
 # ---------------------------------------------------------------------------
 
 
@@ -145,13 +145,13 @@ def test_classic_mit_game_level_defaults() -> None:
     assert cfg.pause_on_disconnect is True
     assert cfg.bot_fill_empty_roles is False
     assert cfg.random_seed is None
-    assert cfg.currency_symbol == "$"  # §6.3, display setting
+    assert cfg.currency_symbol == "$"  # spec §6.3, display setting
     assert cfg.role_assignment_mode == RoleAssignmentMode.HOST_ASSIGNS
 
 
 @pytest.mark.parametrize("role", list(ROLE_ORDER))
 def test_classic_mit_per_role_starting_conditions(role: Role) -> None:
-    """``beer-game-spec.md §6.2`` and ``03-game-config.md §3.8``."""
+    """``beer-game-spec.md §6.2``."""
     rc = get_preset("CLASSIC_MIT").role_config(role)
     assert rc.initial_inventory == 12
     assert rc.initial_backlog == 0
@@ -205,7 +205,7 @@ def test_classic_mit_visibility_defaults() -> None:
 
 
 def test_classic_mit_is_every_model_default_made_explicit() -> None:
-    """``§3.8``: "Every default above, explicitly"."""
+    """Spec §6: ``CLASSIC_MIT`` is every default, explicitly."""
     cfg = get_preset("CLASSIC_MIT")
     for role in (Role.RETAILER, Role.WHOLESALER, Role.DISTRIBUTOR):
         assert cfg.role_config(role) == RoleConfig()
@@ -216,7 +216,7 @@ def test_classic_mit_is_every_model_default_made_explicit() -> None:
 
 
 # ---------------------------------------------------------------------------
-# FAST_GAME -- §3.8
+# FAST_GAME -- spec §6
 # ---------------------------------------------------------------------------
 
 
@@ -239,7 +239,7 @@ def test_fast_game_step_week_is_still_inside_its_shorter_game() -> None:
 
 
 # ---------------------------------------------------------------------------
-# CHAOS -- §3.8
+# CHAOS -- spec §6
 # ---------------------------------------------------------------------------
 
 
@@ -259,7 +259,7 @@ def test_chaos_per_role_starting_conditions(role: Role) -> None:
 
 @pytest.mark.parametrize("role", list(ROLE_ORDER))
 def test_chaos_keeps_the_default_costs(role: Role) -> None:
-    """``§3.8`` names no cost override for CHAOS, so the defaults stand."""
+    """Spec §6 names no cost override for CHAOS, so the defaults stand."""
     rc = get_preset("CHAOS").role_config(role)
     assert rc.holding_cost_per_unit_week == 0.50
     assert rc.backlog_cost_per_unit_week == 1.00
@@ -291,7 +291,7 @@ def test_chaos_demand_is_stochastic_normal() -> None:
 def test_chaos_hides_the_supply_line() -> None:
     vis = get_preset("CHAOS").visibility
     assert vis.show_supply_line_prominently is False
-    # §3.8 names no other visibility change.
+    # Spec §6 names no other visibility change.
     assert vis == VisibilityConfig(show_supply_line_prominently=False)
 
 

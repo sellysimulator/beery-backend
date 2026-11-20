@@ -1,10 +1,11 @@
-"""Black-box tests for the Factory half of section 06 -- ``06-role-agents.md``.
+"""Black-box tests for the Factory's role agent (spec §8.4).
 
-Covers acceptance criteria 6, 11 and 12, the Factory worked example of §4
-(the third of the three), failure modes 5, 6 and 7, and §3.6's legal
-cancellations.  The rest of §5 and §6 is in ``test_agents.py``.
+The production pipeline, capacity and the production queue, the Factory
+worked example, and the refusal of negative orders.  The other roles' agents
+are tested in ``test_agents.py``.
 
-Only the frozen public surfaces of sections 03, 05 and 06 are imported.
+Only the public surfaces of the config, pipeline and agent modules are
+imported.
 """
 
 from __future__ import annotations
@@ -31,8 +32,8 @@ from app.core.records import ProductionOutcome
 def make_config(**factory_kwargs: Any) -> GameConfig:
     """A `GameConfig` whose FACTORY carries ``factory_kwargs``.
 
-    Built through section 03's public ``from_host_input``, which accepts
-    "plain JSON or already-built config models" (``03-game-config.md §2``).
+    Built through the public ``from_host_input``, which accepts "plain JSON
+    or already-built config models".
     """
     return GameConfig.from_host_input(
         {
@@ -51,7 +52,7 @@ def make_config(**factory_kwargs: Any) -> GameConfig:
 def classic_mit_with(**factory_overrides: Any) -> GameConfig:
     """`CLASSIC_MIT` with the FACTORY's parameters overridden.
 
-    Uses only section 03's public `to_payload()` / `from_payload()`, whose
+    Uses only the public `to_payload()` / `from_payload()`, whose
     payload keys the FACTORY's `roles` entry by the role name.
     """
     payload = get_preset("CLASSIC_MIT").to_payload()
@@ -74,7 +75,7 @@ def test_agent_for_builds_a_factory_agent() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 6 and FM 5 -- the Factory's pipeline is the PRODUCTION pipeline
+# The Factory's pipeline is the PRODUCTION pipeline
 # --------------------------------------------------------------------------
 
 
@@ -101,12 +102,12 @@ def test_a_non_factory_role_still_uses_the_shipping_delay() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 5 (third worked example), AC 12 -- capacity and queue
+# The Factory worked example -- capacity and queue
 # --------------------------------------------------------------------------
 
 
 def test_worked_example_factory_capacity_and_queue() -> None:
-    """§4: `cfg` is CLASSIC_MIT with `production_capacity_per_week` set to 10."""
+    """`cfg` is CLASSIC_MIT with `production_capacity_per_week` set to 10."""
     config = classic_mit_with(production_capacity_per_week=10)
     assert config.factory_config().production_capacity_per_week == 10
     factory = FactoryAgent(Role.FACTORY, config)
@@ -144,7 +145,7 @@ def test_started_units_enter_the_production_pipeline() -> None:
 
 
 def test_queued_units_are_produced_in_later_weeks() -> None:
-    """AC 12: the queue drains first-in-first-out across weeks."""
+    """The queue drains first-in-first-out across weeks."""
     config = make_config(
         production_capacity_per_week=10,
         production_delay_weeks=2,
@@ -165,7 +166,7 @@ def test_queued_units_are_produced_in_later_weeks() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 11 -- unlimited capacity
+# Unlimited capacity
 # --------------------------------------------------------------------------
 
 
@@ -190,7 +191,7 @@ def test_unlimited_capacity_starts_everything_and_queues_nothing() -> None:
 
 
 # --------------------------------------------------------------------------
-# FM 6 -- excess production is queued, never lost
+# Excess production is queued, never lost
 # --------------------------------------------------------------------------
 
 
@@ -237,7 +238,7 @@ def test_a_long_overload_conserves_every_requested_unit() -> None:
 
 
 # --------------------------------------------------------------------------
-# §3.6 -- there are no negative orders (amended 2026-11-02)
+# There are no negative orders
 # --------------------------------------------------------------------------
 
 
@@ -282,7 +283,7 @@ def test_a_cancellation_is_rejected_under_unlimited_capacity_too() -> None:
 
 
 # --------------------------------------------------------------------------
-# FM 7 -- the queue never goes negative
+# The queue never goes negative
 # --------------------------------------------------------------------------
 
 
@@ -359,7 +360,7 @@ def test_the_factory_receives_orders_from_its_downstream_neighbour() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 14, 15 for the Factory -- the queue round-trips
+# The Factory's queue round-trips
 # --------------------------------------------------------------------------
 
 

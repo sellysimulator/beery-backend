@@ -1,5 +1,5 @@
 """Request and response models for the rooms REST API
-(``10-rooms-rest-api.md`` §2).
+(spec §11.1).
 
 ``PresetSummary`` is declared before ``PresetListResponse``, which
 references it -- the other order is a ``NameError`` at class-creation time.
@@ -57,7 +57,7 @@ class ConfigPreviewRequest(BaseModel):
 
 
 class ConfigPreviewResponse(BaseModel):
-    """`core.preview.ConfigPreview` on the wire (`10 §3.5b`)."""
+    """`core.preview.ConfigPreview` on the wire."""
 
     demand_series: list[int]  # weeks 1..duration_weeks, index 0 = week 1
     demand_is_example: bool  # STOCHASTIC with no seed yet: an example draw
@@ -84,7 +84,7 @@ class PresetListResponse(BaseModel):
     presets: list[PresetSummary]
 
 
-# --- multi-game hosting (10-rooms-rest-api.md §3.5c, §3.5d) ---------------- #
+# --- multi-game hosting ------------------------------------------------------ #
 
 
 class RoomBatchCreateRequest(BaseModel):

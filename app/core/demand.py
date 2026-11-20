@@ -1,4 +1,4 @@
-"""End-customer demand generation (`04-demand-generator.md`).
+"""End-customer demand generation (spec §6.4).
 
 A `DemandConfig` plus a seed becomes the *complete* list of weekly end-customer
 demand, produced once at game start and then persisted. The series is never
@@ -8,11 +8,11 @@ and what lets the results screen chart true demand against every player's orders
 Weeks are 1-indexed in the specification and 0-indexed in the returned list, so
 `series[w - 1]` is the demand for week `w`.
 
-Pure (`00-conventions.md` §4): this module imports nothing from `app.config`,
+Pure: this module imports nothing from `app.config`,
 `app.services`, `app.db`, `app.sockets` or `app.api`, performs no I/O, reads no
 clock, and never touches the global `random` module. Every draw comes from the
 `random.Random` instance derived from the seed in `generate_demand_series`
-(`00-decisions.md` D11).
+(D11).
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ __all__ = [
 def _round_half_up(value: float) -> int:
     """Round to the nearest integer, halves away from zero's side of the floor.
 
-    `04-demand-generator.md` §3.7: rounding is always half-up. Python's built-in
+    Rounding is always half-up (spec §6.4). Python's built-in
     `round()` is banker's rounding -- `round(2.5) == 2` but `round(3.5) == 4` --
     which makes SEASONAL and RAMP series subtly asymmetric and impossible to
     reason about in a test.
@@ -73,7 +73,7 @@ def _poisson(rng: random.Random, mean: float) -> int:
     `exp(-mean)`, then report the number of draws minus one. Implemented on top
     of the supplied `rng` -- rather than `random.expovariate`, `numpy` or any
     module keeping its own state -- so the series stays reproducible from the
-    seed (`04-demand-generator.md` §3.5).
+    seed.
     """
     target = math.exp(-mean)
     product = 1.0
@@ -102,7 +102,7 @@ class DemandGenerator(ABC):
 
 
 class ConstantGenerator(DemandGenerator):
-    """`demand(w) = value` -- flat forever (`§3.1`)."""
+    """`demand(w) = value` -- flat forever."""
 
     def __init__(self, config: ConstantDemand) -> None:
         self._config = config
@@ -113,7 +113,7 @@ class ConstantGenerator(DemandGenerator):
 
 
 class StepGenerator(DemandGenerator):
-    """The classic MIT one-time jump (`§3.2`).
+    """The classic MIT one-time jump.
 
     `demand(w) = initial_value` while `w < step_week`, `step_value` from
     `step_week` onwards.
@@ -132,7 +132,7 @@ class StepGenerator(DemandGenerator):
 
 
 class RampGenerator(DemandGenerator):
-    """A gradual increase, optionally capped (`§3.3`).
+    """A gradual increase, optionally capped.
 
     `demand(w) = initial_value + slope_per_week * (w - start_week + 1)` from
     `start_week` onwards, `initial_value` before it. The `+ 1` makes the first
@@ -160,7 +160,7 @@ class RampGenerator(DemandGenerator):
 
 
 class SeasonalGenerator(DemandGenerator):
-    """Sinusoidal demand (`§3.4`).
+    """Sinusoidal demand.
 
     `demand(w) = base + amplitude * sin(2*pi * (w - 1) / period_weeks + phase)`,
     with `phase` in radians. The `(w - 1)` puts week 1 at phase offset 0, so with
@@ -181,7 +181,7 @@ class SeasonalGenerator(DemandGenerator):
 
 
 class StochasticGenerator(DemandGenerator):
-    """One independent draw per week, in week order (`§3.5`).
+    """One independent draw per week, in week order.
 
     Drawing strictly in week order, one draw per week, means lengthening the
     game extends the series rather than reshuffling it.
@@ -210,7 +210,7 @@ class StochasticGenerator(DemandGenerator):
 
 
 class CustomGenerator(DemandGenerator):
-    """A host-supplied series (`§3.6`).
+    """A host-supplied series.
 
     Entries beyond `duration_weeks` are truncated. A series *shorter* than
     `duration_weeks` raises `ValueError`: it cannot arrive through
@@ -273,9 +273,9 @@ def generate_demand_series(
     Index 0 is week 1. Every value is an int >= 0. Deterministic: identical
     arguments always produce an identical list.
 
-    The RNG is derived as `random.Random(f"{seed}:demand")` (`00-decisions.md`
-    D11), a named stream, so that changing the role assignment draw does not
-    shift the demand draw. Only `STOCHASTIC` consumes it; the other five kinds
+    The RNG is derived as `random.Random(f"{seed}:demand")` (D11), a named
+    stream, so that changing the role assignment draw does not shift the
+    demand draw. Only `STOCHASTIC` consumes it; the other five kinds
     ignore the seed entirely.
     """
     rng = random.Random(f"{seed}:demand")

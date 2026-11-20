@@ -1,22 +1,22 @@
-"""One object per link in the supply chain (`06-role-agents.md`).
+"""One object per link in the supply chain (spec §8.4).
 
 A `RoleAgent` holds one role's inventory, backlog, pipelines and accumulated
 cost, and knows how to settle a week *for itself*.
 
 An agent does **not** know about its neighbours, and never holds a reference to
 another agent. Everything that crosses the chain — a shipment moving
-downstream, an order moving upstream — is routed by the `GameEngine` in section
-07, which reads a settlement's `shipped` and calls `receive_shipment` on the
+downstream, an order moving upstream — is routed by the `GameEngine`,
+which reads a settlement's `shipped` and calls `receive_shipment` on the
 neighbour itself. That decoupling is what makes these objects testable in
-isolation and what makes the two-pass settlement of `00-decisions.md` D9
+isolation and what makes the two-pass settlement of D9
 expressible: `advance()` and `settle()` are separate steps precisely so that
 **every** role can advance before **any** role delivers.
 
 Pure: this module imports only from `app.core` and the standard library. It
 performs no I/O, reads no clock, holds no RNG and does no logging.
 
-Money accumulates as `float` and is never rounded during accumulation
-(`00-conventions.md` §4); quantities are always `int`.
+Money accumulates as `float` and is never rounded during accumulation;
+quantities are always `int`.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ class RoleAgent:
     is_bot: bool
 
     def __init__(self, role: Role, config: GameConfig) -> None:
-        """Build initial state from `config` (`06-role-agents.md` §3.1).
+        """Build initial state from `config`.
 
         Takes no neighbour argument, and never will: routing belongs to the
         engine.
@@ -94,7 +94,7 @@ class RoleAgent:
         except the pipelines: inventory, backlog and cost are untouched.
 
         This is a separate step purely so that every role can advance before
-        any role delivers (`00-decisions.md` D9).
+        any role delivers (D9).
         """
         arriving = self.shipments.advance()
         incoming_order = None if self.orders is None else self.orders.advance()
@@ -105,7 +105,7 @@ class RoleAgent:
     def settle(self, week: int, arriving: int, incoming_order: int) -> WeekSettlement:
         """Receive, ship against the obligation, charge carrying cost.
 
-        The order is exactly the one in `06-role-agents.md` §3.3: costs are
+        The order is exactly the one in spec §8.4: costs are
         charged on the **closing** inventory and backlog, after shipping.
 
         Does NOT move the shipped units anywhere — the caller reads
@@ -115,7 +115,7 @@ class RoleAgent:
         Raises `ValueError` if `arriving` or `incoming_order` is negative.
         Neither is reachable through the engine: the Retailer's order comes
         from the demand series and the others' from pipelines, and both are
-        guaranteed non-negative by sections 04 and 05.
+        guaranteed non-negative by the demand generator and the pipeline.
         """
         if arriving < 0:
             raise ValueError(f"arriving must not be negative, got {arriving}")
@@ -167,8 +167,8 @@ class RoleAgent:
         Does NOT push the order anywhere — the caller routes it upstream.
 
         An order of 0 is not an order, so it charges no `fixed_order_cost`.
-        Orders are never negative: the engine refuses one before it gets here
-        (`07-game-engine.md` §3.3), and this method refuses one too rather than
+        Orders are never negative: the engine refuses one before it gets here,
+        and this method refuses one too rather than
         charging a negative purchase cost for it.
         """
         if qty < 0:
@@ -251,7 +251,7 @@ class RoleAgent:
         non-Factory roles, so one payload shape round-trips for every role.
 
         This payload is **unredacted**. It is never sent to a client as-is;
-        section 07 builds the per-recipient views.
+        the engine builds the per-recipient views (spec §8.8).
         """
         return {
             "role": self.role.value,
@@ -307,12 +307,12 @@ class RoleAgent:
         """Absorb a payload's queue. A non-Factory role has nowhere to put it."""
 
     def _check_invariants(self) -> None:
-        """The invariants of `06-role-agents.md` §3.7 that hold at any moment.
+        """The invariants of spec §7.2 that hold at any moment.
 
-        Invariant 5 (`len(shipments) == shipments.length`) holds only outside a
-        settle cycle, and invariant 6 (monotonic cost) is a property over time;
-        neither can be checked from a single state, so both are left to the
-        engine and the tests.
+        The pipeline-length invariant (`len(shipments) == shipments.length`)
+        holds only outside a settle cycle, and monotonic cost is a property
+        over time; neither can be checked from a single state, so both are left
+        to the engine and the tests.
         """
         assert self.inventory >= 0, "inventory went negative"
         assert self.backlog >= 0, "backlog went negative"
@@ -353,7 +353,7 @@ class FactoryAgent(RoleAgent):
         Excess is **queued, not lost**, and the queue is drained
         first-in-first-out, which adding it to `requested` achieves implicitly.
         A capacity of `None` means unlimited; a capacity of 0 cannot occur
-        because section 03 reads a host's 0 as "unlimited" (`None`), and a 0
+        because config validation reads a host's 0 as "unlimited" (`None`), and a 0
         would queue forever.
 
         A negative `qty` raises `ValueError`, before anything is mutated, so a

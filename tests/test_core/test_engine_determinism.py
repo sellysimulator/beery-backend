@@ -1,10 +1,9 @@
-"""Determinism, order independence and persistence for section 07.
+"""Determinism, order independence and persistence for the game engine.
 
-Covers ``07-game-engine.md §5`` acceptance criteria 4 (order independence),
-14 (replay determinism), 15 (seeded demand) and 16 (``to_payload`` /
-``from_payload`` round trip), plus ``§3.7``'s purity statement.
+Order independence (D9), replay determinism, seeded demand and the
+``to_payload`` / ``from_payload`` round trip (spec §8.6, §11.3, §12).
 
-Driven entirely through the frozen public surface of ``§2``.
+Driven entirely through the engine's public surface.
 """
 
 from __future__ import annotations
@@ -72,7 +71,7 @@ def drive(engine: GameEngine, script: list[dict[Role, int]]) -> list[WeekRecord]
 
 
 def record_tuple(record: WeekRecord) -> tuple[Any, ...]:
-    """Every declared field of a ``WeekRecord``, in the §2 order."""
+    """Every declared field of a ``WeekRecord``, in declaration order."""
     return (
         record.role,
         record.week,
@@ -102,11 +101,11 @@ def record_tuple(record: WeekRecord) -> tuple[Any, ...]:
 
 
 # --------------------------------------------------------------------------
-# AC 4 -- order independence (D9)
+# Order independence (D9)
 # --------------------------------------------------------------------------
 
 
-def test_ac4_settlement_is_independent_of_the_role_order() -> None:
+def test_settlement_is_independent_of_the_role_order() -> None:
     config = make_config(demand=get_preset("CLASSIC_MIT").demand, duration_weeks=12)
     script = order_script(12)
 
@@ -117,8 +116,8 @@ def test_ac4_settlement_is_independent_of_the_role_order() -> None:
     reverse_records = drive(reverse, script)
 
     assert forward.phase == reverse.phase == GamePhase.FINISHED
-    # criterion 8: both histories are in ROLE_ORDER, so this compares state
-    # rather than two orderings
+    # both histories are in ROLE_ORDER, so this compares state rather than
+    # two orderings
     assert tuple(r.role for r in forward.history[:4]) == ROLE_ORDER
     assert tuple(r.role for r in reverse.history[:4]) == ROLE_ORDER
 
@@ -132,8 +131,8 @@ def test_ac4_settlement_is_independent_of_the_role_order() -> None:
     assert forward == reverse
 
 
-def test_ac4_supply_line_and_orders_in_flight_survive_the_reversal() -> None:
-    """FM 1's detector: these are the two fields pass 3 exists for."""
+def test_supply_line_and_orders_in_flight_survive_the_reversal() -> None:
+    """The role-order detector: these are the two fields pass 3 exists for."""
     config = make_config(demand=get_preset("CLASSIC_MIT").demand, duration_weeks=12)
     script = order_script(12, seed=77)
 
@@ -149,7 +148,7 @@ def test_ac4_supply_line_and_orders_in_flight_survive_the_reversal() -> None:
     assert forward_flight == reverse_flight
 
 
-def test_ac4_role_order_takes_no_part_in_equality_or_the_payload() -> None:
+def test_role_order_takes_no_part_in_equality_or_the_payload() -> None:
     config = make_config(demand=ConstantDemand(value=4), duration_weeks=12)
     forward = GameEngine.start(config, SEED)
     reverse = GameEngine.start(config, SEED, role_order=REVERSED_ORDER)
@@ -161,11 +160,11 @@ def test_ac4_role_order_takes_no_part_in_equality_or_the_payload() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 14 -- replay determinism (§3.7)
+# Replay determinism (spec §12)
 # --------------------------------------------------------------------------
 
 
-def test_ac14_replaying_the_recorded_orders_reproduces_history() -> None:
+def test_replaying_the_recorded_orders_reproduces_history() -> None:
     config = get_preset("CLASSIC_MIT")
     script = order_script(36, seed=5)
 
@@ -190,7 +189,7 @@ def test_ac14_replaying_the_recorded_orders_reproduces_history() -> None:
     assert replay == original
 
 
-def test_ac14_two_identically_driven_engines_are_byte_identical() -> None:
+def test_two_identically_driven_engines_are_byte_identical() -> None:
     config = get_preset("CLASSIC_MIT")
     script = order_script(36, seed=6)
 
@@ -205,7 +204,7 @@ def test_ac14_two_identically_driven_engines_are_byte_identical() -> None:
     assert first == second
 
 
-def test_ac14_a_different_order_script_produces_a_different_history() -> None:
+def test_a_different_order_script_produces_a_different_history() -> None:
     """The replay assertion would be vacuous if history ignored the orders."""
     config = get_preset("CLASSIC_MIT")
     first = GameEngine.start(config, SEED)
@@ -218,11 +217,11 @@ def test_ac14_a_different_order_script_produces_a_different_history() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 15 -- the seed drives the demand series
+# The seed drives the demand series
 # --------------------------------------------------------------------------
 
 
-def test_ac15_same_seed_same_demand_series() -> None:
+def test_same_seed_same_demand_series() -> None:
     config = make_config(
         demand=StochasticDemand(mean=8.0, stdev=2.0, min=0, max=20),
         duration_weeks=36,
@@ -233,7 +232,7 @@ def test_ac15_same_seed_same_demand_series() -> None:
     assert first.seed == second.seed == 4242
 
 
-def test_ac15_different_seeds_differ_for_a_stochastic_config() -> None:
+def test_different_seeds_differ_for_a_stochastic_config() -> None:
     config = make_config(
         demand=StochasticDemand(mean=8.0, stdev=2.0, min=0, max=20),
         duration_weeks=36,
@@ -243,7 +242,7 @@ def test_ac15_different_seeds_differ_for_a_stochastic_config() -> None:
     assert first.demand_series != second.demand_series
 
 
-def test_ac15_a_deterministic_generator_ignores_the_seed() -> None:
+def test_a_deterministic_generator_ignores_the_seed() -> None:
     config = make_config(
         demand=get_preset("CLASSIC_MIT").demand,
         duration_weeks=36,
@@ -255,7 +254,7 @@ def test_ac15_a_deterministic_generator_ignores_the_seed() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 16 -- to_payload() / from_payload() round trip (§3.11)
+# to_payload() / from_payload() round trip (spec §11.3)
 # --------------------------------------------------------------------------
 
 
@@ -280,14 +279,14 @@ def assert_round_trips(engine: GameEngine, config: GameConfig) -> None:
     assert "weeks_played" not in payload
 
 
-def test_ac16_round_trip_immediately_after_start() -> None:
+def test_round_trip_immediately_after_start() -> None:
     config = make_config(demand=get_preset("CLASSIC_MIT").demand, duration_weeks=12)
     engine = GameEngine.start(config, SEED)
     assert engine.phase == GamePhase.DECISION
     assert_round_trips(engine, config)
 
 
-def test_ac16_round_trip_mid_decision_with_two_of_four_orders_in() -> None:
+def test_round_trip_mid_decision_with_two_of_four_orders_in() -> None:
     config = make_config(demand=get_preset("CLASSIC_MIT").demand, duration_weeks=12)
     engine = GameEngine.start(config, SEED)
     drive(engine, order_script(4, seed=3))
@@ -308,7 +307,7 @@ def test_ac16_round_trip_mid_decision_with_two_of_four_orders_in() -> None:
     ]
 
 
-def test_ac16_round_trip_at_finished() -> None:
+def test_round_trip_at_finished() -> None:
     config = make_config(demand=get_preset("CLASSIC_MIT").demand, duration_weeks=12)
     engine = GameEngine.start(config, SEED)
     drive(engine, order_script(12, seed=4))
@@ -320,7 +319,7 @@ def test_ac16_round_trip_at_finished() -> None:
         restored.close_week()
 
 
-def test_ac16_round_trip_after_end_early() -> None:
+def test_round_trip_after_end_early() -> None:
     config = make_config(demand=get_preset("CLASSIC_MIT").demand, duration_weeks=36)
     engine = GameEngine.start(config, SEED)
     drive(engine, order_script(9, seed=8))
@@ -330,8 +329,8 @@ def test_ac16_round_trip_after_end_early() -> None:
     assert_round_trips(engine, config)
 
 
-def test_ac16_equality_is_by_value_not_identity() -> None:
-    """Without ``__eq__`` the round-trip criterion would be vacuous."""
+def test_equality_is_by_value_not_identity() -> None:
+    """Without ``__eq__`` the round-trip test would be vacuous."""
     config = make_config(demand=get_preset("CLASSIC_MIT").demand, duration_weeks=12)
     first = GameEngine.start(config, SEED)
     second = GameEngine.start(config, SEED)

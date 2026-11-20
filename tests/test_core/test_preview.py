@@ -7,8 +7,8 @@ a copy of an engine formula: the demand generators, the lead time, the
 the weeks played. Each test here pins the server's figure to **the function
 the engine itself uses**, so the two cannot drift: a preview is compared with
 the series `GameEngine.start` really generates, a lead time with the one the
-engine sends the player, and so on. The normative demand table of
-`18 §2.6` lives here now, because the generator it describes lives here.
+engine sends the player, and so on. The normative demand table lives here,
+because the generator it describes lives here.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ def demand_payload(demand: object) -> dict:
     return demand.model_dump(mode="json")  # type: ignore[attr-defined]
 
 
-# --- the demand series: 18 §2.6's normative table ---------------------------
+# --- the demand series: the normative table --------------------------------
 
 
 @pytest.mark.parametrize(

@@ -1,8 +1,4 @@
-"""``start_game`` and ``can_start`` (``11-socket-lobby.md §2.2``, ``§3.6``).
-
-Covers acceptance criteria 27-32, 28a, 28b, 29, and failure modes 12, 13, 15
-and 17.
-"""
+"""``start_game`` and ``can_start`` (spec §4.3, §11.2)."""
 
 from __future__ import annotations
 
@@ -42,7 +38,7 @@ async def _seat_n(make_room, connect_identity, n, **config_kwargs):
     return room
 
 
-# --- AC 27 -------------------------------------------------------------------- #
+# --- bot fill ----------------------------------------------------------------- #
 
 
 async def test_start_game_with_three_players_and_bot_fill_creates_one_bot(
@@ -122,7 +118,7 @@ async def test_start_game_broadcasts_the_bot_seats_it_filled(
         }
 
 
-# --- AC 28 -------------------------------------------------------------------- #
+# --- no bot fill -------------------------------------------------------------- #
 
 
 async def test_start_game_with_three_players_no_bot_fill_is_rejected_with_matching_reason(
@@ -162,7 +158,7 @@ async def test_start_game_with_three_players_no_bot_fill_is_rejected_with_matchi
     assert error_message == "One role is still empty. Assign them, or turn on bot fill."
 
 
-# --- AC 28a ------------------------------------------------------------------- #
+# --- an unbuildable config ---------------------------------------------------- #
 
 
 async def test_can_start_false_for_unbuildable_config(
@@ -191,7 +187,7 @@ async def test_can_start_false_for_unbuildable_config(
     assert stored["state"] != "RUNNING"
 
 
-# --- AC 28b ------------------------------------------------------------------- #
+# --- RANDOM mode -------------------------------------------------------------- #
 
 
 async def test_random_mode_can_start_true_with_four_roleless_seated(
@@ -229,7 +225,7 @@ async def test_random_mode_can_start_false_with_three_seated(
     assert ok is False
 
 
-# --- AC 29 / failure mode 13 --------------------------------------------------- #
+# --- a reproducible random deal ------------------------------------------------ #
 
 
 async def test_random_deal_is_reproducible_for_the_same_seed(
@@ -305,7 +301,7 @@ async def test_random_deal_differs_for_different_seeds_over_several_trials(
     assert len(outcomes) > 1
 
 
-# --- AC 30 -------------------------------------------------------------------- #
+# --- state after start -------------------------------------------------------- #
 
 
 async def test_after_start_state_running_engine_populated_week_one(
@@ -332,7 +328,7 @@ async def test_after_start_state_running_engine_populated_week_one(
     assert engine.week == 1
 
 
-# --- AC 31 / failure mode 15 --------------------------------------------------- #
+# --- start_game is idempotent -------------------------------------------------- #
 
 
 async def test_start_game_twice_is_a_no_op_the_second_time(
@@ -418,7 +414,7 @@ async def test_concurrent_start_game_calls_produce_one_engine_and_one_broadcast(
     assert game_started_count == 1
 
 
-# --- AC 32 -------------------------------------------------------------------- #
+# --- config_public ------------------------------------------------------------ #
 
 
 async def test_game_started_config_public_has_no_cost_delay_or_demand(
@@ -445,7 +441,7 @@ async def test_game_started_config_public_has_no_cost_delay_or_demand(
     )
     config_public = game_started["config_public"]
 
-    # The exact shape §3.6 gives: top-level keys, and the visibility
+    # The exact shape: top-level keys, and the visibility
     # sub-object's keys. No cost, delay or demand *value* field is
     # anywhere in it -- `show_running_cost_to_players` is a visibility
     # toggle, not a cost figure, and is the one place "cost" legitimately
@@ -487,7 +483,7 @@ async def test_game_started_config_public_has_no_cost_delay_or_demand(
         assert f'"{field}"' not in serialised, field
 
 
-# --- failure mode 12 ----------------------------------------------------------- #
+# --- a silent start never starts ----------------------------------------------- #
 
 
 async def test_silent_start_with_an_empty_link_never_starts(
@@ -517,7 +513,7 @@ async def test_silent_start_with_an_empty_link_never_starts(
     assert stored["engine"] is None
 
 
-# --- failure mode 17 ------------------------------------------------------------ #
+# --- the refusal is can_start's sentence ---------------------------------------- #
 
 
 async def test_start_game_refuses_with_can_starts_exact_sentence(
@@ -526,7 +522,7 @@ async def test_start_game_refuses_with_can_starts_exact_sentence(
     """A content-based refusal carries `can_start`'s own sentence, verbatim.
 
     A second implementation of the rule inside `start_game` passes every
-    other criterion in this section and then drifts from the sentence the
+    other test in this file and then drifts from the sentence the
     host's disabled Start button is already showing them.
     """
     room = await _seat_n(
@@ -564,7 +560,7 @@ async def test_start_game_refuses_with_can_starts_exact_sentence(
 async def test_start_game_on_an_already_started_room_is_silent(
     make_room, connect_identity, fake_socket_manager, state_svc
 ):
-    """AC 31: a double-click is not an error, so it gets no `join_error`."""
+    """A double-click is not an error, so it gets no `join_error`."""
     room = await _seat_n(
         make_room, connect_identity, 4, role_assignment_mode="PLAYER_CHOOSES"
     )

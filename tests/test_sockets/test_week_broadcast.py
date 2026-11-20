@@ -1,18 +1,15 @@
-"""Week closing, bots and game completion (``12-socket-play.md §3.2``,
-``§3.3``, ``§3.8``).
+"""Week closing, bots and game completion (spec §7, §11.2).
 
-Covers acceptance criteria 10, 11, 12, 13, 19 and 27, and failure modes 11
-(lock held across persistence), 12 (persistence failure/hang must not break
-the debrief) and 13 (bot recursion).
+Also: no lock held across persistence, a persistence failure or hang must not
+break the debrief, and no bot recursion.
 
-Only symbols from section 12's frozen *Public surface* are imported --
+Only symbols from the play handlers' public surface are imported --
 including the module-level ``persist_finished_game`` seam in
 ``app.services.game_service``, looked up by name at call time and
-monkeypatched here exactly as the document prescribes -- plus section 11's
-lobby handlers to drive a room to ``RUNNING`` and the frozen room-document /
-``GameEngine`` attributes ``09-state-service.md §2`` and
-``07-game-engine.md §2`` already freeze. ``app/sockets/handlers/play.py`` and
-the rest of ``app/services/game_service.py`` are never read, only imported.
+monkeypatched here -- plus the lobby handlers to drive a room to ``RUNNING``
+and the room-document / ``GameEngine`` attributes already frozen (spec
+§11.3, §8.6). ``app/sockets/handlers/play.py`` and the rest of
+``app/services/game_service.py`` are never read, only imported.
 """
 
 from __future__ import annotations
@@ -108,7 +105,7 @@ async def test_request_state_resends_the_whole_history(
     ]
 
 
-# --- AC 10 / AC 11 -------------------------------------------------------- #
+# --- the fourth order closes the week ------------------------------------- #
 
 
 async def test_fourth_order_closes_week_with_the_specified_emit_shape(
@@ -152,7 +149,7 @@ async def test_fourth_order_closes_week_with_the_specified_emit_shape(
     assert ywc_idxs, "your_week_closed was never emitted"
     assert all(
         i > week_closed_idx for i in ywc_idxs
-    ), "week_closed must precede every your_week_closed (§3.3 step 2)"
+    ), "week_closed must precede every your_week_closed"
     last_ywc_idx = max(ywc_idxs)
 
     post_close_your_state_idxs = [
@@ -170,9 +167,9 @@ async def test_fourth_order_closes_week_with_the_specified_emit_shape(
     assert host_state_idxs, "host_state was never emitted after the close"
     assert all(
         i > last_ywc_idx for i in post_close_your_state_idxs + host_state_idxs
-    ), "a fresh your_state/host_state must follow every your_week_closed (§3.3 step 2)"
+    ), "a fresh your_state/host_state must follow every your_week_closed"
 
-    # AC 11 -- each player's your_week_closed carries only that role's own record.
+    # Each player's your_week_closed carries only that role's own record.
     ywc_by_sid: dict[str, list[dict]] = {}
     for target, event, data in fake_socket_manager.sid_emits:
         if event == "your_week_closed":
@@ -186,7 +183,7 @@ async def test_fourth_order_closes_week_with_the_specified_emit_shape(
             assert payload["record"]["role"] == role
 
 
-# --- AC 12 ------------------------------------------------------------------ #
+# --- bots play when a window opens ------------------------------------------ #
 
 
 async def test_bots_play_automatically_when_a_window_opens(
@@ -307,7 +304,7 @@ async def test_the_host_sees_every_seat_decided_when_the_last_order_ends_the_gam
     }
 
 
-# --- AC 13 -------------------------------------------------------------- #
+# --- an all-bot game ---------------------------------------------------- #
 
 
 async def test_all_bot_36_week_game_finishes_from_a_single_start_game(
@@ -329,7 +326,7 @@ async def test_all_bot_36_week_game_finishes_from_a_single_start_game(
     assert "game_finished" in fake_socket_manager.events_for(room["room_code"])
 
 
-# --- AC 19 ---------------------------------------------------------------- #
+# --- end_game_early ------------------------------------------------------- #
 
 
 async def test_end_game_early_mid_week_reports_weeks_played_as_week_minus_one(
@@ -411,7 +408,7 @@ async def test_end_game_early_leaves_every_live_total_equal_to_the_results(
         )
 
 
-# --- AC 27 ------------------------------------------------------------------ #
+# --- game_finished ---------------------------------------------------------- #
 
 
 async def test_game_finished_carries_full_demand_series_and_every_roles_orders(
@@ -446,7 +443,7 @@ async def test_game_finished_carries_full_demand_series_and_every_roles_orders(
         assert len(orders) == 10, role
 
 
-# --- failure mode 13 -------------------------------------------------------- #
+# --- no bot recursion ------------------------------------------------------- #
 
 
 async def test_all_bot_104_week_game_does_not_recurse(
@@ -481,13 +478,13 @@ async def test_all_bot_104_week_game_does_not_recurse(
     assert engine.weeks_played == 104
 
 
-# --- failure mode 11 -------------------------------------------------------- #
+# --- no lock across persistence --------------------------------------------- #
 
 
 async def test_finish_game_never_acquires_the_room_lock(
     make_room, start_running_game, state_svc, monkeypatch
 ):
-    """``finish_game`` is documented (``§2.1``) to *never* acquire
+    """``finish_game`` is documented to *never* acquire
     ``state_svc.lock`` -- persistence must not run under a lock at all. A spy
     on ``state_svc.lock`` is timing-independent, unlike a bare
     ``asyncio.gather`` against ``FakeRedis``: gathered coroutines against an
@@ -517,13 +514,13 @@ async def test_finish_game_never_acquires_the_room_lock(
     assert lock_calls == []
 
 
-# --- failure mode 12 -------------------------------------------------------- #
+# --- a persistence failure -------------------------------------------------- #
 
 
 async def test_persistence_failure_does_not_break_the_debrief(
     make_room, start_running_game, state_svc, fake_socket_manager, monkeypatch
 ):
-    """§3.8 steps 4-5: a raising ``persist_finished_game`` must not stop
+    """A raising ``persist_finished_game`` must not stop
     ``game_finished`` from reaching the room, must not stop ``state`` from
     becoming ``FINISHED``, and must leave ``persisted`` ``False``."""
 
@@ -609,7 +606,7 @@ async def test_no_game_persisted_when_persistence_fails(
 async def test_game_finished_is_emitted_before_persistence_even_if_it_hangs(
     make_room, start_running_game, state_svc, fake_socket_manager, monkeypatch
 ):
-    """§3.8 step 4: ``game_finished`` must be emitted *before*
+    """``game_finished`` must be emitted *before*
     ``persist_finished_game`` is called, not after. This test isolates the
     ordering itself, independent of failure handling: it makes
     ``persist_finished_game`` hang forever (``release_persist`` is never
@@ -645,7 +642,7 @@ async def test_game_finished_is_emitted_before_persistence_even_if_it_hangs(
 
         assert "game_finished" in fake_socket_manager.events_for(game["room_code"]), (
             "game_finished must already have been emitted by the time "
-            "persist_finished_game is invoked (§3.8 step 4) -- a version "
+            "persist_finished_game is invoked -- a version "
             "that emits after persisting would still be waiting here"
         )
     finally:

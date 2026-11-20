@@ -1,8 +1,8 @@
-"""Career statistics for registered players (`14-end-of-game-persistence.md §3.7`).
+"""Career statistics for registered players (spec §10.5).
 
 `recompute_user_stats` rebuilds the whole `user_stats` row from scratch --
 never incrementally, because an incremental counter that drifts is
-undetectable (`§3.7`) -- using at most three SQL statements regardless of how
+undetectable -- using at most three SQL statements regardless of how
 many games the user has played: one query for the games they occupied a role
 in, one grouped query for each game's final cost, and one upsert. Ranking
 happens in Python.
@@ -35,8 +35,8 @@ _GAMES_FOR_USER = text("""
     WHERE p.user_id = :user_id AND p.role IS NOT NULL
     """)
 
-# The ONE grouped query (`§3.7`, `[HARD-WON]`): `cumulative_cost` never
-# decreases (`07-game-engine.md` acceptance criterion 13), so its MAX over a
+# The ONE grouped query (`[HARD-WON]`): `cumulative_cost` never
+# decreases (spec §7.2), so its MAX over a
 # game and role is exactly the final week's value, without needing to know
 # each game's `weeks_played` in the WHERE clause.
 _FINAL_COST_BY_GAME_ROLE = text("""
@@ -75,7 +75,7 @@ _UPSERT_USER_STATS = text("""
 
 
 class StatsService:
-    """Rebuilds `user_stats` (`§3.7`)."""
+    """Rebuilds `user_stats`."""
 
     def recompute_user_stats(self, db: Session, user_id: int) -> None:
         """Rebuild the `user_stats` row from scratch with ONE grouped query.

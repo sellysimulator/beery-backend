@@ -10,8 +10,8 @@ behaviour against the real PostgreSQL schema.
 
 What must never appear, in CSV or JSON: a player's Firebase uid or email, an
 internal user id, a guest identity, a session token, the host's secret or the
-host's own uid -- and, since 2026-11-14 (`15 §11`), any name a player or the
-host chose: every player is their seat's `P<N>`.
+host's own uid -- and any name a player or the host chose: every player is
+their seat's `P<N>`.
 
 The same file covers the in-process export cache (`services/export_cache.py`):
 a repeat download reads nothing from the database, and still counts against

@@ -14,9 +14,9 @@ This is not Redis-specific and does not go away with the in-memory backend: any
 unexpected exception in a handler had the same shape.
 
 **What it does not do.** It does not swallow. Every caught exception is logged
-with `logger.exception`, so the traceback survives — `14 §3.4` records what a
-bare `except: pass` cost the sibling project, which was every completed game
-for an unknown length of time. This turns an invisible failure into a visible
+with `logger.exception`, so the traceback survives — a bare
+`except: pass` cost the sibling project every completed game for an unknown
+length of time. This turns an invisible failure into a visible
 one in two places at once: the log and the player's screen.
 """
 
@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 Handler = Callable[..., Awaitable[Any]]
 
 #: Deliberately vague. The player can act on "try again"; they can do nothing
-#: with a driver message, and `15 §3.7` already forbids putting one on the
+#: with a driver message, and none may ever go on the
 #: wire — a connection string in an alert box is the same leak by another
 #: route.
 SERVER_ERROR_MESSAGE = "Something went wrong on the server. Please try again."
@@ -64,9 +64,9 @@ def guarded(
 ) -> Callable[[Handler], Handler]:
     """Report an unhandled handler exception to the caller, then continue.
 
-    `event` is `"error"` for the play loop, whose payload carries a `code`
-    (`12 §2`), and `"join_error"` for the lobby, whose payload is `{message}`
-    only (`11 §2`). Both frozen shapes are respected.
+    `event` is `"error"` for the play loop, whose payload carries a `code`,
+    and `"join_error"` for the lobby, whose payload is `{message}` only
+    (spec §11.2). Both frozen shapes are respected.
 
     With `echo_room_code`, the refusal also carries the `room_code` the payload
     asked for (`requested_room_code`), next to `message`. `start_game` wears
@@ -107,7 +107,7 @@ def guarded(
                 return await fn(sid, *args, **kwargs)
             except Exception:
                 # The event name, never the payload: a payload may carry a
-                # `host_secret` or a `session_token` (`00-conventions.md §2`).
+                # `host_secret` or a `session_token`.
                 logger.exception("Handler %r failed for sid %s.", fn.__name__, sid)
                 await report(sid, SERVER_ERROR_MESSAGE, "SERVER_ERROR", data)
                 return None

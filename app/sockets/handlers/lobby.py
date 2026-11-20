@@ -1,22 +1,21 @@
 """The lobby: hosts claiming a room, players arriving, seating, and start
-(``11-socket-lobby.md``).
+(spec §4, §5).
 
 Registers by the ``@sio.event`` decorator firing at import (**D19**): this
 module is discovered by ``app/sockets/handlers/__init__.py`` and needs no
 edit anywhere upstream.
 
 Every read-modify-write of room state is wrapped in
-``async with state_svc.lock(room_code)`` (``00-conventions.md §3``). Emits
-happen after the lock is released, from values captured while it was held,
-so a slow transport write never extends how long the room is locked.
+``async with state_svc.lock(room_code)``. Emits happen after the lock is
+released, from values captured while it was held, so a slow transport write
+never extends how long the room is locked.
 
 ``room["sid_to_alias"]`` is authoritative; ``socket_manager.sid_to_alias`` is
 per-process bookkeeping written by ``socket_manager.join_room`` as a side
-effect (``§2.3``). Every handler here reads the room's own map.
+effect. Every handler here reads the room's own map.
 
-Every rejection in this section, per its own explicit text throughout
-``11-socket-lobby.md §3``, is a ``join_error`` -- never the generic ``error``
-event ``00-conventions.md §3`` describes for other sections.
+Every rejection in the lobby is a ``join_error`` -- never the generic
+``error`` event the play loop uses (spec §11.2).
 """
 
 from __future__ import annotations
@@ -80,7 +79,7 @@ async def _reject(sid: str, message: str) -> None:
 def _host_target(room: dict, sid: str) -> str:
     """The most recently claimed host sid, or the caller if none is on
     record yet -- host-only events always go to whichever tab most recently
-    proved the secret (``11-socket-lobby.md §3.1``)."""
+    proved the secret."""
     host_sid = room.get("host_sid")
     return host_sid if isinstance(host_sid, str) and host_sid else sid
 
@@ -102,7 +101,7 @@ def _game_started_payload(room: dict, engine: GameEngine, seq: int) -> dict:
 @sio.event
 @guarded("join_error")
 async def join_waiting(sid: str, data: dict | None = None) -> None:
-    """The host claims or re-claims the room (``§3.1``, **D18**)."""
+    """The host claims or re-claims the room (**D18**)."""
     data = _payload(data)
     room_id = _room_id_of(data)
     if room_id is None:
@@ -139,7 +138,7 @@ async def join_waiting(sid: str, data: dict | None = None) -> None:
         room["host_sid"] = sid
         # Real sio, deliberately -- not socket_manager.join_room, which
         # requires an alias. The host holds no alias and must never appear
-        # in either sid-to-alias map (§2.3).
+        # in either sid-to-alias map.
         await sio.enter_room(sid, room_code)
 
         host_secret_value = room["host_secret"]
@@ -186,7 +185,7 @@ async def join_waiting(sid: str, data: dict | None = None) -> None:
 @sio.event
 @guarded("join_error")
 async def join(sid: str, data: dict | None = None) -> None:
-    """A player arrives or returns (``§3.2``). Idempotent by identity."""
+    """A player arrives or returns (spec §4.2). Idempotent by identity."""
     data = _payload(data)
     room_id = _room_id_of(data)
     if room_id is None:
@@ -233,7 +232,7 @@ async def join(sid: str, data: dict | None = None) -> None:
                 "role": participant["role"],
                 "is_host": False,
             }
-            # This is section 12's event (`12-socket-play.md §3.5`): without
+            # This is the play loop's event (spec §9.6): without
             # it the host is never told a dropped player has come back, and
             # a pause-on-disconnect looks permanent even though resuming
             # would work.
@@ -340,7 +339,7 @@ async def join(sid: str, data: dict | None = None) -> None:
 @sio.event
 @guarded("join_error")
 async def leave(sid: str, data: dict | None = None) -> None:
-    """Permitted only before the game starts (``§3.3``)."""
+    """Permitted only before the game starts."""
     data = _payload(data)
     room_id = _room_id_of(data)
     if room_id is None:
@@ -393,7 +392,7 @@ async def leave(sid: str, data: dict | None = None) -> None:
 @sio.event
 @guarded("join_error")
 async def config_update(sid: str, data: dict | None = None) -> None:
-    """The real-time twin of ``PUT /rooms/{code}/config`` (``§3.4``)."""
+    """The real-time twin of ``PUT /rooms/{code}/config``."""
     data = _payload(data)
     room_id = _room_id_of(data)
     if room_id is None:
@@ -452,7 +451,7 @@ async def config_update(sid: str, data: dict | None = None) -> None:
 @guarded("join_error")
 async def set_role_mode(sid: str, data: dict | None = None) -> None:
     """Host only. Clears every assignment, even if the mode is unchanged
-    (``§3.5``)."""
+    (spec §5)."""
     data = _payload(data)
     room_id = _room_id_of(data)
     if room_id is None:
@@ -518,7 +517,7 @@ async def set_role_mode(sid: str, data: dict | None = None) -> None:
 @guarded("join_error")
 async def assign_role(sid: str, data: dict | None = None) -> None:
     """Host authority. ``role: null`` unseats; a role another participant
-    already holds is refused (``§3.5``)."""
+    already holds is refused (spec §5)."""
     data = _payload(data)
     room_id = _room_id_of(data)
     if room_id is None:
@@ -608,7 +607,7 @@ async def assign_role(sid: str, data: dict | None = None) -> None:
 @sio.event
 @guarded("join_error")
 async def claim_role(sid: str, data: dict | None = None) -> None:
-    """First come, first served in ``PLAYER_CHOOSES`` (``§3.5``). Atomic:
+    """First come, first served in ``PLAYER_CHOOSES`` (spec §5). Atomic:
     the check and the write happen inside one lock acquisition."""
     data = _payload(data)
     room_id = _room_id_of(data)
@@ -688,7 +687,7 @@ async def claim_role(sid: str, data: dict | None = None) -> None:
 @sio.event
 @guarded("join_error")
 async def release_role(sid: str, data: dict | None = None) -> None:
-    """The caller gives up their role. Pre-start only (``§3.5``)."""
+    """The caller gives up their role. Pre-start only (spec §5)."""
     data = _payload(data)
     room_id = _room_id_of(data)
     if room_id is None:
@@ -756,7 +755,7 @@ async def _reject_start(sid: str, message: str, room_code: str | None) -> None:
 @sio.event
 @guarded("join_error", echo_room_code=True)
 async def start_game(sid: str, data: dict | None = None) -> None:
-    """Host authority. ``can_start`` is the whole gate (``§2.2``, ``§3.6``):
+    """Host authority. ``can_start`` is the whole gate (spec §4.3):
     the invalid-config case, the already-running case, the unfilled-roles
     case and the person-without-a-role case are all inside it, and none of
     them is restated here. Bot fill below therefore only ever takes roles
@@ -816,7 +815,7 @@ async def start_game(sid: str, data: dict | None = None) -> None:
                 # game is already running" on the happy path is noise. What is
                 # suppressed here is the *notification*, not the decision:
                 # `can_start` remains the only rule, and nothing is mutated or
-                # saved either way (§3.6 step 4, AC 31).
+                # saved either way.
                 return
             await _reject_start(sid, reason or _INVALID_HOST_SECRET, room_code)
             return
@@ -885,7 +884,7 @@ async def start_game(sid: str, data: dict | None = None) -> None:
         await socket_manager.emit_to_sid(target_sid, "your_state", payload)
     await socket_manager.emit_to_sid(host_target, "host_state", host_state_event)
 
-    # Section 12 (`12-socket-play.md §3.2`): play every bot role immediately,
+    # The play loop: play every bot role immediately,
     # so a bot-filled room does not sit idle in week 1. This runs after the
     # lock above has been released -- `run_bot_decisions` acquires its own,
     # and appending it inside that block would deadlock every bot game for

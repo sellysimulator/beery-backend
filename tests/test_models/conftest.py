@@ -1,13 +1,12 @@
-"""Testcontainers fixtures for section 13's schema suite.
+"""Testcontainers fixtures for the schema suite.
 
-``13-db-models-and-migrations.md §3`` says this is the one backend section
-that cannot be faked: ``alembic upgrade head``, the autogenerate drift check,
-cascade deletes, ``timestamptz`` round trips and the raw-insert
-``server_default`` test all need a real PostgreSQL server, and SQLite would
-pass every one of them vacuously.
+This is the one backend suite that cannot be faked: ``alembic upgrade head``,
+the autogenerate drift check, cascade deletes, ``timestamptz`` round trips and
+the raw-insert ``server_default`` test all need a real PostgreSQL server, and
+SQLite would pass every one of them vacuously.
 
 So the suite runs against an ephemeral PostgreSQL started by Testcontainers
-and thrown away afterwards.  Per ``§3.1``:
+and thrown away afterwards:
 
 1. the image tag is pinned to the production engine, ``postgres:17``;
 2. the container is **session** scoped and migrated once, while each test
@@ -18,14 +17,11 @@ and thrown away afterwards.  Per ``§3.1``:
    like a passing one in a terminal.
 
 **The application's ``DB_*`` credentials are never used.**  ``.env`` points at
-the owner's live managed PostgreSQL; ``tests/conftest.py`` (section 01)
-already redirects them at a dead port, and every database call in this
-package goes through a URL derived from the container.  ``alembic`` runs as a
+the owner's live managed PostgreSQL; ``tests/conftest.py`` already redirects
+them at a dead port, and every database call in this package goes through a
+URL derived from the container.  ``alembic`` runs as a
 subprocess whose ``DB_*`` environment is the container's own coordinates, and
 ``_assert_throwaway`` refuses any other target before a command is run.
-
-``tests/conftest.py`` belongs to section 01 and is not edited from here
-(**D19**), which is why these fixtures live in this file.
 """
 
 from __future__ import annotations
@@ -46,11 +42,11 @@ import pytest
 from sqlalchemy import Connection, Engine, create_engine, text
 from sqlalchemy.engine import make_url
 
-# --- pinned by 13-db-models-and-migrations.md §3.1 -------------------------
+# --- the pinned container --------------------------------------------------
 
 #: Rule 1 -- the managed instance runs PostgreSQL 17.  Proving the schema
 #: against a different major version proves the wrong thing.  DEPLOY.md and
-#: render.yaml document the same version (`test_config_surface.py` AC 15).
+#: render.yaml document the same version (`test_config_surface.py`).
 POSTGRES_IMAGE = "postgres:17"
 
 POSTGRES_USER = "beery"
@@ -67,7 +63,7 @@ ALEMBIC_VERSIONS = BACKEND_ROOT / "alembic" / "versions"
 #: The committed DDL, written by `Novus/scripts/db/gen_ddl.py`.
 DDL_SNAPSHOT = BACKEND_ROOT / "db" / "schema.postgres.sql"
 
-#: §2.1 to §2.9.  Nine tables, no more.
+#: Nine tables, no more (spec §10.1).
 EXPECTED_TABLES = frozenset(
     {
         "users",
@@ -82,15 +78,13 @@ EXPECTED_TABLES = frozenset(
     }
 )
 
-#: Every table except the two §2.7 and §2.8 mark as carrying no
-#: ``TimestampMixin`` -- "all tables use ``Base`` and, except where noted,
-#: ``TimestampMixin``".
+#: Every table except ``demand_series`` and ``weeks``, which carry no
+#: ``TimestampMixin``.
 TIMESTAMP_TABLES = tuple(sorted(EXPECTED_TABLES - {"demand_series", "weeks"}))
 
-#: §4.4 plus acceptance criterion 13: PostgreSQL's reserved key words (which
-#: cannot be a column name without double quotes), plus the names the plan
-#: rules out because they read as SQL functions (``min``, ``max``, ``rank``)
-#: or are reserved elsewhere (``key``).
+#: PostgreSQL's reserved key words (which cannot be a column name without
+#: double quotes), plus the names ruled out because they read as SQL
+#: functions (``min``, ``max``, ``rank``) or are reserved elsewhere (``key``).
 FORBIDDEN_COLUMN_NAMES = frozenset(
     {
         # PostgreSQL reserved
@@ -166,7 +160,7 @@ FORBIDDEN_COLUMN_NAMES = frozenset(
         "where",
         "window",
         "with",
-        # ruled out by the plan
+        # read as SQL functions, or reserved elsewhere
         "min",
         "max",
         "key",
@@ -181,14 +175,14 @@ SYNTAX_ERROR_SQLSTATE = "42601"
 _counter = count(1)
 
 
-# --- Docker guard (§3.1 rule 3, failure mode 10) ---------------------------
+# --- Docker guard ----------------------------------------------------------
 
 
 class DockerUnavailableWarning(UserWarning):
     """Raised alongside the skip so an all-skipped run is visible.
 
     A skipped suite looks identical to a passing one in a terminal, and the
-    bug this section guards -- a ``NOT NULL`` column with no
+    bug this suite guards -- a ``NOT NULL`` column with no
     ``server_default`` -- is exactly the kind that ships while its test is
     skipped.
     """
@@ -207,7 +201,7 @@ def docker_unavailable_reason(probe: Callable[[], Any] = _ping_docker) -> str | 
         probe()
     except Exception as exc:  # noqa: BLE001 - any failure means "no daemon"
         return (
-            "No Docker daemon is reachable, so section 13's Testcontainers "
+            "No Docker daemon is reachable, so the schema suite's Testcontainers "
             f"PostgreSQL suite cannot run: {type(exc).__name__}: {exc}. "
             "CI must reject a run in which this suite collected no "
             "non-skipped test."
@@ -248,7 +242,7 @@ def docker_daemon() -> None:
 
 @pytest.fixture(scope="session")
 def postgres_container(docker_daemon: None) -> Iterator[Any]:
-    """The one PostgreSQL every schema test shares (§3.1 rule 2)."""
+    """The one PostgreSQL every schema test shares."""
     started = time.monotonic()
     with _new_container(SCHEMA_DATABASE) as container:
         elapsed = time.monotonic() - started
@@ -358,9 +352,9 @@ def schema_engine(migrated_url: str) -> Iterator[Engine]:
 def db(schema_engine: Engine) -> Iterator[Connection]:
     """A connection whose transaction is rolled back after the test.
 
-    §3.1 rule 2: the container is migrated once, and each test's data is its
-    own.  A rolled-back transaction is the cheapest possible cleanup and it
-    survives a failing assertion.  A statement that fails aborts a
+    The container is migrated once, and each test's data is its own.  A
+    rolled-back transaction is the cheapest possible cleanup and it survives
+    a failing assertion.  A statement that fails aborts a
     PostgreSQL transaction, so a test that expects an error and then keeps
     using ``db`` wraps the failing statement in ``db.begin_nested()``.
     """
@@ -384,7 +378,7 @@ def admin_engine(postgres_url: str) -> Iterator[Engine]:
 
 @pytest.fixture()
 def blank_database(admin_engine: Engine, postgres_url: str) -> Iterator[str]:
-    """A freshly created, completely empty database (§5 criteria 1 to 4)."""
+    """A freshly created, completely empty database."""
     drop = f"DROP DATABASE IF EXISTS {MIGRATION_DATABASE} WITH (FORCE)"
     with admin_engine.connect() as connection:
         connection.execute(text(drop))
@@ -530,7 +524,7 @@ def insert_row(
 
     Serial columns, nullable columns, columns with a default and -- unless
     ``with_timestamps`` -- ``created_at``/``updated_at`` are all left out,
-    which is exactly the insert failure mode 1 describes: section 14 writes
+    which is exactly the insert end-of-game persistence makes: it writes
     with batched raw inserts that bypass every ORM-side default.
 
     Returns the new row's ``id`` (via ``RETURNING``), or 0 for a table with
@@ -583,14 +577,14 @@ def make_game(db: Connection) -> Callable[..., int]:
     return _make
 
 
-# --- section 01's engine, pointed at the container (failure mode 9) --------
+# --- the app's engine, pointed at the container ----------------------------
 
 
 @pytest.fixture()
 def app_connection(migrated_url: str) -> Iterator[Connection]:
-    """A connection from section 01's own ``app/db/session.py`` engine.
+    """A connection from the app's own ``app/db/session.py`` engine.
 
-    Failure mode 9 turns on the ``options=-c timezone=UTC`` connect argument
+    The timezone test turns on the ``options=-c timezone=UTC`` connect argument
     ``app/config.py`` hands that engine, so the test has to use *that* engine
     rather than one this file builds.  The module is reloaded with
     ``settings`` pointed at the container, and both are restored afterwards.
