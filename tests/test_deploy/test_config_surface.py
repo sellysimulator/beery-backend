@@ -53,10 +53,32 @@ MIGRATION_TEST = BACKEND_ROOT / "tests" / "test_models" / "test_migration.py"
 
 IMAGE_TAG = "beery-backend-section23-test"
 
+# The Dockerfile CMD migrates, then serves. Free Render instances have no
+# pre-deploy step, so the container runs ``alembic upgrade head`` itself.
+STARTUP_MIGRATION = "alembic upgrade head && "
+
 
 def _read(path: Path) -> str:
     assert path.exists(), f"required file is missing: {path}"
     return path.read_text()
+
+
+def _dockerfile_cmd() -> list[str]:
+    """The Dockerfile's exec-form ``CMD``, with line continuations joined the
+    way Docker joins them."""
+    text = _read(DOCKERFILE).replace("\\\n", "")
+    match = re.search(r"^CMD\s*(\[.*\])\s*$", text, re.MULTILINE)
+    assert match, "Dockerfile has no exec-form CMD"
+    return json.loads(match.group(1))
+
+
+def _serve_only_cmd() -> list[str]:
+    """The Dockerfile's ``CMD`` without its startup migration: the container
+    tests have no database, so they run exactly the committed uvicorn command
+    and nothing before it."""
+    argv = _dockerfile_cmd()
+    assert argv[-1].startswith(STARTUP_MIGRATION)
+    return [*argv[:-1], argv[-1][len(STARTUP_MIGRATION) :]]
 
 
 # --- Docker daemon guard (mirrors tests/test_models/conftest.py) -----------
@@ -134,6 +156,7 @@ def running_container(built_image: str) -> Iterator[tuple[str, int]]:
             "-e",
             "REDIS_URL=redis://127.0.0.1:16379/0",
             built_image,
+            *_serve_only_cmd(),
         ],
         check=True,
         capture_output=True,
@@ -195,6 +218,54 @@ def test_ac2_uvicorn_command_includes_h11_and_proxy_headers() -> None:
     assert "--proxy-headers" in cmd_text
     assert "uvicorn" in cmd_text
     assert "gunicorn" not in cmd_text
+
+
+# --- Startup migration --------------------------------------------------------
+
+
+def test_container_migrates_at_startup_before_serving() -> None:
+    """Free Render instances have no pre-deploy command, so the Dockerfile
+    CMD runs ``alembic upgrade head`` and only then ``exec``s uvicorn; and
+    ``render.yaml`` declares no ``preDeployCommand`` that would never run."""
+    argv = _dockerfile_cmd()
+    assert argv[:2] == ["sh", "-c"]
+    assert argv[-1].startswith("alembic upgrade head && exec uvicorn ")
+
+    render_text = _read(RENDER_YAML)
+    assert "preDeployCommand" not in render_text
+    assert re.search(r"^\s+plan: free$", render_text, re.MULTILINE)
+    assert re.search(r"^\s+autoDeployTrigger: checksPass$", render_text, re.MULTILINE)
+
+    dockerignore_lines = _read(DOCKERIGNORE).split()
+    assert not {"alembic", "alembic/", "alembic.ini"} & set(dockerignore_lines)
+
+
+def test_failed_startup_migration_exits_before_serving(built_image: str) -> None:
+    """A migration that fails exits the container non-zero and uvicorn never
+    starts, so the new instance never becomes healthy and Render keeps the
+    previous deploy live."""
+    result = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-e",
+            "DB_HOST=127.0.0.1",
+            "-e",
+            "DB_PORT=1",
+            "-e",
+            "DB_REQUIRE_SSL=false",
+            built_image,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "OperationalError" in output, "the startup migration did not run"
+    assert "Uvicorn running" not in output
 
 
 # --- AC 3, failure mode 9 -----------------------------------------------

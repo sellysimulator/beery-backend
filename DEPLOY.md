@@ -25,12 +25,18 @@ production, never at the Hosting origin.
 
 ## Build and run
 
-- `render.yaml` builds the committed `Dockerfile` (plain uvicorn, `--http h11
-  --proxy-headers`, no gunicorn) and runs `alembic upgrade head` as a
-  `preDeployCommand` before traffic switches to the new instance -- not
-  `create_all()`, and not at application startup, where a migration racing N
-  container instances is a lock-contention problem. On a database already at
-  head it is a no-op.
+- The service is a plain Docker web service on Render's **free** plan,
+  configured in the Render dashboard; `render.yaml` records its settings but
+  is not linked as a Blueprint. It builds the committed `Dockerfile` (plain
+  uvicorn, `--http h11 --proxy-headers`, no gunicorn).
+- **Migrations run at container startup.** Free instances have no pre-deploy
+  command, so the Dockerfile `CMD` is `alembic upgrade head && exec uvicorn
+  ...`: the container migrates before it serves -- never `create_all()`. On a
+  database already at head it is a no-op. A failed migration exits the
+  container non-zero, the new instance never becomes healthy, and Render keeps
+  the previous deploy live; the deploy log shows the Alembic error. Run
+  exactly **one** instance: two containers starting together would race the
+  same migration.
 - The image bakes in a **code snapshot**: there is no bind mount. **A source
   change needs a rebuild** -- a running container will happily keep serving
   the old code, which looks exactly like "my fix didn't work". Always confirm
@@ -154,8 +160,8 @@ different major version proves the wrong engine.
   Pulky and Beery, 3 + 1 = 4 for Lemony (a request waits up to 10 s for a
   connection, then fails). Normal running: 3 + 3 + 3 + 4 = 13. During a
   deploy Render runs the old and new instance of that game side by side (at
-  most +4 = 17), its pre-deploy `alembic upgrade head` takes 1 and one
-  operator `psql` session 1: 19 of 20. So **deploy one game at a time**. A
+  most +4 = 17), the new container's startup `alembic upgrade head` takes 1
+  and one operator `psql` session 1: 19 of 20. So **deploy one game at a time**. A
   backend run locally against the shared service is one more instance;
   prefer a local Docker PostgreSQL for development. On a bigger plan raise
   both variables (they are not in `render.yaml`; set them in the Render
@@ -192,8 +198,8 @@ Run this before a class, every time.
       service runs as exactly **one** instance with no `--workers`.
 - [ ] If `REDIS_ENABLED=true`: `REDIS_URL` points at a **live** instance.
       Resolve the hostname and connect.
-- [ ] `alembic upgrade head` has run against the application database;
-      `alembic_version` exists and matches head.
+- [ ] The deploy log shows the startup `alembic upgrade head` completing
+      before uvicorn starts; `alembic_version` exists and matches head.
 - [ ] Startup logs show *"PostgreSQL TLS is required and verified against
       DB_SSL_CA (sslmode=verify-full)."* -- `DB_SSL_CA` is the CA of the
       shared Novus Aiven PostgreSQL service.
@@ -228,8 +234,8 @@ Run this before a class, every time.
    skipped (an all-skipped run looks identical to a passing one otherwise).
 4. `docker build .`
 
-There is no deploy step in the workflow. Render's auto-deploy is set to
-`checksPass` (`autoDeployTrigger` in `render.yaml`, "After CI checks pass" in
-the dashboard): a push to `main` deploys only once every check above has
+There is no deploy step in the workflow. Render's Auto-Deploy is set to
+"After CI checks pass" in the dashboard (recorded as `autoDeployTrigger:
+checksPass` in `render.yaml`): a push to `main` deploys only once every check above has
 passed. Do not add a deploy hook back alongside it -- a passing push would
 deploy twice.

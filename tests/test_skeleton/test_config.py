@@ -365,7 +365,7 @@ def test_transport_and_service_defaults(monkeypatch):
 def test_pool_defaults_fit_the_aiven_free_plan(monkeypatch):
     """2 + 1 per instance on the Aiven Free service the four Novus games share:
     Selly, Pulky and Beery 3 each, Lemony 4, plus one game's second instance
-    during its deploy (at most 4), the pre-deploy migration (1) and one psql
+    during its deploy (at most 4), the startup migration (1) and one psql
     session (1) stay within 20."""
     s = _isolated(monkeypatch)
     assert (s.DB_POOL_SIZE, s.DB_MAX_OVERFLOW) == (2, 1)
