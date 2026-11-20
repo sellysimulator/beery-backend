@@ -1,4 +1,4 @@
-"""Finished exports, kept in this process's memory (2026-11-14, `15 §11`).
+"""Finished exports, kept in this process's memory.
 
 The export by `public_id` is open to anyone who can see a game's results, so
 a class downloading the same game would rebuild the same file from PostgreSQL once

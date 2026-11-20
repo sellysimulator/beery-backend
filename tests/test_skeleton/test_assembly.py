@@ -1,10 +1,8 @@
-"""The three assembly packages (01 §2 "The three assembly packages", D19).
+"""The three assembly packages (D19).
 
-Acceptance criteria 14, 16, 17 and 18, and failure mode 7.
-
-Every later backend section registers its behaviour by dropping a module into
-one of these packages.  If discovery assumes at least one member, or if a
-failing check can abort startup, the build stops at section 02.
+Every backend feature registers its behaviour by dropping a module into one
+of these packages.  If discovery assumes at least one member, or if a
+failing check can abort startup, the app stops assembling.
 """
 
 from __future__ import annotations
@@ -36,12 +34,12 @@ def _paths(routers) -> set[str]:
     return found
 
 
-# --- AC 14 / FM 7 -----------------------------------------------------------
+# --- every package imports, even while empty --------------------------------
 
 
 @pytest.mark.parametrize("package_name", ASSEMBLY_PACKAGES)
 def test_assembly_package_imports_cleanly(package_name):
-    """AC 14: all three packages import cleanly."""
+    """All three packages import cleanly."""
     import importlib
 
     assert importlib.import_module(package_name) is not None
@@ -49,31 +47,30 @@ def test_assembly_package_imports_cleanly(package_name):
 
 @pytest.mark.parametrize("package_name", ASSEMBLY_PACKAGES)
 def test_assembly_package_imports_cleanly_while_empty(package_name, make_empty_package):
-    """AC 14 / FM 7: "Every one of the three must work while empty".
+    """Every one of the three must work while empty.
 
-    ``app/api/v1/`` already ships ``health.py`` in this very section, so the
-    empty state is reproduced against a copy of the discovery ``__init__.py``
-    with no members beside it -- ``iter_modules`` over an empty package yields
-    nothing, and that must not raise."""
+    ``app/api/v1/`` already ships ``health.py``, so the empty state is
+    reproduced against a copy of the discovery ``__init__.py`` with no members
+    beside it -- ``iter_modules`` over an empty package yields nothing, and
+    that must not raise."""
     assert make_empty_package(package_name) is not None
 
 
 def test_all_routers_on_an_empty_package_returns_empty_list(make_empty_package):
-    """AC 14 / FM 7: ``all_routers()`` returns ``[]`` rather than raising."""
+    """``all_routers()`` returns ``[]`` rather than raising."""
     empty = make_empty_package("app.api.v1")
     assert empty.all_routers() == []
 
 
 def test_run_startup_checks_on_an_empty_package_is_a_no_op(make_empty_package):
-    """AC 14 / FM 7: ``run_startup_checks()`` is a no-op with no members."""
+    """``run_startup_checks()`` is a no-op with no members."""
     empty = make_empty_package("app.core.checks")
     assert empty.run_startup_checks() is None
 
 
 def test_importing_the_handlers_package_succeeds():
-    """AC 14: ``import app.sockets.handlers`` succeeds -- ``app/main.py``
-    imports it purely for the side effect of the discovery loop (§3.1 step 6),
-    and in this section it has no members at all."""
+    """``import app.sockets.handlers`` succeeds -- ``app/main.py`` imports it
+    purely for the side effect of the discovery loop."""
     from app.sockets import handlers
 
     assert handlers.__name__ == "app.sockets.handlers"
@@ -85,11 +82,11 @@ def test_all_routers_returns_a_list_of_routers():
     assert all(isinstance(r, APIRouter) for r in routers)
 
 
-# --- AC 16 ------------------------------------------------------------------
+# --- a dropped-in router ----------------------------------------------------
 
 
 ROUTER_MODULE = textwrap.dedent('''
-    """Temporary module written by a test (01 §5 item 16)."""
+    """Temporary module written by a test: a dropped-in router."""
 
     from fastapi import APIRouter
 
@@ -103,14 +100,14 @@ ROUTER_MODULE = textwrap.dedent('''
 
 
 def test_a_dropped_in_router_module_is_discovered(drop_module):
-    """AC 16: a module dropped into ``app/api/v1/`` exporting a ``router`` is
+    """A module dropped into ``app/api/v1/`` exporting a ``router`` is
     picked up by ``all_routers()`` with no edit anywhere else."""
     reloaded = drop_module("app.api.v1", "zzz_probe_router", ROUTER_MODULE)
     assert "/tests-drop-in-probe" in _paths(reloaded.all_routers())
 
 
 def test_dropped_in_routers_come_back_in_module_name_order(drop_module):
-    """§2: "every discovered module's ``router``, in module-name order"."""
+    """Every discovered module's ``router``, in module-name order."""
     drop_module("app.api.v1", "aaa_probe_router", ROUTER_MODULE)
     reloaded = drop_module("app.api.v1", "zzz_probe_router_two", ROUTER_MODULE)
     routers = reloaded.all_routers()
@@ -127,17 +124,17 @@ def test_dropped_in_routers_come_back_in_module_name_order(drop_module):
 
 
 def test_dropped_in_router_does_not_require_editing_main(drop_module):
-    """AC 16 / D19: discovery is the whole registration mechanism."""
+    """D19: discovery is the whole registration mechanism."""
     source = (PROJECT_ROOT / "app" / "main.py").read_text()
     drop_module("app.api.v1", "zzz_probe_router_three", ROUTER_MODULE)
     assert "zzz_probe_router_three" not in source
 
 
-# --- AC 17 ------------------------------------------------------------------
+# --- a dropped-in startup check ---------------------------------------------
 
 
 CHECK_MODULE = textwrap.dedent('''
-    """Temporary module written by a test (01 §5 item 17)."""
+    """Temporary module written by a test: a dropped-in startup check."""
 
     import os
     import pathlib
@@ -153,7 +150,7 @@ CHECK_MODULE = textwrap.dedent('''
     ''')
 
 RAISING_CHECK_MODULE = textwrap.dedent('''
-    """Temporary module written by a test (01 §5 item 18)."""
+    """Temporary module written by a test: one raising check, one survivor."""
 
     import os
     import pathlib
@@ -175,9 +172,9 @@ RAISING_CHECK_MODULE = textwrap.dedent('''
 
 
 def test_a_dropped_in_check_module_runs_at_startup(drop_module, monkeypatch, tmp_path):
-    """AC 17: a module dropped into ``app/core/checks/`` calling
-    ``register_check`` runs at startup -- this is exactly how section 02 adds
-    the Firebase check without editing ``app/main.py`` (§3.2)."""
+    """A module dropped into ``app/core/checks/`` calling ``register_check``
+    runs at startup -- this is exactly how the Firebase check is added without
+    editing ``app/main.py``."""
     from fastapi.testclient import TestClient
 
     sentinel = tmp_path / "check-ran.txt"
@@ -193,7 +190,7 @@ def test_a_dropped_in_check_module_runs_at_startup(drop_module, monkeypatch, tmp
 
 
 def test_register_check_returns_the_function():
-    """§2: ``register_check`` is usable as a decorator, so it must hand the
+    """``register_check`` is usable as a decorator, so it must hand the
     function back."""
 
     def probe() -> None:
@@ -202,11 +199,11 @@ def test_register_check_returns_the_function():
     assert checks_pkg.register_check(probe) is probe
 
 
-# --- AC 18 ------------------------------------------------------------------
+# --- a raising check --------------------------------------------------------
 
 
 def test_a_raising_check_does_not_stop_the_others(caplog):
-    """AC 18: an exception in one check is logged and does not abort the
+    """An exception in one check is logged and does not abort the
     others."""
     survivors: list[str] = []
 
@@ -229,7 +226,7 @@ def test_a_raising_check_does_not_stop_the_others(caplog):
 
 
 def test_a_raising_check_does_not_abort_startup(drop_module, monkeypatch, tmp_path):
-    """AC 18: "never aborts startup" -- a misconfigured backing service must
+    """Never aborts startup -- a misconfigured backing service must
     degrade the app, not refuse to boot it."""
     from fastapi.testclient import TestClient
 

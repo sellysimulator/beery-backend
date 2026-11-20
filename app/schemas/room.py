@@ -1,5 +1,5 @@
 """Request and response models for the rooms REST API
-(``10-rooms-rest-api.md`` §2).
+(spec §11.1).
 
 ``PresetSummary`` is declared before ``PresetListResponse``, which
 references it -- the other order is a ``NameError`` at class-creation time.
@@ -52,27 +52,26 @@ class ConfigPreviewRequest(BaseModel):
     # config save merges it (`merge_config_patch`) before validation. The
     # multi-game setup form edits a local draft with no room behind it, and
     # this keeps the merge rule (a demand-kind change replaces the block, and
-    # the server fills that kind's defaults) on the server (2026-11-14).
+    # the server fills that kind's defaults) on the server.
     patch: dict | None = None
 
 
 class ConfigPreviewResponse(BaseModel):
-    """`core.preview.ConfigPreview` on the wire (`10 §3.5b`)."""
+    """`core.preview.ConfigPreview` on the wire."""
 
     demand_series: list[int]  # weeks 1..duration_weeks, index 0 = week 1
     demand_is_example: bool  # STOCHASTIC with no seed yet: an example draw
     lead_times: dict[str, int]  # role -> weeks from ordering to arrival
     # The validated draft as a stored config would hold it (`to_payload()`):
-    # the patch merged in and every default filled. Additive (2026-11-14); the
-    # multi-game setup form keeps it as its draft, as the lobby keeps the
-    # stored config.
+    # the patch merged in and every default filled. The multi-game setup form
+    # keeps it as its draft, as the lobby keeps the stored config.
     config: dict
 
 
 class PresetSummary(BaseModel):
     name: str
     label: str
-    # Figures written from the preset's own config, then a tagline (2026-11-03).
+    # Figures written from the preset's own config, then a tagline.
     description: str
     config: dict
     # True for the preset `/create` and `/batch-create` use when none is named,
@@ -84,7 +83,7 @@ class PresetListResponse(BaseModel):
     presets: list[PresetSummary]
 
 
-# --- multi-game hosting (10-rooms-rest-api.md §3.5c, §3.5d) ---------------- #
+# --- multi-game hosting ------------------------------------------------------ #
 
 
 class RoomBatchCreateRequest(BaseModel):

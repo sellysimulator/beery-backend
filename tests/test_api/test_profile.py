@@ -1,8 +1,7 @@
 """Black-box tests for ``POST /api/v1/games/claim`` and the ``/users/me/*``
-routes on the second router ``15-results-and-export-api.md`` owns
-(``app/api/v1/user_games.py``).
-
-Covers ``§4`` acceptance criteria 18-22 and ``§5`` failure modes 5 and 6.
+routes on the profile router (``app/api/v1/user_games.py``, spec §9.9): the
+guest claim, the zero-filled stats, the paged match history, a game detail
+that hides someone else's game, and the bounded statement count.
 
 Reuses ``persist_full_game``, ``register_user``, ``bearer_for`` and the
 ``api_client``/``session_factory`` fixtures from ``tests/test_api/conftest.py``.
@@ -50,8 +49,7 @@ def _persist_game_for_player(
 
     A non-guest ``identity`` is registered first, with ``role.value`` as its
     display name, so the profile reads a known name rather than the bare
-    ``users`` row the end-of-game write would otherwise create for it
-    (failure mode 11 of ``14-end-of-game-persistence.md``).
+    ``users`` row the end-of-game write would otherwise create for it.
     """
     if identity is not None and not identity.startswith("guest_"):
         register_user(session_factory, firebase_uid=identity, display_name=role.value)
@@ -71,11 +69,11 @@ def _persist_game_for_player(
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 18
+# Claiming guest games
 # ---------------------------------------------------------------------------
 
 
-def test_ac18_claim_returns_the_claimed_count(
+def test_claim_returns_the_claimed_count(
     api_client, session_factory, firebase_tokens, fake_redis
 ):
     guest_identity = "guest_claim-target-0000-0000-0000-000000000010"
@@ -97,7 +95,7 @@ def test_ac18_claim_returns_the_claimed_count(
     assert stats_response.json()["games_played"] == 1
 
 
-def test_ac18_claim_without_a_token_is_401(api_client, fake_redis):
+def test_claim_without_a_token_is_401(api_client, fake_redis):
     response = api_client.post(
         CLAIM_URL, json={"guest_identity": "guest_does-not-matter-0000-0000-000011"}
     )
@@ -107,11 +105,11 @@ def test_ac18_claim_without_a_token_is_401(api_client, fake_redis):
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 19
+# Career stats
 # ---------------------------------------------------------------------------
 
 
-def test_ac19_stats_for_a_user_with_no_row_is_zero_filled_200(
+def test_stats_for_a_user_with_no_row_is_zero_filled_200(
     api_client, session_factory, firebase_tokens, fake_redis
 ):
     firebase_uid = "uid-brand-new-account"
@@ -137,11 +135,11 @@ def test_ac19_stats_for_a_user_with_no_row_is_zero_filled_200(
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criteria 20, 21
+# Match history
 # ---------------------------------------------------------------------------
 
 
-def test_ac20_ac21_match_history_is_own_newest_first_and_clamped(
+def test_match_history_is_own_newest_first_and_clamped(
     api_client, session_factory, firebase_tokens, fake_redis
 ):
     firebase_uid = "uid-history-owner"
@@ -188,7 +186,7 @@ def test_ac20_ac21_match_history_is_own_newest_first_and_clamped(
     assert len(second_page["matches"]) == 1
     assert second_page["matches"][0]["game_id"] == games[0]["game_id"]
 
-    # AC 21
+    # An oversized page_size is clamped.
     clamped = api_client.get(
         GAMES_URL, params={"page": 1, "page_size": 1000}, headers=headers
     ).json()
@@ -196,11 +194,11 @@ def test_ac20_ac21_match_history_is_own_newest_first_and_clamped(
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 22 / failure mode 5
+# Game detail
 # ---------------------------------------------------------------------------
 
 
-def test_ac22_fm5_game_detail_for_someone_elses_game_is_404_like_a_missing_one(
+def test_game_detail_for_someone_elses_game_is_404_like_a_missing_one(
     api_client, session_factory, firebase_tokens, fake_redis
 ):
     owner_uid = "uid-game-owner"
@@ -234,11 +232,11 @@ def test_ac22_fm5_game_detail_for_someone_elses_game_is_404_like_a_missing_one(
 
 
 # ---------------------------------------------------------------------------
-# Failure mode 6
+# Statement count
 # ---------------------------------------------------------------------------
 
 
-def test_fm6_match_history_issues_a_bounded_number_of_statements(
+def test_match_history_issues_a_bounded_number_of_statements(
     api_client, session_factory, firebase_tokens, fake_redis, schema_engine
 ):
     firebase_uid = "uid-25-games-profile"
@@ -257,7 +255,7 @@ def test_fm6_match_history_issues_a_bounded_number_of_statements(
 
     assert response.status_code == 200
     assert response.json()["total"] == 25
-    # 15-results-and-export-api.md §5 failure mode 6's own bound.
+    # The match history's bound: a fixed number of statements, not one per game.
     assert log.total <= 3, (
         f"expected at most 3 statements for 25 games, ran {log.total}: "
         f"{[r.statement for r in log.records]}"

@@ -7,8 +7,8 @@ run depend on that: without it ``Base.metadata`` is empty in a fresh process and
 actually exists.
 
 Discovery rather than a literal import list, for the same reason the three
-assembly points in **D19** use it -- a later section adds a model module by
-dropping the file in, and edits nothing here.
+assembly points in **D19** use it -- a model module is added by dropping the
+file in, and nothing here is edited.
 """
 
 import importlib

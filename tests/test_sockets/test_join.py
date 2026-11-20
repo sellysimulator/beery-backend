@@ -1,7 +1,5 @@
 """``join`` and ``leave`` -- players arriving, reconnecting and departing
-(``11-socket-lobby.md``).
-
-Covers acceptance criteria 10-19 and failure modes 1, 2, 3, 14 and 16.
+(spec §4.2).
 """
 
 from __future__ import annotations
@@ -18,7 +16,7 @@ async def _room_after(state_svc, room_code):
     return await state_svc.get_room(room_code)
 
 
-# --- AC 10 ------------------------------------------------------------------ #
+# --- first join ------------------------------------------------------------- #
 
 
 async def test_first_join_creates_participant_and_emits_session_token(
@@ -42,7 +40,7 @@ async def test_first_join_creates_participant_and_emits_session_token(
     assert isinstance(joined[0]["session_token"], str) and joined[0]["session_token"]
 
 
-# --- AC 11 / failure mode 1 -------------------------------------------------- #
+# --- one identity, many sids ------------------------------------------------- #
 
 
 async def test_one_identity_four_sids_no_token_yields_one_participant(
@@ -65,7 +63,7 @@ async def test_one_identity_four_sids_no_token_yields_one_participant(
     assert len(set(aliases)) == 1
 
 
-# --- AC 12 -------------------------------------------------------------------- #
+# --- distinct identities ------------------------------------------------------ #
 
 
 async def test_four_distinct_identities_get_four_distinct_aliases(
@@ -82,7 +80,7 @@ async def test_four_distinct_identities_get_four_distinct_aliases(
     assert len(set(stored["participants"].keys())) == 4
 
 
-# --- AC 13 -------------------------------------------------------------------- #
+# --- guest and Firebase identities -------------------------------------------- #
 
 
 async def test_guest_and_firebase_uid_are_two_distinct_participants(
@@ -107,7 +105,7 @@ async def test_guest_and_firebase_uid_are_two_distinct_participants(
     assert len(stored["participants"]) == 3
 
 
-# --- AC 14 -------------------------------------------------------------------- #
+# --- a full room -------------------------------------------------------------- #
 
 
 async def test_fifth_distinct_identity_is_rejected_as_full(
@@ -135,7 +133,7 @@ async def test_fifth_distinct_identity_is_rejected_as_full(
     assert "full" in errors[0]["message"].lower()
 
 
-# --- AC 15 -------------------------------------------------------------------- #
+# --- session-token reconnect -------------------------------------------------- #
 
 
 async def test_valid_session_token_same_identity_reconnects_same_alias_and_token(
@@ -164,7 +162,7 @@ async def test_valid_session_token_same_identity_reconnects_same_alias_and_token
     assert joined[0]["alias"] == alias
 
 
-# --- AC 16 -------------------------------------------------------------------- #
+# --- a token from another identity -------------------------------------------- #
 
 
 async def test_valid_token_from_different_identity_does_not_reconnect(
@@ -187,7 +185,7 @@ async def test_valid_token_from_different_identity_does_not_reconnect(
     assert stored["participants"][alias_a]["identity"] == identity_a
 
 
-# --- AC 17 -------------------------------------------------------------------- #
+# --- a lost token rejoins by identity ----------------------------------------- #
 
 
 async def test_lost_token_rejoins_own_seat_by_identity_and_resyncs(
@@ -224,7 +222,7 @@ async def test_lost_token_rejoins_own_seat_by_identity_and_resyncs(
     assert "your_state" in events
 
 
-# --- AC 18 -------------------------------------------------------------------- #
+# --- leave -------------------------------------------------------------------- #
 
 
 async def test_leave_before_start_removes_participant_and_frees_role(
@@ -279,7 +277,7 @@ async def test_leave_after_start_is_rejected(
     assert fake_socket_manager.events_for("sid-1") == ["join_error"]
 
 
-# --- AC 19 / failure mode 14 --------------------------------------------------- #
+# --- leave removes only the caller --------------------------------------------- #
 
 
 async def test_leave_never_removes_anyone_but_the_caller(
@@ -301,7 +299,7 @@ async def test_leave_never_removes_anyone_but_the_caller(
     assert set(stored["participants"].keys()) == {"P2"}
 
 
-# --- failure mode 2 ------------------------------------------------------------ #
+# --- a leave never clobbers a survivor's alias --------------------------------- #
 
 
 async def test_leaving_participant_does_not_clobber_a_survivors_alias(
@@ -331,7 +329,7 @@ async def test_leaving_participant_does_not_clobber_a_survivors_alias(
     assert stored["participants"]["P3"]["display_name"] == p3_name_before
 
 
-# --- failure mode 3 ------------------------------------------------------------- #
+# --- session-token replay ------------------------------------------------------- #
 
 
 async def test_session_token_replay_from_a_different_identity_never_takes_over(
@@ -355,7 +353,7 @@ async def test_session_token_replay_from_a_different_identity_never_takes_over(
     assert len(stored["participants"]) == 2
 
 
-# --- failure mode 16 ------------------------------------------------------------- #
+# --- reconnect moves the sid mapping --------------------------------------------- #
 
 
 async def test_reconnect_moves_the_sid_mapping_rather_than_duplicating_it(

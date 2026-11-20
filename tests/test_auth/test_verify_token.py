@@ -1,11 +1,8 @@
-"""``verify_firebase_id_token`` -- the one verification path (02 §2, §3.2).
-
-Covers acceptance criteria 7 and 8.
+"""``verify_firebase_id_token`` -- the one verification path.
 
 ``None`` means **reject**.  An unconfigured Firebase is deliberately
 indistinguishable from an invalid token, because failing open would reinstate
-the impersonation bug the three-identifier model exists to prevent
-(``00-conventions.md §2``).
+the impersonation bug the three-identifier model exists to prevent.
 """
 
 from __future__ import annotations
@@ -38,7 +35,7 @@ def test_a_registered_token_returns_its_decoded_claims(firebase_tokens):
 )
 def test_an_unverifiable_token_returns_none(firebase_tokens, token):
     """Anything the SDK raises on -- malformed, expired, wrong audience,
-    revoked -- collapses to ``None``.  §3.2 says "raises anything -> None",
+    revoked -- collapses to ``None``: "raises anything -> None",
     and the fake raises the SDK's own ``InvalidIdTokenError``, so the
     ``except`` clause under test is the one that runs in production."""
     firebase_tokens.configure()
@@ -47,12 +44,12 @@ def test_an_unverifiable_token_returns_none(firebase_tokens, token):
     assert verify_firebase_id_token(token) is None
 
 
-# --- AC 7 --------------------------------------------------------------------
+# --- a falsy token -----------------------------------------------------------
 
 
 @pytest.mark.parametrize("token", ["", None], ids=["empty-string", "none"])
 def test_a_falsy_token_is_rejected_without_calling_firebase(firebase_tokens, token):
-    """AC 7: ``""`` and ``None`` return ``None`` without calling Firebase.
+    """``""`` and ``None`` return ``None`` without calling Firebase.
 
     Firebase *is* configured here, and the shared fake records every call it
     receives, so "did not call Firebase" is an observation rather than an
@@ -65,16 +62,16 @@ def test_a_falsy_token_is_rejected_without_calling_firebase(firebase_tokens, tok
     assert firebase_tokens.verify_calls == []
 
 
-# --- AC 8 --------------------------------------------------------------------
+# --- unconfigured Firebase ---------------------------------------------------
 
 
 def test_unconfigured_firebase_rejects_every_input(firebase_tokens):
-    """AC 8: with Firebase unconfigured, **every** input returns ``None`` --
+    """With Firebase unconfigured, **every** input returns ``None`` --
     including a token the SDK would have verified.
 
     ``firebase_tokens`` starts unconfigured and is never told otherwise here,
     while the registered token *would* verify, so a ``None`` can only have come
-    from the unconfigured check.  This is the "fail closed" half of §3.2: the
+    from the unconfigured check.  This is the "fail closed" half: the
     alternative -- trusting the raw value when there is nothing to verify it
     against -- is unauthenticated impersonation of any uid a caller names.
     """
@@ -85,13 +82,13 @@ def test_unconfigured_firebase_rejects_every_input(firebase_tokens):
     assert verify_firebase_id_token("") is None
 
 
-# --- the guest-tolerant dependency (§2) --------------------------------------
+# --- the guest-tolerant dependency -------------------------------------------
 
 
 def test_optional_user_is_none_for_a_bad_token_and_claims_for_a_good_one(
     firebase_tokens,
 ):
-    """§2: ``get_optional_firebase_user`` "returns None instead of raising, for
+    """``get_optional_firebase_user`` "returns None instead of raising, for
     routes open to guests" -- a guest reaching such a route must not be turned
     away by a 401."""
     firebase_tokens.configure()

@@ -1,26 +1,24 @@
-"""Black-box tests for section 03 -- ``app/core/enums.py`` and
-``app/core/config_models.py``.
+"""Black-box tests for ``app/core/enums.py`` and
+``app/core/config_models.py`` (spec §6, §8.1).
 
-Scope is exactly the *Public surface* chapter of ``03-game-config.md``: the
-enums, the frozen Pydantic models, ``GameConfig``'s accessors and construction
-helpers, ``Limits`` / ``DEFAULT_LIMITS`` and ``ConfigValidationError``.  The
-presets module is imported only to obtain a known-valid host-input payload --
-``§3.8`` guarantees every preset survives ``from_host_input`` unchanged, which
-makes ``get_preset("CLASSIC_MIT").to_payload()`` the one payload shape the
-document itself certifies as valid input.  Presets are covered on their own in
-``test_presets.py``.
+Scope is exactly the public surface: the enums, the frozen Pydantic models,
+``GameConfig``'s accessors and construction helpers, ``Limits`` /
+``DEFAULT_LIMITS`` and ``ConfigValidationError``.  The presets module is
+imported only to obtain a known-valid host-input payload -- every preset
+survives ``from_host_input`` unchanged, which makes
+``get_preset("CLASSIC_MIT").to_payload()`` a payload shape known to be valid
+input.  Presets are covered on their own in ``test_presets.py``.
 
 Nothing here reaches into the implementation: no private name, no internal data
-structure and no log message is asserted (``00-conventions.md §5``).  The single
-exception is ``test_config_models_imports_nothing_from_other_app_layers``, which
-``§5`` item 16 explicitly asks to be proved "by inspecting the module's
-imports".
+structure and no log message is asserted.  The single exception is
+``test_config_models_imports_nothing_from_other_app_layers``, which proves
+purity "by inspecting the module's imports".
 
-``§3.1``'s ``.field`` table is part of the contract, so every rejection test
-asserts the exact string rather than merely "some field".  ``§3.1`` also fixes
-the evaluation order (``duration_weeks`` -> ``currency_symbol`` -> ``roles`` ->
-``demand``), which makes a doubly-invalid payload's ``.field`` deterministic and
-therefore testable.
+The ``.field`` string of each rejection is part of the contract, so every
+rejection test asserts the exact string rather than merely "some field".  The
+evaluation order is fixed too (``duration_weeks`` -> ``currency_symbol`` ->
+``roles`` -> ``demand``), which makes a doubly-invalid payload's ``.field``
+deterministic and therefore testable.
 """
 
 from __future__ import annotations
@@ -74,10 +72,10 @@ ROLE_NAMES = ("RETAILER", "WHOLESALER", "DISTRIBUTOR", "FACTORY")
 def base_payload(**overrides: Any) -> dict:
     """A fresh, known-valid host-input payload.
 
-    ``§3.8``: "Every preset must pass ``from_host_input`` unchanged", and
-    ``§3.7`` fixes ``to_payload()`` as the plain JSON-safe dict form.  Deriving
-    the base from the preset therefore uses the only payload shape the document
-    certifies, rather than one invented by the test.
+    Every preset must pass ``from_host_input`` unchanged, and ``to_payload()``
+    is the plain JSON-safe dict form.  Deriving the base from the preset
+    therefore uses a payload shape known to be valid, rather than one invented
+    by the test.
     """
     payload = copy.deepcopy(get_preset("CLASSIC_MIT").to_payload())
     payload.update(overrides)
@@ -137,7 +135,7 @@ def assert_rejected_custom(
 def hand_built_config() -> GameConfig:
     """A config in which **every** field is set away from its default.
 
-    The per-role delays are deliberately all different so that ``§3.2``'s
+    The per-role delays are deliberately all different so that the delay
     accessors cannot pass by accident.
     """
     return GameConfig(
@@ -231,7 +229,7 @@ def test_base_payload_is_accepted_unchanged() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §2 enums / §3.3 chain topology -- AC 7
+# Enums and chain topology
 # ---------------------------------------------------------------------------
 
 
@@ -319,7 +317,7 @@ def test_supporting_enum_members() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §4 Worked examples (normative) -- asserted literally, value for value
+# Worked examples (normative) -- asserted literally, value for value
 # ---------------------------------------------------------------------------
 
 
@@ -337,7 +335,7 @@ def test_worked_example_classic_mit_accessors() -> None:
 
 
 def test_worked_example_duration_weeks_out_of_range_is_refused() -> None:
-    """Amended 2026-11-02: a host who types 500 weeks is told the range, not
+    """A host who types 500 weeks is told the range, not
     handed a 104-week game they did not ask for."""
     err = assert_rejected(base_payload(duration_weeks=500), field="duration_weeks")
     assert "between 8 and 104" in str(err)
@@ -373,7 +371,7 @@ def test_worked_example_short_custom_series_rejected_with_field() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §3.2 delay semantics -- AC 6; §2 accessors -- AC 5
+# Delay semantics and accessors (spec §6.2)
 # ---------------------------------------------------------------------------
 
 
@@ -419,7 +417,7 @@ def test_order_delay_weeks_uses_information_delay_for_all_four_roles() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §5 AC 1 immutability, and §6 failure mode 8
+# Immutability
 # ---------------------------------------------------------------------------
 
 
@@ -452,7 +450,7 @@ def test_every_config_model_is_frozen(model: Any, field: str, value: Any) -> Non
 
 
 def test_a_roles_entry_cannot_be_replaced_after_freeze() -> None:
-    """``§6`` failure mode 8: ``cfg.roles[Role.RETAILER]`` cannot be replaced.
+    """``cfg.roles[Role.RETAILER]`` cannot be replaced.
 
     A frozen model only blocks *attribute* assignment, so a plain mutable dict
     would let a caller swap a role's whole configuration out from under a
@@ -476,7 +474,7 @@ def test_a_nested_role_config_field_cannot_be_mutated() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §3.7 serialisation -- AC 2, AC 3
+# Serialisation
 # ---------------------------------------------------------------------------
 
 
@@ -534,7 +532,7 @@ def test_round_trip_preserves_the_factory_config_type() -> None:
 
 
 def test_round_trip_survives_a_json_text_hop() -> None:
-    """The point of ``§3.7``: the config has to live in Redis as text."""
+    """The point of the payload form: the config has to live in Redis as text."""
     cfg = hand_built_config()
     assert GameConfig.from_payload(json.loads(json.dumps(cfg.to_payload()))) == cfg
 
@@ -545,24 +543,24 @@ def test_from_payload_raises_on_a_payload_missing_roles_and_demand() -> None:
 
 
 def test_from_payload_does_not_clamp() -> None:
-    """``§3.1``: ``from_payload`` assumes an already-validated value."""
+    """``from_payload`` assumes an already-validated value."""
     payload = get_preset("CLASSIC_MIT").to_payload()
     payload["duration_weeks"] = 500
     assert GameConfig.from_payload(payload).duration_weeks == 500
 
 
 # ---------------------------------------------------------------------------
-# §3.1 rejection rules 1-9 -- AC 8
+# Rejections
 # ---------------------------------------------------------------------------
 
 
-def test_reject_1_custom_demand_shorter_than_duration_weeks() -> None:
+def test_reject_custom_demand_shorter_than_duration_weeks() -> None:
     payload = base_payload(duration_weeks=12)
     payload["demand"] = {"kind": "CUSTOM", "values": [4] * 11}
     assert_rejected(payload, field="demand.values")
 
 
-def test_reject_2_custom_demand_containing_a_negative_value() -> None:
+def test_reject_custom_demand_containing_a_negative_value() -> None:
     payload = base_payload(duration_weeks=12)
     values = [4] * 12
     values[7] = -1
@@ -571,7 +569,7 @@ def test_reject_2_custom_demand_containing_a_negative_value() -> None:
 
 
 @pytest.mark.parametrize("step_week", [1, 0, -3, 37, 100])
-def test_reject_3_step_week_outside_two_to_duration_weeks(step_week: int) -> None:
+def test_reject_step_week_outside_two_to_duration_weeks(step_week: int) -> None:
     payload = payload_with_demand(
         kind="STEP", initial_value=4, step_week=step_week, step_value=8
     )
@@ -580,7 +578,7 @@ def test_reject_3_step_week_outside_two_to_duration_weeks(step_week: int) -> Non
 
 
 @pytest.mark.parametrize("start_week", [0, -1, 37, 500])
-def test_reject_4_ramp_start_week_outside_one_to_duration_weeks(
+def test_reject_ramp_start_week_outside_one_to_duration_weeks(
     start_week: int,
 ) -> None:
     payload = payload_with_demand(
@@ -595,7 +593,7 @@ def test_reject_4_ramp_start_week_outside_one_to_duration_weeks(
 
 
 @pytest.mark.parametrize("period_weeks", [1, 0, -4])
-def test_reject_5_seasonal_period_below_two(period_weeks: int) -> None:
+def test_reject_seasonal_period_below_two(period_weeks: int) -> None:
     payload = payload_with_demand(
         kind="SEASONAL",
         base=8,
@@ -607,20 +605,20 @@ def test_reject_5_seasonal_period_below_two(period_weeks: int) -> None:
 
 
 @pytest.mark.parametrize("missing", ROLE_NAMES)
-def test_reject_6_roles_missing_any_member(missing: str) -> None:
+def test_reject_roles_missing_any_member(missing: str) -> None:
     payload = base_payload()
     del payload["roles"][missing]
     assert_rejected(payload, field="roles")
 
 
-def test_reject_6_empty_roles_mapping() -> None:
+def test_reject_empty_roles_mapping() -> None:
     payload = base_payload()
     payload["roles"] = {}
     assert_rejected(payload, field="roles")
 
 
-def test_reject_7_factory_entry_that_is_not_a_factory_config() -> None:
-    """``§3.1``: rule 7 is reachable only when the caller passes model
+def test_reject_factory_entry_that_is_not_a_factory_config() -> None:
+    """This refusal is reachable only when the caller passes model
     *instances* -- any mapping under ``"FACTORY"`` parses as a ``FactoryConfig``
     with defaults, so a pure-JSON payload can never trigger it."""
     payload = base_payload()
@@ -629,7 +627,7 @@ def test_reject_7_factory_entry_that_is_not_a_factory_config() -> None:
 
 
 def test_a_factory_config_instance_under_factory_is_accepted() -> None:
-    """The mirror of rule 7: the model-instance input shape itself is legal."""
+    """The mirror of the test above: the model-instance input shape is legal."""
     payload = base_payload()
     payload["roles"]["FACTORY"] = FactoryConfig(production_capacity_per_week=25)
     cfg = build(payload)
@@ -646,7 +644,7 @@ def test_role_config_instances_are_accepted_for_the_other_three_roles() -> None:
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
-def test_reject_8_non_finite_cost(bad: float) -> None:
+def test_reject_non_finite_cost(bad: float) -> None:
     assert not math.isfinite(bad)
     assert_rejected(
         payload_for_role("RETAILER", holding_cost_per_unit_week=bad),
@@ -655,7 +653,7 @@ def test_reject_8_non_finite_cost(bad: float) -> None:
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
-def test_reject_8_non_finite_starting_capital(bad: float) -> None:
+def test_reject_non_finite_starting_capital(bad: float) -> None:
     assert_rejected(
         payload_for_role("FACTORY", starting_capital=bad),
         field="roles.FACTORY.starting_capital",
@@ -663,14 +661,14 @@ def test_reject_8_non_finite_starting_capital(bad: float) -> None:
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
-def test_reject_8_non_finite_bot_parameter(bad: float) -> None:
+def test_reject_non_finite_bot_parameter(bad: float) -> None:
     payload = base_payload()
     payload["bot"]["theta"] = bad
     assert_rejected(payload, field="bot.theta")
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
-def test_reject_8_non_finite_demand_parameter(bad: float) -> None:
+def test_reject_non_finite_demand_parameter(bad: float) -> None:
     assert_rejected(
         payload_with_demand(
             kind="RAMP",
@@ -684,7 +682,7 @@ def test_reject_8_non_finite_demand_parameter(bad: float) -> None:
 
 
 @pytest.mark.parametrize("symbol", ["$$$$$", "US$$$", "€€€€€"])
-def test_reject_9_currency_symbol_longer_than_four_characters(symbol: str) -> None:
+def test_reject_currency_symbol_longer_than_four_characters(symbol: str) -> None:
     assert len(symbol) == 5
     assert_rejected(base_payload(currency_symbol=symbol), field="currency_symbol")
 
@@ -696,7 +694,7 @@ def test_config_validation_error_is_a_value_error_with_a_field() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §3.1: a violation that is NOT one of the nine must be repaired, not raised
+# Every other out-of-range number: refused too, never repaired
 # ---------------------------------------------------------------------------
 
 
@@ -705,8 +703,8 @@ def _accepted(payload: dict) -> GameConfig:
         return build(payload)
     except ConfigValidationError as err:  # pragma: no cover - failure path
         pytest.fail(
-            f"from_host_input rejected a value that §3.1 does not list as a "
-            f"rejection rule (.field={err.field!r}): {err}"
+            f"from_host_input rejected a value that is not one of the "
+            f"rejection rules (.field={err.field!r}): {err}"
         )
 
 
@@ -764,8 +762,8 @@ def _accepted(payload: dict) -> GameConfig:
 def test_out_of_range_numbers_are_refused_not_repaired(
     payload: dict, field: str
 ) -> None:
-    """Amended 2026-11-02 (the clamp-to-refuse change): every number outside
-    its range is refused, naming the field and the range."""
+    """Every number outside its range is refused, naming the field and the
+    range."""
     err = assert_rejected(payload, field=field)
     assert "must be between" in str(err)
 
@@ -792,8 +790,9 @@ def test_bot_parameters_out_of_range_are_refused(field: str, given: float) -> No
 
 
 def test_boundary_values_on_the_rejection_rules_are_accepted() -> None:
-    """The nine rules reject *outside* their range; the edges stay legal."""
-    # Rule 3: step_week in 2..duration_weeks inclusive.
+    """The rejections above refuse values *outside* their range; the edges
+    stay legal."""
+    # step_week in 2..duration_weeks inclusive.
     payload = payload_with_demand(
         kind="STEP", initial_value=4, step_week=2, step_value=8
     )
@@ -806,7 +805,7 @@ def test_boundary_values_on_the_rejection_rules_are_accepted() -> None:
     payload["duration_weeks"] = 36
     assert _accepted(payload).demand.step_week == 36
 
-    # Rule 4: start_week in 1..duration_weeks inclusive.
+    # start_week in 1..duration_weeks inclusive.
     for start_week in (1, 36):
         payload = payload_with_demand(
             kind="RAMP",
@@ -818,29 +817,29 @@ def test_boundary_values_on_the_rejection_rules_are_accepted() -> None:
         payload["duration_weeks"] = 36
         assert _accepted(payload).demand.start_week == start_week
 
-    # Rule 5: period_weeks == 2 is the smallest legal period.
+    # period_weeks == 2 is the smallest legal period.
     payload = payload_with_demand(
         kind="SEASONAL", base=8, amplitude=4, period_weeks=2, phase=0.0
     )
     assert _accepted(payload).demand.period_weeks == 2
 
-    # Rule 2: zero is not negative.
+    # A CUSTOM entry of zero is not negative.
     payload = base_payload(duration_weeks=8)
     payload["demand"] = {"kind": "CUSTOM", "values": [0] * 8}
     assert _accepted(payload).demand.values == [0] * 8
 
-    # Rule 9: exactly four characters is not "longer than 4".
+    # currency_symbol: exactly four characters is not "longer than 4".
     assert _accepted(base_payload(currency_symbol="US$ ")).currency_symbol == "US$ "
 
 
 # ---------------------------------------------------------------------------
-# §3.1 clamping -- AC 9, and §6 failure modes 2 and 3
+# Ranges: refused, never clamped (spec §6.6)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("given", [500, 10_000, 105, 7, 2, 0, -9])
 def test_duration_weeks_out_of_range_is_refused(given: int) -> None:
-    """Failure mode 2: an uncapped week count is an unbounded-work lever."""
+    """An uncapped week count is an unbounded-work lever."""
     err = assert_rejected(base_payload(duration_weeks=given), field="duration_weeks")
     assert "between 8 and 104" in str(err)
 
@@ -852,7 +851,7 @@ def test_duration_weeks_in_range_is_kept(given: int) -> None:
 
 @pytest.mark.parametrize("given", [0, -4, 9, 1000])
 def test_shipping_delay_weeks_out_of_range_is_refused(given: int) -> None:
-    """Failure mode 3: a zero delay collapses the pipeline."""
+    """A zero delay collapses the pipeline."""
     assert_rejected(
         payload_for_all_roles(shipping_delay_weeks=given),
         field="roles.RETAILER.shipping_delay_weeks",
@@ -961,7 +960,7 @@ def test_costs_in_range_are_kept(field: str, given: float) -> None:
 
 @pytest.mark.parametrize("given", [-50.0, 1e12])
 def test_starting_capital_out_of_range_is_refused(given: float) -> None:
-    """``§3.4``: ``[0, max_unit_value]``, refused outside it."""
+    """``[0, max_unit_value]``, refused outside it."""
     assert_rejected(
         payload_for_role("RETAILER", starting_capital=given),
         field="roles.RETAILER.starting_capital",
@@ -1032,7 +1031,7 @@ def test_range_checks_use_the_injected_limits_not_a_hardcoded_table() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §3.1 nonsensical optional override -- §6 failure mode 9
+# Nonsensical optional override
 # ---------------------------------------------------------------------------
 
 
@@ -1078,7 +1077,7 @@ def test_an_absent_optional_override_stays_none() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §3.1 swap -- AC 10, and §6 failure mode 1
+# Inverted stochastic range: swapped
 # ---------------------------------------------------------------------------
 
 
@@ -1113,11 +1112,9 @@ def test_a_non_inverted_stochastic_range_is_left_alone() -> None:
 
 
 def test_a_swapped_stochastic_range_is_safe_to_draw_from() -> None:
-    """Failure mode 1.
-
-    An inverted range makes ``random.randint(min, max)`` raise on *every*
+    """An inverted range makes ``random.randint(min, max)`` raise on *every*
     subsequent week; the exception fires before state is persisted, so the room
-    is wedged permanently.  Drawing the series is section 04's job, so this
+    is wedged permanently.  Drawing the series is the generator's job, so this
     asserts the property the generator depends on: the bounds the config hands
     out are ordered and usable.
     """
@@ -1153,7 +1150,7 @@ def test_an_equal_stochastic_range_is_accepted() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §6 failure mode 5 -- custom series length boundaries
+# Custom series length boundaries
 # ---------------------------------------------------------------------------
 
 
@@ -1182,7 +1179,7 @@ def test_a_duration_below_the_minimum_is_refused_before_the_custom_series() -> N
 
 
 # ---------------------------------------------------------------------------
-# §6 failure mode 10 -- currency symbol
+# Currency symbol
 # ---------------------------------------------------------------------------
 
 
@@ -1197,7 +1194,7 @@ def test_a_five_character_currency_symbol_raises() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §3.5 bot parameters -- AC 15
+# Bot parameters
 # ---------------------------------------------------------------------------
 
 
@@ -1245,13 +1242,13 @@ def test_target_stock_multiplier_inside_zero_ten_is_kept(given: float) -> None:
 
 
 # ---------------------------------------------------------------------------
-# §3.6 allow_negative_orders -- removed 2026-11-02; a legacy key still loads
+# There is no allow_negative_orders; a legacy key still loads
 # ---------------------------------------------------------------------------
 
 
 def test_allow_negative_orders_is_gone_and_a_legacy_key_is_ignored() -> None:
-    """Removed 2026-11-02: orders have a floor of 0. A stored config that still
-    carries the key -- a room in flight, a saved patch, an old export -- must
+    """Orders have a floor of 0 and there is no such option. A stored config
+    that still carries the key -- a room in flight, a saved patch, an old export -- must
     keep loading, through either door, and the key is simply dropped."""
     assert "allow_negative_orders" not in VisibilityConfig.model_fields
     assert "allow_negative_orders" not in VisibilityConfig().model_dump()
@@ -1268,12 +1265,12 @@ def test_allow_negative_orders_is_gone_and_a_legacy_key_is_ignored() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §2 Limits -- AC 14
+# Limits
 # ---------------------------------------------------------------------------
 
 
 def test_default_limits_match_the_decisions_table() -> None:
-    """``00-decisions.md §5``."""
+    """The ranges of spec §6.6."""
     assert DEFAULT_LIMITS.max_order_quantity == 9_999
     assert DEFAULT_LIMITS.max_weeks == 104
     assert DEFAULT_LIMITS.min_weeks == 8
@@ -1327,7 +1324,7 @@ def test_stage_count_is_fixed_at_four() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §5 AC 16 -- app/core purity, proved by inspecting the module's imports
+# app/core purity, proved by inspecting the module's imports
 # ---------------------------------------------------------------------------
 
 FORBIDDEN_PACKAGES = ("app.config", "app.services", "app.db", "app.sockets", "app.api")
@@ -1378,7 +1375,7 @@ def _offending_imports(module: Any) -> list[str]:
 
 
 def test_config_models_imports_nothing_from_other_app_layers() -> None:
-    """``§5`` item 16 / ``00-conventions.md §4``: ``app/core`` is pure."""
+    """``app/core`` is pure."""
     from app.core import config_models
 
     offenders = _offending_imports(config_models)
@@ -1419,7 +1416,7 @@ def test_enums_module_is_also_pure() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Every demand generator, end to end -- §2, §3.7
+# Every demand generator, end to end
 # ---------------------------------------------------------------------------
 
 DEMAND_PAYLOADS: dict[str, dict] = {
@@ -1548,7 +1545,7 @@ def test_seasonal_parameters_are_carried() -> None:
     ],
     ids=["seasonal.phase", "stochastic.mean", "stochastic.stdev"],
 )
-def test_reject_8_non_finite_in_any_demand_float_field(
+def test_reject_non_finite_in_any_demand_float_field(
     bad: float, demand: dict, field: str
 ) -> None:
     payload_demand = dict(demand)
@@ -1557,7 +1554,7 @@ def test_reject_8_non_finite_in_any_demand_float_field(
 
 
 # ---------------------------------------------------------------------------
-# Clamping is per role, not global -- §3.1 "every initial quantity, every cost"
+# Ranges are checked per role, not globally -- every initial quantity, every cost
 # ---------------------------------------------------------------------------
 
 
@@ -1606,7 +1603,7 @@ def test_the_range_check_covers_every_numeric_field_of_every_role(
 
 
 # ---------------------------------------------------------------------------
-# Defaulted fields -- §2 declares a default for everything but `roles` and
+# Defaulted fields -- the config declares a default for everything but `roles` and
 # `demand`, so a minimal host payload must still produce a complete config.
 # ---------------------------------------------------------------------------
 
@@ -1656,7 +1653,7 @@ def test_omitted_role_fields_take_their_model_defaults() -> None:
 
 @pytest.mark.parametrize("seed", [0, 1, 987_654_321, -17, 2**53 - 1, -(2**53 - 1)])
 def test_random_seed_is_carried_verbatim(seed: int) -> None:
-    """``D11``: the host's seed is the game's seed. It is not a clamped knob."""
+    """``D11``: the host's seed is the game's seed. It is carried as given."""
     cfg = build(base_payload(random_seed=seed))
     assert cfg.random_seed == seed
     assert GameConfig.from_payload(cfg.to_payload()).random_seed == seed
@@ -1715,7 +1712,7 @@ def test_preset_name_is_carried_and_optional() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §3.1: "from_payload ... raises on a structurally invalid payload."
+# from_payload raises on a structurally invalid payload.
 # ---------------------------------------------------------------------------
 
 
@@ -1755,7 +1752,7 @@ def _broken(mutate) -> dict:
     ],
 )
 def test_from_payload_raises_on_a_structurally_invalid_payload(mutate) -> None:
-    """``§3.1``: ``from_payload``'s input is the server's own serialised state,
+    """``from_payload``'s input is the server's own serialised state,
     so a structural failure there is a bug, not a user error -- it raises
     pydantic's ``ValidationError``, *not* ``ConfigValidationError``."""
     with pytest.raises(ValidationError) as excinfo:
@@ -1772,15 +1769,15 @@ def test_from_payload_accepts_exactly_what_to_payload_produced() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §5 AC 8b -- from_host_input raises NOTHING but ConfigValidationError
+# from_host_input raises NOTHING but ConfigValidationError
 # ---------------------------------------------------------------------------
 
 
 def assert_raises_only_config_validation_error(payload: dict) -> ConfigValidationError:
-    """``§3.1``: ``from_host_input`` takes untrusted input straight from a host
-    over the wire, so it must have exactly one failure mode.  Letting pydantic's
-    own ``ValidationError`` escape turns a fat-fingered host into a 500 at the
-    section 10 boundary.
+    """``from_host_input`` takes untrusted input straight from a host over the
+    wire, so it must have exactly one failure mode.  Letting pydantic's own
+    ``ValidationError`` escape turns a fat-fingered host into a 500 at the REST
+    boundary.
     """
     try:
         GameConfig.from_host_input(payload, DEFAULT_LIMITS)
@@ -1791,12 +1788,12 @@ def assert_raises_only_config_validation_error(payload: dict) -> ConfigValidatio
     except Exception as err:  # noqa: BLE001 - catching broadly IS the test
         pytest.fail(
             f"from_host_input raised {type(err).__name__}, which callers do not "
-            f"catch; §3.1 requires ConfigValidationError: {err}"
+            f"catch; it must raise ConfigValidationError: {err}"
         )
     pytest.fail("from_host_input accepted a payload the test expected it to reject")
 
 
-def test_8b_malformed_demand_is_a_config_validation_error() -> None:
+def test_malformed_demand_is_a_config_validation_error() -> None:
     for demand in (None, "STEP", 7, [], ["kind", "STEP"]):
         payload = base_payload()
         payload["demand"] = demand
@@ -1804,14 +1801,14 @@ def test_8b_malformed_demand_is_a_config_validation_error() -> None:
         assert err.field == "demand"
 
 
-def test_8b_missing_demand_is_a_config_validation_error() -> None:
+def test_missing_demand_is_a_config_validation_error() -> None:
     payload = base_payload()
     del payload["demand"]
     err = assert_raises_only_config_validation_error(payload)
     assert err.field == "demand"
 
 
-def test_8b_unknown_demand_kind_is_a_config_validation_error() -> None:
+def test_unknown_demand_kind_is_a_config_validation_error() -> None:
     for kind in ("NOT_A_KIND", "", "step", 3):
         err = assert_raises_only_config_validation_error(
             payload_with_demand(kind=kind, value=4)
@@ -1819,7 +1816,7 @@ def test_8b_unknown_demand_kind_is_a_config_validation_error() -> None:
         assert err.field == "demand.kind"
 
 
-def test_8b_missing_demand_kind_is_a_config_validation_error() -> None:
+def test_missing_demand_kind_is_a_config_validation_error() -> None:
     payload = base_payload()
     payload["demand"] = {"initial_value": 4, "step_week": 5, "step_value": 8}
     err = assert_raises_only_config_validation_error(payload)
@@ -1827,7 +1824,7 @@ def test_8b_missing_demand_kind_is_a_config_validation_error() -> None:
 
 
 @pytest.mark.parametrize("roles", [None, [], "RETAILER", 4, ["RETAILER"]])
-def test_8b_roles_that_is_not_a_mapping_is_a_config_validation_error(
+def test_roles_that_is_not_a_mapping_is_a_config_validation_error(
     roles: Any,
 ) -> None:
     payload = base_payload()
@@ -1837,7 +1834,7 @@ def test_8b_roles_that_is_not_a_mapping_is_a_config_validation_error(
 
 
 @pytest.mark.parametrize("role_name", list(ROLE_NAMES))
-def test_8b_a_role_entry_that_is_not_a_mapping_is_a_config_validation_error(
+def test_a_role_entry_that_is_not_a_mapping_is_a_config_validation_error(
     role_name: str,
 ) -> None:
     payload = base_payload()
@@ -1847,17 +1844,17 @@ def test_8b_a_role_entry_that_is_not_a_mapping_is_a_config_validation_error(
 
 
 @pytest.mark.parametrize("mode", ["NOBODY_ASSIGNS", "", 7, None, "host_assigns"])
-def test_8b_an_unrecognised_role_assignment_mode_falls_back_to_its_default(
+def test_an_unrecognised_role_assignment_mode_falls_back_to_its_default(
     mode: Any,
 ) -> None:
-    """``§3.1``: an unrecognised value for an enum that *has* a default falls
+    """An unrecognised value for an enum that *has* a default falls
     back to that default rather than raising."""
     cfg = build(base_payload(role_assignment_mode=mode))
     assert cfg.role_assignment_mode == RoleAssignmentMode.HOST_ASSIGNS
 
 
 @pytest.mark.parametrize("distribution", ["GAUSSIAN", "", 7, None])
-def test_8b_an_unrecognised_distribution_falls_back_to_its_default(
+def test_an_unrecognised_distribution_falls_back_to_its_default(
     distribution: Any,
 ) -> None:
     cfg = build(
@@ -1874,10 +1871,10 @@ def test_8b_an_unrecognised_distribution_falls_back_to_its_default(
 
 
 @pytest.mark.parametrize("stage_count", [5, 1, 0, -2, 6, "four", None])
-def test_8b_stage_count_is_forced_to_four_rather_than_rejected(
+def test_stage_count_is_forced_to_four_rather_than_rejected(
     stage_count: Any,
 ) -> None:
-    """``D14``: v1 is a four-stage chain, and rejection is not among the nine."""
+    """``D14``: v1 is a four-stage chain, so any other count is forced to four."""
     assert build(base_payload(stage_count=stage_count)).stage_count == 4
 
 
@@ -1895,11 +1892,11 @@ def test_8b_stage_count_is_forced_to_four_rather_than_rejected(
         ("preset_name", 7, None),
     ],
 )
-def test_8b_an_unusable_scalar_falls_back_to_its_declared_default(
+def test_an_unusable_scalar_falls_back_to_its_declared_default(
     key: str, value: Any, expected: Any
 ) -> None:
-    """``§3.1``: "an unusable scalar falls back to its declared default and is
-    then clamped"."""
+    """An unusable scalar falls back to its declared default, which is then
+    range-checked like any other value."""
     assert getattr(build(base_payload(**{key: value})), key) == expected
 
 
@@ -1912,7 +1909,7 @@ def test_8b_an_unusable_scalar_falls_back_to_its_declared_default(
         "starting_capital",
     ],
 )
-def test_8b_an_unusable_role_scalar_falls_back_to_its_declared_default(
+def test_an_unusable_role_scalar_falls_back_to_its_declared_default(
     field: str,
 ) -> None:
     cfg = build(payload_for_role("RETAILER", **{field: "not a number"}))
@@ -1952,11 +1949,11 @@ def test_8b_an_unusable_role_scalar_falls_back_to_its_declared_default(
         "custom-values-missing",
     ],
 )
-def test_8b_no_malformed_payload_escapes_as_anything_else(mutate) -> None:
+def test_no_malformed_payload_escapes_as_anything_else(mutate) -> None:
     """Whatever the host sends, the only exception a caller must handle is
     ``ConfigValidationError`` -- and several of these are repaired instead,
     which is also fine.  What is *not* fine is a pydantic ``ValidationError``
-    or a ``TypeError`` reaching section 10."""
+    or a ``TypeError`` reaching the REST layer."""
     payload = base_payload()
     mutate(payload)
     try:
@@ -1972,7 +1969,7 @@ def test_8b_no_malformed_payload_escapes_as_anything_else(mutate) -> None:
         assert isinstance(cfg, GameConfig)
 
 
-def test_8b_a_pydantic_validation_error_is_not_a_config_validation_error() -> None:
+def test_a_pydantic_validation_error_is_not_a_config_validation_error() -> None:
     """Guard the guard: the two exception types really are distinguishable, so
     the AC-8b tests above are not vacuous."""
     assert not issubclass(ValidationError, ConfigValidationError)
@@ -1980,7 +1977,7 @@ def test_8b_a_pydantic_validation_error_is_not_a_config_validation_error() -> No
 
 
 # ---------------------------------------------------------------------------
-# §3.1 rejection evaluation order:
+# Rejection evaluation order:
 # duration_weeks -> currency_symbol -> roles -> demand
 # ---------------------------------------------------------------------------
 
@@ -2016,9 +2013,10 @@ def test_currency_symbol_is_reported_before_demand() -> None:
 
 
 def test_duration_weeks_is_checked_before_the_demand_rules_are_applied() -> None:
-    """``duration_weeks`` leads the order because rules 1, 3 and 4 are all
-    measured against it: a 500-week game is refused for its length, before a
-    ``CUSTOM`` series could be measured against a length it will never have.
+    """``duration_weeks`` leads the order because the ``CUSTOM`` length,
+    ``step_week`` and ``start_week`` checks are all measured against it: a
+    500-week game is refused for its length, before a ``CUSTOM`` series could
+    be measured against a length it will never have.
     """
     payload = base_payload(duration_weeks=500)
     payload["demand"] = {"kind": "CUSTOM", "values": [4] * 104}
@@ -2055,7 +2053,7 @@ def test_a_valid_payload_is_unaffected_by_the_ordering() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §3.1 demand magnitudes are clamped to [0, limits.max_order_quantity]
+# Demand magnitudes outside [0, limits.max_order_quantity] are refused
 # ---------------------------------------------------------------------------
 
 MAX_Q = DEFAULT_LIMITS.max_order_quantity
@@ -2116,7 +2114,7 @@ def test_ramp_initial_value_is_range_checked(given: int, refused: bool) -> None:
 def test_ramp_slope_is_range_checked_to_plus_or_minus_max_order_quantity(
     given: float, refused: bool
 ) -> None:
-    """``§3.1``: ``slope_per_week`` lies in ``±max_order_quantity`` -- a
+    """``slope_per_week`` lies in ``±max_order_quantity`` -- a
     negative slope is a legitimate declining-demand scenario, so it is not
     floored at 0 the way a magnitude is."""
     payload = payload_with_demand(
@@ -2138,7 +2136,7 @@ def test_ramp_slope_is_range_checked_to_plus_or_minus_max_order_quantity(
 def test_ramp_cap_is_range_checked_not_reduced_to_none(
     given: int, refused: bool
 ) -> None:
-    """``§3.1``: ``cap`` is checked, **not** reduced to ``None`` -- ``cap = 0``
+    """``cap`` is checked, **not** reduced to ``None`` -- ``cap = 0``
     is a coherent if dull scenario, not a wedged game, so it is not one of the
     two optional overrides where 0 means "unlimited"."""
     payload = payload_with_demand(
@@ -2204,10 +2202,9 @@ def test_seasonal_period_weeks_up_to_the_longest_game_is_kept(
 def test_seasonal_period_weeks_past_the_longest_game_is_refused(
     period_weeks: int,
 ) -> None:
-    """Amended 2026-11-02: the bound is 104 (``max_period_weeks``), the longest
-    game -- a longer period is already flat over any game -- and the host form
-    reads the same number. It was the ``INT`` column's ``2**31 - 1``, silently
-    clamped, while the form allowed 104."""
+    """The bound is 104 (``max_period_weeks``), the longest game -- a longer
+    period is already flat over any game -- and the host form reads the same
+    number."""
     err = assert_rejected(
         payload_with_demand(
             kind="SEASONAL",
@@ -2236,7 +2233,7 @@ def test_seasonal_phase_is_not_clamped(phase: float) -> None:
 def test_seasonal_phase_past_a_full_turn_is_refused(phase: float) -> None:
     """``sin`` repeats every ``2*pi``, so a phase past one full turn adds
     nothing a host could want; it is refused, and the host form checks the
-    same ``max_phase``. (It used to be folded silently into one turn.)"""
+    same ``max_phase``, not folded silently into one turn."""
     assert_rejected(
         payload_with_demand(
             kind="SEASONAL", base=40, amplitude=30, period_weeks=12, phase=phase
@@ -2263,9 +2260,8 @@ def test_seasonal_phase_within_a_full_turn_is_kept(phase: float) -> None:
 def test_stochastic_float_magnitudes_are_range_checked(
     field: str, given: float, refused: bool
 ) -> None:
-    """Amended 2026-11-02: ``mean`` and ``stdev`` were clamped to 9999 while the
-    form allowed a million. Both are refused outside ``[0, max_order_quantity]``
-    now, and the form reads the same ceiling."""
+    """``mean`` and ``stdev`` are refused outside ``[0, max_order_quantity]``,
+    and the host form reads the same ceiling."""
     demand = {
         "kind": "STOCHASTIC",
         "distribution": "NORMAL",
@@ -2362,10 +2358,9 @@ def test_custom_demand_entries_in_range_are_kept(given: int) -> None:
     assert build(payload).demand.values[3] == given
 
 
-def test_custom_rules_are_evaluated_before_clamping() -> None:
-    """``§3.1``: "rules 1 and 2 are evaluated *before* clamping, so a short or
-    negative ``CUSTOM`` series still raises rather than being silently repaired
-    into validity"."""
+def test_custom_rules_refuse_rather_than_clamp() -> None:
+    """A short or negative ``CUSTOM`` series is refused, never padded, clamped
+    or otherwise silently repaired into validity."""
     payload = base_payload(duration_weeks=8)
     payload["demand"] = {"kind": "CUSTOM", "values": [4, 4, -1, 4, 4, 4, 4, 4]}
     assert_rejected(payload, field="demand.values")
@@ -2380,7 +2375,7 @@ def test_custom_rules_are_evaluated_before_clamping() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §3.2 production_capacity_per_week's upper bound is limits.max_order_quantity
+# production_capacity_per_week's upper bound is limits.max_order_quantity
 # ---------------------------------------------------------------------------
 
 
@@ -2420,7 +2415,7 @@ def test_demand_magnitudes_follow_the_injected_limits() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §2: `roles` is a Mapping, not a plain dict
+# `roles` is a Mapping, not a plain dict
 # ---------------------------------------------------------------------------
 
 
@@ -2448,12 +2443,12 @@ def test_the_roles_mapping_refuses_every_write(mutate) -> None:
 
 
 # ---------------------------------------------------------------------------
-# §4 coercion block (normative) and §5 AC 9b
+# Coercion (normative)
 # ---------------------------------------------------------------------------
 
 
 def test_worked_example_coercion_of_duration_weeks() -> None:
-    """``§4``, asserted literally. A host's form submits strings, and a JSON
+    """Coercion, asserted literally. A host's form submits strings, and a JSON
     payload can carry anything."""
     assert build(base_payload(duration_weeks="40")).duration_weeks == 40
     assert build(base_payload(duration_weeks="banana")).duration_weeks == 36
@@ -2478,14 +2473,14 @@ def test_worked_example_coercion_of_duration_weeks() -> None:
         (object(), 36),
     ],
 )
-def test_9b_a_mistyped_duration_weeks_is_coerced_or_defaulted(
+def test_a_mistyped_duration_weeks_is_coerced_or_defaulted(
     given: Any, expected: int
 ) -> None:
     assert build(base_payload(duration_weeks=given)).duration_weeks == expected
 
 
 @pytest.mark.parametrize("given", ["500", "2"])
-def test_9b_a_numeric_string_out_of_range_is_coerced_then_refused(given: str) -> None:
+def test_a_numeric_string_out_of_range_is_coerced_then_refused(given: str) -> None:
     assert_rejected(base_payload(duration_weeks=given), field="duration_weeks")
 
 
@@ -2506,7 +2501,7 @@ def test_9b_a_numeric_string_out_of_range_is_coerced_then_refused(given: str) ->
         ("starting_capital", "lots", 0.0),
     ],
 )
-def test_9b_mistyped_role_scalars_are_coerced_or_defaulted(
+def test_mistyped_role_scalars_are_coerced_or_defaulted(
     field: str, given: Any, expected: Any
 ) -> None:
     cfg = build(payload_for_role("RETAILER", **{field: given}))
@@ -2522,7 +2517,7 @@ def test_9b_mistyped_role_scalars_are_coerced_or_defaulted(
         ("holding_cost_per_unit_week", "-1"),
     ],
 )
-def test_9b_a_mistyped_role_scalar_out_of_range_is_coerced_then_refused(
+def test_a_mistyped_role_scalar_out_of_range_is_coerced_then_refused(
     field: str, given: Any
 ) -> None:
     assert_rejected(
@@ -2545,8 +2540,8 @@ def test_9b_a_mistyped_role_scalar_out_of_range_is_coerced_then_refused(
         (0, False),
     ],
 )
-def test_9b_bool_fields_read_yes_false_and_zero(given: Any, expected: bool) -> None:
-    """``§4``: "``yes``/``false``/``0`` read as bools for a bool field"."""
+def test_bool_fields_read_yes_false_and_zero(given: Any, expected: bool) -> None:
+    """``yes``/``false``/``0`` read as bools for a bool field."""
     assert (
         build(base_payload(pause_on_disconnect=given)).pause_on_disconnect is expected
     )
@@ -2558,7 +2553,7 @@ def test_9b_bool_fields_read_yes_false_and_zero(given: Any, expected: bool) -> N
 
 
 @pytest.mark.parametrize("given", ["maybe", "", [], {}, None, object()])
-def test_9b_an_unusable_bool_falls_back_to_its_declared_default(given: Any) -> None:
+def test_an_unusable_bool_falls_back_to_its_declared_default(given: Any) -> None:
     assert build(base_payload(pause_on_disconnect=given)).pause_on_disconnect is True
     assert build(base_payload(bot_fill_empty_roles=given)).bot_fill_empty_roles is False
 
@@ -2566,7 +2561,7 @@ def test_9b_an_unusable_bool_falls_back_to_its_declared_default(given: Any) -> N
 @pytest.mark.parametrize(
     ("given", "expected"), [("123", 123), (123.0, 123), ("-4", -4), ("seedy", None)]
 )
-def test_9b_mistyped_random_seed_is_coerced_or_defaulted(
+def test_mistyped_random_seed_is_coerced_or_defaulted(
     given: Any, expected: int | None
 ) -> None:
     assert build(base_payload(random_seed=given)).random_seed == expected
@@ -2582,7 +2577,7 @@ def test_9b_mistyped_random_seed_is_coerced_or_defaulted(
         ("step_value", "eleven", 8),  # declared default
     ],
 )
-def test_9b_mistyped_demand_scalars_are_coerced_or_defaulted(
+def test_mistyped_demand_scalars_are_coerced_or_defaulted(
     field: str, given: Any, expected: Any
 ) -> None:
     demand = {"kind": "STEP", "initial_value": 4, "step_week": 5, "step_value": 8}
@@ -2594,7 +2589,7 @@ def test_9b_mistyped_demand_scalars_are_coerced_or_defaulted(
 @pytest.mark.parametrize(
     ("given", "expected"), [("50", 50), (50.0, 50), ("0", None), ("lots", None)]
 )
-def test_9b_mistyped_optional_overrides_are_coerced(
+def test_mistyped_optional_overrides_are_coerced(
     given: Any, expected: int | None
 ) -> None:
     """A numeric string reads as its number, ``"0"`` as "unlimited", and a
@@ -2609,7 +2604,7 @@ def test_9b_mistyped_optional_overrides_are_coerced(
     assert cfg.factory_config().production_capacity_per_week == expected
 
 
-def test_9b_a_negative_numeric_string_override_is_refused() -> None:
+def test_a_negative_numeric_string_override_is_refused() -> None:
     assert_rejected(
         payload_with_visibility(max_order_quantity="-5"),
         field="visibility.max_order_quantity",
@@ -2617,7 +2612,7 @@ def test_9b_a_negative_numeric_string_override_is_refused() -> None:
 
 
 @pytest.mark.parametrize(("given", "expected"), [("0.4", 0.4), (1, 1.0), ("hot", 0.25)])
-def test_9b_mistyped_bot_scalars_are_coerced_or_defaulted(
+def test_mistyped_bot_scalars_are_coerced_or_defaulted(
     given: Any, expected: float
 ) -> None:
     payload = base_payload()
@@ -2625,23 +2620,23 @@ def test_9b_mistyped_bot_scalars_are_coerced_or_defaulted(
     assert build(payload).bot.theta == expected
 
 
-def test_9b_a_numeric_string_bot_scalar_out_of_range_is_refused() -> None:
+def test_a_numeric_string_bot_scalar_out_of_range_is_refused() -> None:
     payload = base_payload()
     payload["bot"]["theta"] = "2"
     assert_rejected(payload, field="bot.theta")
 
 
-def test_9b_coercion_never_raises_for_an_unusable_scalar() -> None:
-    """``§4``: "an unusable value ... never raises" -- it falls back to the
-    declared default. A *usable* number outside its range is a different case
-    and is refused (amended 2026-11-02), so this sweep holds only values that
-    cannot be read as a number at all.
+def test_coercion_never_raises_for_an_unusable_scalar() -> None:
+    """An unusable value never raises -- it falls back to the declared
+    default. A *usable* number outside its range is a different case and is
+    refused, so this sweep holds only values that cannot be read as a number
+    at all.
 
     ``currency_symbol`` is deliberately not in this sweep: it is the one scalar
     with a rejection rule of its own, and a garbage value that coerces to a
-    valid-but-too-long *string* is rule 9's business rather than AC 9b's.  Its
-    non-string inputs are covered by
-    ``test_9b_a_mistyped_currency_symbol_falls_back_to_the_default``.
+    valid-but-too-long *string* is the four-character check's business.
+    Its non-string inputs are covered by
+    ``test_a_mistyped_currency_symbol_falls_back_to_the_default``.
     """
     garbage = ["banana", "", [1, 2], {}, None, object()]
     for value in garbage:
@@ -2663,11 +2658,11 @@ def test_9b_coercion_never_raises_for_an_unusable_scalar() -> None:
 
 
 @pytest.mark.parametrize("given", [[1, 2], {}, None, True, -1, 10**9, 7.5])
-def test_9b_a_mistyped_currency_symbol_falls_back_to_the_default(given: Any) -> None:
+def test_a_mistyped_currency_symbol_falls_back_to_the_default(given: Any) -> None:
     assert build(base_payload(currency_symbol=given)).currency_symbol == "$"
 
 
-def test_9b_a_coerced_config_still_round_trips() -> None:
+def test_a_coerced_config_still_round_trips() -> None:
     cfg = build(
         base_payload(duration_weeks="40", pause_on_disconnect="no", random_seed="77")
     )
@@ -2678,7 +2673,7 @@ def test_9b_a_coerced_config_still_round_trips() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §3.1: the four remaining `.field` strings
+# The four remaining `.field` strings
 # ---------------------------------------------------------------------------
 
 
@@ -2687,9 +2682,9 @@ def test_a_payload_that_is_not_a_mapping_reports_field_config(payload: Any) -> N
     assert_rejected(payload, field="config")
 
 
-def test_an_unknown_roles_key_is_skipped_and_rule_6_then_fires() -> None:
-    """``§3.1``: a `roles` key that is not a ``Role`` name is **skipped**, so
-    rule 6 fires for whichever member is now missing."""
+def test_an_unknown_roles_key_is_skipped_and_the_missing_role_check_fires() -> None:
+    """A `roles` key that is not a ``Role`` name is **skipped**, so
+    the missing-role check fires for whichever member is now missing."""
     payload = base_payload()
     payload["roles"]["GOBLIN"] = payload["roles"].pop("WHOLESALER")
     assert_rejected(payload, field="roles")
@@ -2745,16 +2740,16 @@ def build_custom(values: list[Any], weeks: int = 8) -> GameConfig:
 
 
 def test_custom_values_of_numbers_are_accepted_and_are_integers() -> None:
-    """``§3.1`` rejects a `CUSTOM` series "that contains a non-number", so a
-    series of numbers must be accepted -- and ``00-conventions.md §4`` requires
-    quantities to be ``int`` everywhere, never a float."""
+    """A `CUSTOM` series "that contains a non-number" is rejected, so a series
+    of numbers must be accepted -- and quantities are ``int`` everywhere,
+    never a float."""
     cfg = build_custom([4, 4.0, 5.0, 4, 4, 4, 4, 4])
     assert cfg.demand.values == [4, 4, 5, 4, 4, 4, 4, 4]
     assert all(type(v) is int for v in cfg.demand.values)
 
 
 def test_custom_values_read_numeric_strings_as_numbers() -> None:
-    """``§3.1``: "A numeric string is a number here".
+    """A numeric string is a number here.
 
     ``beer-game-spec.md §6.4`` names paste and CSV upload as the input path for
     a custom series, so every value arrives as a string.  Rejecting ``"4"``
@@ -2774,10 +2769,11 @@ def test_custom_values_accept_a_mixed_series_of_spellings() -> None:
 
 @pytest.mark.parametrize("value", [4.7, "4.7", 4.2, "4.0", " 4 ", 4.999])
 def test_custom_values_truncate_a_fractional_entry(value: Any) -> None:
-    """``§3.1``: "``4.7`` truncates to ``4``", consistent with ``§4``'s
-    coercion rule for scalars.
+    """``4.7`` truncates to ``4``, consistent with the coercion rule for
+    scalars.
 
-    Truncation applies only to an entry that has already cleared rule 2 -- see
+    Truncation applies only to an entry that has already cleared the negative
+    check -- see
     ``test_a_negative_custom_entry_rejects_however_it_is_spelled``.
     """
     cfg = build_custom([value] + [4] * 7)
@@ -2786,7 +2782,7 @@ def test_custom_values_truncate_a_fractional_entry(value: Any) -> None:
 
 
 def test_custom_values_read_a_bool_as_zero_or_one() -> None:
-    """``§3.1``: "a bool reads as ``0``/``1``"."""
+    """A bool reads as ``0``/``1``."""
     cfg = build_custom([True, False, 4, 4, 4, 4, 4, 4])
     assert cfg.demand.values[:2] == [1, 0]
     assert all(type(v) is int for v in cfg.demand.values)
@@ -2828,15 +2824,15 @@ def test_custom_values_read_a_bool_as_zero_or_one() -> None:
     ],
 )
 def test_a_negative_custom_entry_rejects_however_it_is_spelled(negative: Any) -> None:
-    """``§3.1``: rule 2 is evaluated on the **parsed number, before
+    """The negative check is evaluated on the **parsed number, before
     truncation**.
 
     A negative entry is a negative entry however the wire spelled it, so it
     rejects rather than being clamped up to 0 or truncated toward zero into
     valid demand.  The fractional cases are the ones that matter: truncating
     ``-0.5`` toward zero would repair the host's value into something they did
-    not ask for, which is the same failure the "rules 1 and 2 before clamping"
-    ordering exists to prevent, one step further in.
+    not ask for: the same silent repair the ``CUSTOM`` length and negative
+    checks exist to prevent, one step further in.
     """
     assert_rejected_custom([negative] + [4] * 7, field="demand.values")
 
@@ -2848,9 +2844,9 @@ def test_a_negative_custom_entry_rejects_however_it_is_spelled(negative: Any) ->
 def test_a_non_negative_fraction_below_one_truncates_to_zero(
     value: Any, expected: int
 ) -> None:
-    """The other side of the same frontier: rule 2 rejects everything below
-    ``0``, and everything in ``[0, 1)`` truncates to ``0`` and is kept.  Pinning
-    both sides is what stops the boundary drifting."""
+    """The other side of the same frontier: the negative check rejects
+    everything below ``0``, and everything in ``[0, 1)`` truncates to ``0`` and
+    is kept.  Pinning both sides is what stops the boundary drifting."""
     cfg = build_custom([value] + [4] * 7)
     assert cfg.demand.values[0] == expected
     assert type(cfg.demand.values[0]) is int
@@ -2873,10 +2869,10 @@ def test_a_numeric_string_entry_above_the_ceiling_is_refused() -> None:
 def test_a_non_finite_custom_entry_reports_demand_values_unindexed(
     bad: float,
 ) -> None:
-    """``§3.1``: rule 8 and the ``CUSTOM`` bullet overlap for a non-finite entry
-    inside a series, and the ``CUSTOM`` bullet wins -- the field is
-    ``demand.values``, **not** ``demand.values[3]``.  An index-bearing field
-    string is not something a black-box test can predict.
+    """The non-finite check and the ``CUSTOM`` field rule (spec §6.6) overlap
+    for a non-finite entry inside a series, and the ``CUSTOM`` rule wins --
+    the field is ``demand.values``, **not** ``demand.values[3]``.  An
+    index-bearing field string is not something a black-box test can predict.
     """
     err = assert_rejected_custom([4, 4, 4, bad, 4, 4, 4, 4], field="demand.values")
     assert "[" not in err.field
@@ -2893,7 +2889,7 @@ def test_custom_values_are_integers_after_a_round_trip() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §6 failure mode 8 -- EVERY mutating entry point on `roles` must raise
+# EVERY mutating entry point on `roles` must raise
 # ---------------------------------------------------------------------------
 
 
@@ -2912,11 +2908,9 @@ def test_custom_values_are_integers_after_a_round_trip() -> None:
 def test_every_mutating_entry_point_on_the_roles_mapping_raises(
     name: str, mutate
 ) -> None:
-    """``§6`` failure mode 8.
-
-    "Every mutating entry point must raise, or the freeze is theatre -- a later
-    edit swapping the mapping for a plain ``dict`` would otherwise pass every
-    test while leaving a 'frozen' config writable."  A read-only mapping refuses
+    """Every mutating entry point must raise, or the freeze is theatre -- a
+    later edit swapping the mapping for a plain ``dict`` would otherwise pass
+    every test while leaving a 'frozen' config writable.  A read-only mapping refuses
     ``__setitem__``/``__delitem__`` with ``TypeError`` and simply does not
     provide the named methods, so either exception type is a correct refusal;
     what matters is that the write does not land.
@@ -2934,7 +2928,7 @@ def test_every_mutating_entry_point_on_the_roles_mapping_raises(
 
 
 def test_the_roles_mapping_reads_like_a_mapping_while_refusing_writes() -> None:
-    """``§2``: "An immutable mapping, NOT a plain dict".
+    """An immutable mapping, NOT a plain dict.
 
     The guarantee is behavioural, not nominal -- a read-only ``dict`` subclass
     is a perfectly good immutable mapping -- so this asserts that every *read*
@@ -2982,7 +2976,7 @@ def test_the_dict_passed_to_from_host_input_is_not_aliased_into_the_config() -> 
 
 
 # ---------------------------------------------------------------------------
-# §5 AC 8c -- from_payload given a non-mapping
+# from_payload given a non-mapping
 # ---------------------------------------------------------------------------
 
 
@@ -3004,12 +2998,10 @@ def test_the_dict_passed_to_from_host_input_is_not_aliased_into_the_config() -> 
         "object",
     ],
 )
-def test_8c_from_payload_given_a_non_mapping_raises_validation_error(
+def test_from_payload_given_a_non_mapping_raises_validation_error(
     payload: Any,
 ) -> None:
-    """``§5`` AC 8c.
-
-    ``from_payload``'s input is the server's own serialised state, so a
+    """``from_payload``'s input is the server's own serialised state, so a
     structural failure there is a bug rather than a user error -- and letting a
     non-mapping reach ``data.get(...)`` would turn it into an ``AttributeError``
     and a 500.
@@ -3024,9 +3016,9 @@ def test_8c_from_payload_given_a_non_mapping_raises_validation_error(
     assert not isinstance(err, TypeError)
 
 
-def test_8c_from_host_input_and_from_payload_differ_on_the_same_bad_input() -> None:
+def test_from_host_input_and_from_payload_differ_on_the_same_bad_input() -> None:
     """The two entry points are deliberately asymmetric, and that asymmetry is
-    the whole point of AC 8c: untrusted host input gets one catchable error,
+    the whole point of these tests: untrusted host input gets one catchable error,
     the server's own state gets pydantic's."""
     for payload in ([], "a payload", 7, None):
         with pytest.raises(ConfigValidationError) as host:

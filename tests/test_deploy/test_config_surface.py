@@ -1,18 +1,17 @@
-"""Black-box tests for section 23 -- deployment and CI (``23-deployment-and-ci.md``).
+"""Black-box tests for deployment and CI (``DEPLOY.md``).
 
-Covers ``§8`` acceptance criteria 1-8, 12-15 and 18 (the backend half of 12;
-the frontend half lives in ``Beery_Frontend/src/__tests__/envSurface.test.ts``)
-and ``§9`` failure modes 2-6, 8 and 9.
+The frontend's env-surface checks live in
+``Beery_Frontend/src/__tests__/envSurface.test.ts``.
 
-This section is almost entirely configuration, not code, so most of these
+Deployment is almost entirely configuration, not code, so most of these
 tests read committed files -- ``Dockerfile``, ``.dockerignore``,
 ``pyproject.toml``, ``render.yaml``, ``DEPLOY.md``, ``.github/workflows/ci.yml``
 -- rather than importing application symbols. Two things are exercised for
-real: a real ``docker build`` of the committed ``Dockerfile`` (AC 1-3, failure
-modes 8-9), because AC 3 explicitly says "assert by inspecting the built
-image's file list", and the actual ``Settings``/``check_auth_config`` runtime
-behaviour for the CORS and double-quoted-secret failure modes, because those
-are properties of running code, not of a text file.
+real: a real ``docker build`` of the committed ``Dockerfile``, because what
+the image holds is asserted by inspecting the built image's file list, and
+the actual ``Settings``/``check_auth_config`` runtime behaviour for the CORS
+and double-quoted-secret failures, because those are properties of running
+code, not of a text file.
 
 A Docker daemon is required for the ``docker build``-based tests. Exactly
 like ``tests/test_models/conftest.py``'s Testcontainers guard, an unreachable
@@ -189,13 +188,13 @@ def _docker_exec(name: str, *cmd: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-# --- AC 1 --------------------------------------------------------------
+# --- the image builds and serves ---------------------------------------
 
 
-def test_ac1_docker_build_succeeds_and_serves_root_and_health(
+def test_docker_build_succeeds_and_serves_root_and_health(
     running_container: tuple[str, int],
 ) -> None:
-    """AC 1: ``docker build .`` succeeds; the container serves ``GET /`` and
+    """``docker build .`` succeeds; the container serves ``GET /`` and
     ``GET /api/v1/health``."""
     _name, port = running_container
 
@@ -203,11 +202,11 @@ def test_ac1_docker_build_succeeds_and_serves_root_and_health(
     assert _wait_for_http_ok(port, "/api/v1/health") == 200
 
 
-# --- AC 2 --------------------------------------------------------------
+# --- the uvicorn command -----------------------------------------------
 
 
-def test_ac2_uvicorn_command_includes_h11_and_proxy_headers() -> None:
-    """AC 2: the container's uvicorn command includes ``--http h11`` and
+def test_uvicorn_command_includes_h11_and_proxy_headers() -> None:
+    """The container's uvicorn command includes ``--http h11`` and
     ``--proxy-headers``."""
     text = _read(DOCKERFILE)
     cmd_match = re.search(r"CMD\s*\[.*?\]", text, re.DOTALL)
@@ -268,13 +267,13 @@ def test_failed_startup_migration_exits_before_serving(built_image: str) -> None
     assert "Uvicorn running" not in output
 
 
-# --- AC 3, failure mode 9 -----------------------------------------------
+# --- what the image leaves out ------------------------------------------
 
 
-def test_ac3_dockerignore_excludes_env_and_tests(
+def test_dockerignore_excludes_env_and_tests(
     running_container: tuple[str, int],
 ) -> None:
-    """AC 3: ``.dockerignore`` excludes ``.env`` and ``tests/``; asserted by
+    """``.dockerignore`` excludes ``.env`` and ``tests/``; asserted by
     inspecting the built image's file list, not by reading the ignore file."""
     name, _port = running_container
 
@@ -289,21 +288,21 @@ def test_ac3_dockerignore_excludes_env_and_tests(
     assert tests_check.returncode != 0, "/app/tests is present in the built image"
 
 
-def test_fm9_secrets_are_absent_from_the_built_image(
+def test_secrets_are_absent_from_the_built_image(
     running_container: tuple[str, int],
 ) -> None:
-    """Failure mode 9: ``.env`` is absent from the built image."""
+    """``.env`` is absent from the built image."""
     name, _port = running_container
 
     result = _docker_exec(name, "find", "/app", "-maxdepth", "1", "-name", ".env")
     assert result.stdout.strip() == "", "a .env file was found inside the image"
 
 
-# --- AC 4 ----------------------------------------------------------------
+# --- no gunicorn ---------------------------------------------------------
 
 
-def test_ac4_no_gunicorn_anywhere(running_container: tuple[str, int]) -> None:
-    """AC 4: no ``gunicorn`` in any requirements file or command."""
+def test_no_gunicorn_anywhere(running_container: tuple[str, int]) -> None:
+    """No ``gunicorn`` in any requirements file or command."""
     name, _port = running_container
 
     assert "gunicorn" not in _read(REQUIREMENTS).lower()
@@ -314,24 +313,24 @@ def test_ac4_no_gunicorn_anywhere(running_container: tuple[str, int]) -> None:
     assert pip_show.returncode != 0, "gunicorn is installed in the built image"
 
 
-# --- failure mode 8 --------------------------------------------------------
+# --- no test tooling in the image ------------------------------------------
 
 
-def test_fm8_test_tooling_is_absent_from_the_built_image(
+def test_test_tooling_is_absent_from_the_built_image(
     running_container: tuple[str, int],
 ) -> None:
-    """Failure mode 8: ``pytest`` is absent from the built image."""
+    """``pytest`` is absent from the built image."""
     name, _port = running_container
 
     result = _docker_exec(name, "python", "-c", "import pytest")
     assert result.returncode != 0, "pytest imports successfully inside the image"
 
 
-# --- AC 5, failure mode 2 --------------------------------------------------
+# --- CORS ------------------------------------------------------------------
 
 
-def test_ac5_settings_default_cors_origins_is_never_wildcard() -> None:
-    """AC 5: ``Settings`` never *defaults* to ``CORS_ORIGINS == ["*"]``."""
+def test_settings_default_cors_origins_is_never_wildcard() -> None:
+    """``Settings`` never *defaults* to ``CORS_ORIGINS == ["*"]``."""
     from app.config import Settings as SettingsClass
 
     default_origins = SettingsClass.model_fields["CORS_ORIGINS"].default
@@ -339,12 +338,12 @@ def test_ac5_settings_default_cors_origins_is_never_wildcard() -> None:
     assert "*" not in default_origins
 
 
-def test_fm2_cors_wildcard_with_credentials_is_rejected() -> None:
-    """Failure mode 2: ``CORS_ORIGINS=["*"]`` is rejected outright.
+def test_cors_wildcard_with_credentials_is_rejected() -> None:
+    """``CORS_ORIGINS=["*"]`` is rejected outright.
 
     The app hardcodes ``allow_credentials=True`` in ``app/main.py``, so the
-    two together are always the invalid, permissive combination described in
-    §3.2 -- there is no configuration in which "*" is ever safe here.
+    two together are always the invalid, permissive combination -- there is
+    no configuration in which "*" is ever safe here.
     """
     from app.config import Settings as SettingsClass
 
@@ -355,13 +354,13 @@ def test_fm2_cors_wildcard_with_credentials_is_rejected() -> None:
         SettingsClass(CORS_ORIGINS=["https://beersim.web.app", "*"])
 
 
-def test_fm2_main_always_sets_allow_credentials_true() -> None:
+def test_main_always_sets_allow_credentials_true() -> None:
     """The rejection matters only because credentials are always allowed."""
     main_source = _read(BACKEND_ROOT / "app" / "main.py")
     assert "allow_credentials=True" in main_source
 
 
-# --- AC 6, failure mode 3 ---------------------------------------------------
+# --- the double-quoted service account --------------------------------------
 
 
 def _corrupted_double_quoted_service_account(tmp_path: Path) -> str:
@@ -390,19 +389,19 @@ def _corrupted_double_quoted_service_account(tmp_path: Path) -> str:
 
 def test_double_quoting_reproduces_the_documented_corruption(tmp_path: Path) -> None:
     """Sanity check on the reproduction itself: the corrupted value must not
-    parse as JSON, or this test proves nothing about §3.2's bug."""
+    parse as JSON, or this test proves nothing about the double-quote bug."""
     corrupted = _corrupted_double_quoted_service_account(tmp_path)
     with pytest.raises(json.JSONDecodeError):
         json.loads(corrupted)
 
 
-def test_ac6_and_fm3_double_quoted_service_account_logs_critical_but_app_stays_healthy(
+def test_double_quoted_service_account_logs_critical_but_app_stays_healthy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
     client,
 ) -> None:
-    """AC 6 / failure mode 3: a double-quoted ``FIREBASE_SERVICE_ACCOUNT_JSON``
+    """A double-quoted ``FIREBASE_SERVICE_ACCOUNT_JSON``
     is detected -- the app keeps serving (health stays 200) but logs CRITICAL,
     so the partial outage is visible instead of silent."""
     import importlib
@@ -433,14 +432,14 @@ def test_ac6_and_fm3_double_quoted_service_account_logs_critical_but_app_stays_h
         importlib.reload(firebase_module)
 
 
-# --- failure mode 4 ----------------------------------------------------
+# --- a dead Redis ------------------------------------------------------
 
 
-def test_fm4_dead_redis_health_ok_deep_degraded(
+def test_dead_redis_health_ok_deep_degraded(
     monkeypatch: pytest.MonkeyPatch, client
 ) -> None:
-    """Failure mode 4: a dead ``REDIS_URL`` still answers ``GET /api/v1/health``
-    with 200, while ``/health/deep`` reports Redis down.
+    """A dead ``REDIS_URL`` still answers ``GET /api/v1/health`` with 200,
+    while ``/health/deep`` reports Redis down.
 
     Points at a closed local port rather than an unresolvable hostname: both
     are "Redis unreachable" as far as ``_redis_reachable`` is concerned, but a
@@ -452,7 +451,7 @@ def test_fm4_dead_redis_health_ok_deep_degraded(
     # Redis has to be switched **on** for its reachability to be asked
     # about: with `REDIS_ENABLED` false — the default since the state
     # backend became switchable — an unused dependency reports healthy,
-    # and this failure mode is about a dependency that is in use and dead.
+    # and this test is about a dependency that is in use and dead.
     monkeypatch.setattr(settings, "REDIS_ENABLED", True)
     monkeypatch.setattr(settings, "REDIS_URL", "redis://127.0.0.1:1/0")
 
@@ -476,7 +475,7 @@ def _job_blocks(workflow_text: str) -> dict[str, str]:
     A small, deliberately literal parser (in the style of
     ``test_migration.py``'s regex reading of generated Alembic scripts)
     rather than a YAML library dependency this repository does not otherwise
-    need: every workflow this section writes uses a flat two-space job
+    need: every workflow in this repository uses a flat two-space job
     indent, so a regex on that exact shape is reliable and adds nothing to
     ``requirements-dev.txt``.
     """
@@ -511,13 +510,13 @@ def _run_steps(job_block: str) -> list[str]:
     return steps
 
 
-# --- AC 7, AC 8, failure mode 5 ----------------------------------------
+# --- the schema job: migrations and drift ------------------------------
 
 
-def test_ac7_ci_schema_job_runs_the_migration_upgrade_suite() -> None:
-    """AC 7: ``alembic upgrade head`` on a clean database succeeds in CI --
+def test_ci_schema_job_runs_the_migration_upgrade_suite() -> None:
+    """``alembic upgrade head`` on a clean database succeeds in CI --
     exercised by the schema job running ``pytest -m dbschema``, which
-    includes ``test_migration.py``'s upgrade-head criterion."""
+    includes ``test_migration.py``'s upgrade-head test."""
     jobs = _job_blocks(_read(CI_WORKFLOW))
     schema_job = jobs.get("dbschema")
     assert schema_job, "ci.yml has no `dbschema` job"
@@ -529,8 +528,8 @@ def test_ac7_ci_schema_job_runs_the_migration_upgrade_suite() -> None:
     )
 
 
-def test_ac8_ci_schema_job_runs_the_autogenerate_drift_detector() -> None:
-    """AC 8: the autogenerate-drift check fails CI when a model changes
+def test_ci_schema_job_runs_the_autogenerate_drift_detector() -> None:
+    """The autogenerate-drift check fails CI when a model changes
     without a migration."""
     jobs = _job_blocks(_read(CI_WORKFLOW))
     schema_job = jobs.get("dbschema")
@@ -543,19 +542,19 @@ def test_ac8_ci_schema_job_runs_the_autogenerate_drift_detector() -> None:
     )
 
 
-def test_fm5_the_drift_detector_actually_asserts_emptiness() -> None:
-    """Failure mode 5: changing a model without a migration must fail CI --
+def test_the_drift_detector_actually_asserts_emptiness() -> None:
+    """Changing a model without a migration must fail CI --
     i.e. the drift test really does assert the generated revision is empty,
     not merely that it runs."""
     migration_source = _read(MIGRATION_TEST)
     assert "assert operations == []" in migration_source
 
 
-# --- AC 13 -----------------------------------------------------------------
+# --- coverage floors -------------------------------------------------------
 
 
-def test_ac13_ci_enforces_both_coverage_floors() -> None:
-    """AC 13: the backend CI enforces ``--cov-fail-under=80`` overall, and
+def test_ci_enforces_both_coverage_floors() -> None:
+    """The backend CI enforces ``--cov-fail-under=80`` overall, and
     95% on ``app/core``."""
     jobs = _job_blocks(_read(CI_WORKFLOW))
     test_job = jobs.get("test")
@@ -569,11 +568,11 @@ def test_ac13_ci_enforces_both_coverage_floors() -> None:
     assert "--fail-under=95" in joined
 
 
-# --- AC 14 -------------------------------------------------------------
+# --- the schema job: no secrets, no silent skip ------------------------
 
 
-def test_ac14_schema_job_needs_no_secret_or_db_credential() -> None:
-    """AC 14: the schema job needs no repository secret and no database
+def test_schema_job_needs_no_secret_or_db_credential() -> None:
+    """The schema job needs no repository secret and no database
     credential."""
     jobs = _job_blocks(_read(CI_WORKFLOW))
     schema_job = jobs.get("dbschema")
@@ -587,8 +586,8 @@ def test_ac14_schema_job_needs_no_secret_or_db_credential() -> None:
         )
 
 
-def test_ac14_schema_job_fails_when_every_test_in_it_skipped() -> None:
-    """AC 14 (continued): the job must fail on an all-skipped run -- with no
+def test_schema_job_fails_when_every_test_in_it_skipped() -> None:
+    """The job must fail on an all-skipped run -- with no
     Docker daemon the suite skips, and pytest alone exits 0 for that."""
     jobs = _job_blocks(_read(CI_WORKFLOW))
     schema_job = jobs.get("dbschema")
@@ -602,11 +601,11 @@ def test_ac14_schema_job_fails_when_every_test_in_it_skipped() -> None:
     assert "exit 1" in joined
 
 
-# --- AC 15 -----------------------------------------------------------
+# --- the Testcontainers image ----------------------------------------
 
 
-def test_ac15_testcontainers_image_matches_the_documented_managed_engine() -> None:
-    """AC 15: the Testcontainers PostgreSQL image tag matches the major
+def test_testcontainers_image_matches_the_documented_managed_engine() -> None:
+    """The Testcontainers PostgreSQL image tag matches the major
     version of the deployed managed instance, as DEPLOY.md and render.yaml
     both document it."""
     schema_conftest_source = _read(SCHEMA_CONFTEST)
@@ -626,11 +625,11 @@ def test_ac15_testcontainers_image_matches_the_documented_managed_engine() -> No
         )
 
 
-# --- AC 18 -----------------------------------------------------------------
+# --- lint tooling ----------------------------------------------------------
 
 
-def test_ac18_pyproject_exists_and_lint_tools_are_exactly_pinned() -> None:
-    """AC 18: ``ruff check`` and ``black --check`` reproduce the same result
+def test_pyproject_exists_and_lint_tools_are_exactly_pinned() -> None:
+    """``ruff check`` and ``black --check`` reproduce the same result
     from a clean checkout with no configuration outside the repository --
     asserted by a committed ``pyproject.toml`` existing, and by
     ``requirements-dev.txt`` pinning exact versions of both tools."""
@@ -643,26 +642,26 @@ def test_ac18_pyproject_exists_and_lint_tools_are_exactly_pinned() -> None:
     assert black_pin, "black is not pinned to an exact version in requirements-dev.txt"
 
 
-def test_ac18_pyproject_does_not_restate_ruff_defaults() -> None:
-    """§6's note: no ``[tool.ruff]`` section pinning one reading of the
+def test_pyproject_does_not_restate_ruff_defaults() -> None:
+    """No ``[tool.ruff]`` section pinning one reading of the
     defaults, which would silently drift on the next ruff upgrade."""
     pyproject_text = _read(PYPROJECT)
     assert "[tool.ruff]" not in pyproject_text
 
 
-# --- AC 12 (backend half), failure mode 6 -----------------------------
+# --- DEPLOY.md --------------------------------------------------------
 
 
-def test_ac12_backend_deploy_md_states_the_ship_together_rule() -> None:
-    """AC 12: ``DEPLOY.md`` states the ship-together rule (§5)."""
+def test_backend_deploy_md_states_the_ship_together_rule() -> None:
+    """``DEPLOY.md`` states the ship-together rule."""
     deploy_text = _read(DEPLOY_MD).lower()
     assert "sockets/handlers" in deploy_text or "socketio" in deploy_text.lower()
     assert "same window" in deploy_text or "ship" in deploy_text
     assert "backend first" in deploy_text
 
 
-def test_fm6_deploy_md_documents_the_stale_container_risk() -> None:
-    """Failure mode 6: not automatable, but documented -- a change with no
+def test_deploy_md_documents_the_stale_container_risk() -> None:
+    """Not automatable, but documented -- a change with no
     rebuild serves old code."""
     deploy_text = _read(DEPLOY_MD).lower()
     assert "rebuild" in deploy_text

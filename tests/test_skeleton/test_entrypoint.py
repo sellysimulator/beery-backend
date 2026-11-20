@@ -1,8 +1,8 @@
-"""``uvicorn app.main:application`` -- the only supported entry point (01 §2).
+"""``uvicorn app.main:application`` -- the only supported entry point.
 
-Acceptance criteria 2 and 5, exercised against a real server process rather
-than an in-process transport, because that is what the criteria say: the app
-*starts*, and a socket.io client *completes a handshake* against it.
+Exercised against a real server process rather than an in-process transport,
+because that is the claim: the app *starts*, and a socket.io client
+*completes a handshake* against it.
 """
 
 from __future__ import annotations
@@ -82,11 +82,11 @@ def live_server():
             proc.wait(timeout=15)
 
 
-# --- AC 2 -------------------------------------------------------------------
+# --- the app starts and serves -----------------------------------------------
 
 
 def test_uvicorn_entrypoint_serves_the_root_route(live_server):
-    """AC 2: ``uvicorn app.main:application`` starts and serves ``GET /``."""
+    """``uvicorn app.main:application`` starts and serves ``GET /``."""
     from app.config import settings
 
     with urllib.request.urlopen(live_server + "/", timeout=10) as response:
@@ -100,17 +100,17 @@ def test_uvicorn_entrypoint_serves_the_root_route(live_server):
 
 
 def test_uvicorn_entrypoint_serves_health(live_server):
-    """AC 3, through the real server."""
+    """Shallow health, through the real server."""
     with urllib.request.urlopen(live_server + "/api/v1/health", timeout=10) as response:
         assert response.status == 200
         assert json.loads(response.read().decode()) == {"status": "ok"}
 
 
-# --- AC 5 -------------------------------------------------------------------
+# --- the socket.io handshake -------------------------------------------------
 
 
 def test_socketio_client_completes_a_handshake(live_server):
-    """AC 5: a socket.io client can complete a handshake against
+    """A socket.io client can complete a handshake against
     ``application``."""
     import socketio
 

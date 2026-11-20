@@ -1,7 +1,4 @@
-"""Toolchain, migrations, image and lint gates (01 §3.7-3.10).
-
-Acceptance criteria 1, 12, 21 and 22.
-"""
+"""Toolchain, migrations, image and lint gates."""
 
 from __future__ import annotations
 
@@ -18,7 +15,7 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-# 01-backend-skeleton.md §3.8 -- runtime pins, verbatim.
+# Runtime pins, verbatim.
 RUNTIME_PINS = {
     "fastapi": "0.141.1",
     "uvicorn": "0.53.0",
@@ -34,7 +31,7 @@ RUNTIME_PINS = {
     "redis": "8.1.0",
 }
 
-# §3.8 -- dev pins.  ``testcontainers`` is deliberately unpinned in the plan.
+# Dev pins.  ``testcontainers`` is checked by its own test below.
 DEV_PINS = {
     "pytest": "9.1.1",
     "pytest-asyncio": "1.4.0",
@@ -48,7 +45,7 @@ DEV_PINS = {
 
 def _container_class(module: str, name: str):
     """``testcontainers.<module>`` moved to ``testcontainers.community.<module>``;
-    the plan pins ``testcontainers[postgres]``; accept
+    ``requirements-dev.txt`` pins ``testcontainers[postgres]``; accept
     either layout rather than a DeprecationWarning per run."""
     import importlib
 
@@ -103,11 +100,11 @@ def _poll_until_served(url: str, timeout: float) -> dict:
     raise AssertionError(f"{url} never answered within {timeout}s: {last!r}")
 
 
-# --- AC 1 -------------------------------------------------------------------
+# --- toolchain and pins -----------------------------------------------------
 
 
 def test_running_on_python_311():
-    """§3.8: the image runs ``python:3.11-slim``; the venv must match it."""
+    """The image runs ``python:3.11-slim``; the venv must match it."""
     assert sys.version_info[:2] == (
         3,
         11,
@@ -115,7 +112,7 @@ def test_running_on_python_311():
 
 
 def test_runtime_dependencies_are_installed_at_the_declared_pins():
-    """AC 1: ``pip install -r requirements.txt`` succeeded, at §3.8's pins."""
+    """``pip install -r requirements.txt`` succeeded, at the declared pins."""
     mismatches = {
         name: (expected, _installed(name))
         for name, expected in RUNTIME_PINS.items()
@@ -125,7 +122,7 @@ def test_runtime_dependencies_are_installed_at_the_declared_pins():
 
 
 def test_dev_dependencies_are_installed_at_the_declared_pins():
-    """AC 1: ``pip install -r requirements-dev.txt`` succeeded."""
+    """``pip install -r requirements-dev.txt`` succeeded."""
     mismatches = {
         name: (expected, _installed(name))
         for name, expected in DEV_PINS.items()
@@ -135,8 +132,8 @@ def test_dev_dependencies_are_installed_at_the_declared_pins():
 
 
 def test_testcontainers_is_installed_and_pinned():
-    """§3.8: ``testcontainers[postgres]==4.15.0`` -- it must actually be
-    installed or section 13 has no PostgreSQL to migrate."""
+    """``testcontainers[postgres]==4.15.0`` -- it must actually be installed
+    or the ``dbschema`` suite has no PostgreSQL to migrate."""
     assert _installed("testcontainers") == "4.15.0"
     assert "testcontainers[postgres]==4.15.0" in (
         (PROJECT_ROOT / "requirements-dev.txt").read_text().split()
@@ -144,25 +141,22 @@ def test_testcontainers_is_installed_and_pinned():
 
 
 def test_asyncio_is_not_a_declared_dependency():
-    """00-conventions.md §4: the PyPI package named ``asyncio`` is an
+    """The PyPI package named ``asyncio`` is an
     abandoned 2015 backport that shadows the standard library module."""
     assert (
         _installed("asyncio") is None
     ), "the asyncio PyPI package is installed; it shadows the stdlib module"
 
 
-# --- AC 12 ------------------------------------------------------------------
+# --- migrations -------------------------------------------------------------
 
 
 def test_alembic_upgrade_head_creates_exactly_the_declared_tables():
-    """AC 12 / §3.7: ``alembic upgrade head`` runs against an empty database and
-    creates ``alembic_version`` plus exactly the tables the models declare.
+    """``alembic upgrade head`` runs against an empty database and creates
+    ``alembic_version`` plus exactly the tables the models declare.
 
-    This asserted ``only alembic_version`` until section 13 shipped the first
-    revision, which made it true for exactly as long as there were no
-    migrations -- the same expiring-criterion trap as section 16's empty route
-    registry.  Comparing against ``Base.metadata`` instead holds for every
-    later revision as well, and still catches the thing this test is for: a
+    Comparing against ``Base.metadata`` rather than a fixed table list holds
+    for every later revision as well, and still catches the thing this test is for: a
     migration that creates a table nobody declared, or fails to create one
     somebody did."""
     pytest.importorskip("testcontainers.postgres")
@@ -209,7 +203,7 @@ def test_alembic_upgrade_head_creates_exactly_the_declared_tables():
     assert tables == {"alembic_version"} | set(Base.metadata.tables)
 
 
-# --- AC 21 ------------------------------------------------------------------
+# --- the Docker image -------------------------------------------------------
 
 _STARTUP_MIGRATION = "alembic upgrade head && "
 
@@ -227,7 +221,7 @@ def _serve_only_cmd() -> list[str]:
 
 
 def test_docker_image_builds_and_runs():
-    """AC 21: ``docker build .`` succeeds and the resulting image runs the app.
+    """``docker build .`` succeeds and the resulting image runs the app.
 
     Opt-in: a cold build pulls ``python:3.11-slim`` and installs the whole
     requirement set, which is minutes, not seconds.  Set
@@ -278,7 +272,7 @@ def test_docker_image_builds_and_runs():
     assert body["status"] == "ok"
 
 
-# --- AC 22 ------------------------------------------------------------------
+# --- lint and type gates ----------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -290,9 +284,8 @@ def test_docker_image_builds_and_runs():
     ],
 )
 def test_lint_and_type_gates_are_clean(tool, args):
-    """AC 22: ``black --check app``, ``ruff check app`` and ``mypy app/core``
-    are clean -- ``app/core`` is empty in this section, which still must not
-    error."""
+    """``black --check app``, ``ruff check app`` and ``mypy app/core`` are
+    clean."""
     pytest.importorskip(tool)
     proc = subprocess.run(
         [sys.executable, "-m", tool, *args],
@@ -305,7 +298,7 @@ def test_lint_and_type_gates_are_clean(tool, args):
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
-# --- §3.9 / §3.10 scaffolding exists ---------------------------------------
+# --- scaffolding exists -----------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -323,5 +316,5 @@ def test_lint_and_type_gates_are_clean(tool, args):
     ],
 )
 def test_scaffold_file_exists(relative):
-    """§3.7-3.10: the files the section is responsible for standing up."""
+    """The toolchain, image and migration files the project stands on."""
     assert (PROJECT_ROOT / relative).exists(), f"{relative} is missing"

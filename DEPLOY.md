@@ -1,10 +1,9 @@
 # Deploying Beery_Backend
 
-Mirrors the Tequila Game (`00-decisions.md` D17): a Docker container on
-Render, the database `beerydb` on the Aiven PostgreSQL service all four Novus games share, and — **optionally** — a managed Redis
-instance. See `docs/plan/23-deployment-and-ci.md` for the full specification
-this file implements, and the D4/D17 amendment notes in
-`docs/plan/00-decisions.md` for why Redis stopped being mandatory.
+Mirrors the Tequila Game (D17 in `../Beery_Frontend/docs/beer-game-spec.md` §15): a
+Docker container on Render, the database `beerydb` on the Aiven PostgreSQL service all
+four Novus games share, and — **optionally** — a managed Redis instance (*Redis is
+optional*, below).
 
 ## Topology
 
@@ -93,7 +92,7 @@ FIREBASE_SERVICE_ACCOUNT_JSON=
 
 Live room state -- lobbies, seating, the running `GameEngine` -- is
 authoritative in a key-value store, and PostgreSQL is written only when a game
-finishes (`00-decisions.md` **D4**). Which store holds it is one environment
+finishes (**D4**). Which store holds it is one environment
 variable, and **the default is no Redis at all**.
 
 **`REDIS_ENABLED=false` (the default).** Room documents live in a dict inside
@@ -169,8 +168,8 @@ different major version proves the wrong engine.
 
 ## The shared wire protocol -- ship together
 
-Every Socket.IO event name and payload in sections 11 and 12 is a contract
-between two separately deployed artefacts (this repository and
+Every Socket.IO event name and payload (`README.md`, *The socket surface*) is a
+contract between two separately deployed artefacts (this repository and
 `Beery_Frontend`). An old frontend against a new backend means nobody can
 play.
 
@@ -182,8 +181,7 @@ the same window, backend first.**
 ships frontend first.** Backend first would leave the old frontend reading a
 field that no longer arrives, so the new frontend has to tolerate the field's
 absence and be live before the backend stops sending it. Leaving
-`own_history` out of the per-round `your_state` (`12-socket-play.md §2`) is
-one such change: the old frontend stores `your_state` as it arrives, and its
+`own_history` out of the per-round `your_state` is one such change: the old frontend stores `your_state` as it arrives, and its
 `OwnHistoryChart` throws on the missing list.
 
 ## Deploy checklist
@@ -213,7 +211,8 @@ Run this before a class, every time.
       full week, **finish a game** -- that last step is the only one that
       exercises the database write path and account attribution at all.
 - [ ] Smoke test as a guest: create a room as a guest and finish a game -- a
-      separate identity path, and after D3 a separate hosting path too.
+      separate identity path, and, since guests may host (D3), a separate hosting
+      path too.
 - [ ] Results load at `/results/:roomCode` after the room's 24-hour state TTL
       would have expired -- i.e. from PostgreSQL, not from the live state store.
 - [ ] CSV export downloads and opens in a spreadsheet.
@@ -221,7 +220,7 @@ Run this before a class, every time.
 
 ## CI
 
-`.github/workflows/ci.yml` runs, on every push and pull request:
+`.github/workflows/ci.yml` runs, on push to `main` and on pull requests:
 
 1. `ruff check app tests`, `black --check app tests`, `mypy app/core`.
 2. `pytest -m "not dbschema" --cov=app --cov-fail-under=80`, plus a
@@ -229,7 +228,9 @@ Run this before a class, every time.
 3. A separate schema job: `pytest -m dbschema` against an ephemeral
    PostgreSQL 17 (`postgres:17`) started by Testcontainers -- migrations,
    the DDL snapshot, the models-match check and the persistence round
-   trips. It needs a Docker daemon, no repository secret
+   trips. It also catches migration drift: it upgrades an empty database to
+   head, asserts that autogenerate against it is empty and that the revision
+   chain is linear, so a model change shipped without its migration fails. It needs a Docker daemon, no repository secret
    and no database credential, and fails outright if every test in it
    skipped (an all-skipped run looks identical to a passing one otherwise).
 4. `docker build .`

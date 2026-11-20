@@ -1,12 +1,8 @@
-"""Black-box tests for section 08 -- ``app/core/bot.py``.
+"""Black-box tests for ``app/core/bot.py`` (spec §8.5).
 
-Covers ``08-bot-agent.md §5`` acceptance criteria 1-17 and ``§6`` failure
-modes 1-10.
-
-Driven entirely through the frozen public surface of ``§2`` plus the public
-surfaces of sections 03 (``config_models``, ``presets``), 04/05 (folded into
-``GameEngine``), 06 (``agents`` -- only to prove ``BotAgent`` is not a
-``RoleAgent``) and 07 (``game_engine``, ``stats``). No private name and no log
+Driven entirely through the bot's public surface plus the public surfaces of
+``config_models``, ``presets``, ``agents`` (only to prove ``BotAgent`` is not a
+``RoleAgent``), ``game_engine`` and ``stats``. No private name and no log
 message is asserted on.
 """
 
@@ -39,7 +35,7 @@ SEED = 20260919
 
 
 # --------------------------------------------------------------------------
-# Helpers -- built only from sections 03/07's public surface
+# Helpers -- built only from the config and engine public surface
 # --------------------------------------------------------------------------
 
 
@@ -95,7 +91,7 @@ def climb_to_expected_demand(
     The first call leaves the anchor untouched and records ``x``; the second
     applies the smoothing: ``theta * x + (1 - theta) * anchor == target``, so
     ``x = (target - (1 - theta) * anchor) / theta``. Used only to reach the
-    §4 backlogged states, which the document requires be reached by calling
+    worked backlogged states, which are reached by calling
     ``observe()``/``decide()``, never by driving an engine.
     """
     x = (target - (1 - theta) * anchor) / theta
@@ -107,11 +103,11 @@ def climb_to_expected_demand(
 
 
 # --------------------------------------------------------------------------
-# AC 1 -- the five worked examples of §4 reproduce exactly
+# The five worked examples reproduce exactly
 # --------------------------------------------------------------------------
 
 
-def test_ac1_worked_example_week1() -> None:
+def test_worked_example_week1() -> None:
     config = get_preset("CLASSIC_MIT")
     bot = bot_for(Role.WHOLESALER, config)
     assert bot.target_stock == pytest.approx(36.0)
@@ -125,7 +121,7 @@ def test_ac1_worked_example_week1() -> None:
     assert order == 11
 
 
-def test_ac1_worked_example_week2() -> None:
+def test_worked_example_week2() -> None:
     config = get_preset("CLASSIC_MIT")
     bot = bot_for(Role.WHOLESALER, config)
     bot.observe(4)
@@ -138,7 +134,7 @@ def test_ac1_worked_example_week2() -> None:
     assert order == 10
 
 
-def test_ac1_worked_example_backlogged_default_beta() -> None:
+def test_worked_example_backlogged_default_beta() -> None:
     config = get_preset("CLASSIC_MIT")
     bot = bot_for(Role.WHOLESALER, config)
     climb_to_expected_demand(bot, target=8.0, theta=config.bot.theta, anchor=4.0)
@@ -148,7 +144,7 @@ def test_ac1_worked_example_backlogged_default_beta() -> None:
     assert order == 21
 
 
-def test_ac1_worked_example_backlogged_beta_1() -> None:
+def test_worked_example_backlogged_beta_1() -> None:
     config = with_bot(get_preset("CLASSIC_MIT"), beta=1.0)
     bot = bot_for(Role.WHOLESALER, config)
     climb_to_expected_demand(bot, target=8.0, theta=config.bot.theta, anchor=4.0)
@@ -157,8 +153,8 @@ def test_ac1_worked_example_backlogged_beta_1() -> None:
     assert order == 16
 
 
-def test_ac1_worked_example_half_up_rounding() -> None:
-    """Also the failure mode 5 assertion: a raw of exactly 10.5 gives 11."""
+def test_worked_example_half_up_rounding() -> None:
+    """Also the half-up assertion: a raw of exactly 10.5 gives 11."""
     config = make_config(
         role_kwargs={"initial_order_in_pipeline": 0},
         bot_kwargs={"theta": 0.5, "alpha": 0.0},
@@ -175,11 +171,11 @@ def test_ac1_worked_example_half_up_rounding() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 2 -- BotAgent is not a RoleAgent
+# BotAgent is not a RoleAgent
 # --------------------------------------------------------------------------
 
 
-def test_ac2_bot_agent_is_not_a_role_agent_and_holds_no_inventory() -> None:
+def test_bot_agent_is_not_a_role_agent_and_holds_no_inventory() -> None:
     assert not issubclass(BotAgent, RoleAgent)
     bot = bot_for(Role.RETAILER, get_preset("CLASSIC_MIT"))
     assert not isinstance(bot, RoleAgent)
@@ -188,11 +184,11 @@ def test_ac2_bot_agent_is_not_a_role_agent_and_holds_no_inventory() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 3 -- initial expected_demand == initial_order_in_pipeline, per role
+# Initial expected_demand == initial_order_in_pipeline, per role
 # --------------------------------------------------------------------------
 
 
-def test_ac3_initial_expected_demand_is_the_preloaded_pipeline_per_role() -> None:
+def test_initial_expected_demand_is_the_preloaded_pipeline_per_role() -> None:
     config = make_config(
         per_role={
             Role.RETAILER: {"initial_order_in_pipeline": 1},
@@ -214,11 +210,11 @@ def test_ac3_initial_expected_demand_is_the_preloaded_pipeline_per_role() -> Non
 
 
 # --------------------------------------------------------------------------
-# AC 4 / AC 5 -- observe() semantics
+# observe() semantics
 # --------------------------------------------------------------------------
 
 
-def test_ac4_first_observe_leaves_expected_demand_unchanged() -> None:
+def test_first_observe_leaves_expected_demand_unchanged() -> None:
     config = get_preset("CLASSIC_MIT")
     bot = bot_for(Role.RETAILER, config)
     initial = bot.memory.expected_demand
@@ -229,7 +225,7 @@ def test_ac4_first_observe_leaves_expected_demand_unchanged() -> None:
     assert bot.memory.last_observed_demand == 999
 
 
-def test_ac5_later_observe_smooths_against_the_previous_observation() -> None:
+def test_later_observe_smooths_against_the_previous_observation() -> None:
     config = make_config(bot_kwargs={"theta": 0.4})
     bot = bot_for(Role.RETAILER, config)
     initial = bot.memory.expected_demand
@@ -243,11 +239,11 @@ def test_ac5_later_observe_smooths_against_the_previous_observation() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 6 -- decide() is pure
+# decide() is pure
 # --------------------------------------------------------------------------
 
 
-def test_ac6_decide_is_pure_and_does_not_mutate_memory() -> None:
+def test_decide_is_pure_and_does_not_mutate_memory() -> None:
     config = get_preset("CLASSIC_MIT")
     bot = bot_for(Role.WHOLESALER, config)
     bot.observe(4)
@@ -263,11 +259,11 @@ def test_ac6_decide_is_pure_and_does_not_mutate_memory() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 7 -- target_stock is per role
+# target_stock is per role
 # --------------------------------------------------------------------------
 
 
-def test_ac7_target_stock_is_derived_per_role() -> None:
+def test_target_stock_is_derived_per_role() -> None:
     config = make_config(
         per_role={
             Role.RETAILER: {"initial_inventory": 10},
@@ -287,11 +283,11 @@ def test_ac7_target_stock_is_derived_per_role() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 8 / AC 9 -- theta extremes
+# theta extremes
 # --------------------------------------------------------------------------
 
 
-def test_ac8_theta_1_tracks_the_previous_observation_exactly() -> None:
+def test_theta_1_tracks_the_previous_observation_exactly() -> None:
     config = make_config(bot_kwargs={"theta": 1.0})
     bot = bot_for(Role.RETAILER, config)
 
@@ -303,7 +299,7 @@ def test_ac8_theta_1_tracks_the_previous_observation_exactly() -> None:
     assert bot.memory.expected_demand == pytest.approx(20.0)
 
 
-def test_ac9_theta_0_freezes_expected_demand_forever() -> None:
+def test_theta_0_freezes_expected_demand_forever() -> None:
     config = make_config(bot_kwargs={"theta": 0.0})
     bot = bot_for(Role.RETAILER, config)
     initial = bot.memory.expected_demand
@@ -314,11 +310,11 @@ def test_ac9_theta_0_freezes_expected_demand_forever() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 10 -- alpha 0 ignores stock position entirely
+# alpha 0 ignores stock position entirely
 # --------------------------------------------------------------------------
 
 
-def test_ac10_alpha_0_orders_exactly_half_up_expected_demand() -> None:
+def test_alpha_0_orders_exactly_half_up_expected_demand() -> None:
     config = make_config(bot_kwargs={"alpha": 0.0})
     bot = bot_for(Role.WHOLESALER, config)
     bot.observe(11)  # first call: expected_demand stays at initial (4.0)
@@ -337,13 +333,11 @@ def test_ac10_alpha_0_orders_exactly_half_up_expected_demand() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 11 -- beta damps the supply-line panic, pinned to the §4 backlogged state
+# beta damps the supply-line panic, pinned to the worked backlogged state
 # --------------------------------------------------------------------------
 
 
-def test_ac11_beta_1_is_strictly_lower_than_beta_default_for_the_backlogged_state() -> (
-    None
-):
+def test_beta_1_is_strictly_lower_than_beta_default_for_the_backlogged_state() -> None:
     base = get_preset("CLASSIC_MIT")
 
     bot_lo = bot_for(Role.WHOLESALER, base)
@@ -361,11 +355,11 @@ def test_ac11_beta_1_is_strictly_lower_than_beta_default_for_the_backlogged_stat
 
 
 # --------------------------------------------------------------------------
-# AC 12 -- output is always int and always >= 0
+# Output is always int and always >= 0
 # --------------------------------------------------------------------------
 
 
-def test_ac12_output_is_always_a_nonnegative_int() -> None:
+def test_output_is_always_a_nonnegative_int() -> None:
     config = get_preset("CLASSIC_MIT")
     bot = bot_for(Role.WHOLESALER, config)
     bot.observe(4)
@@ -380,11 +374,11 @@ def test_ac12_output_is_always_a_nonnegative_int() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 13 -- payload round trip
+# Payload round trip
 # --------------------------------------------------------------------------
 
 
-def test_ac13_from_payload_of_to_payload_equals_the_original() -> None:
+def test_from_payload_of_to_payload_equals_the_original() -> None:
     config = get_preset("CLASSIC_MIT")
     bot = bot_for(Role.WHOLESALER, config)
     bot.observe(4)
@@ -400,9 +394,9 @@ def test_ac13_from_payload_of_to_payload_equals_the_original() -> None:
     assert restored is not bot
 
 
-def test_ac13_declares_value_equality_so_the_round_trip_means_something() -> None:
+def test_declares_value_equality_so_the_round_trip_means_something() -> None:
     """Guards against a vacuous __eq__: two bots with different memory must
-    compare unequal, or the round-trip criterion asserts nothing."""
+    compare unequal, or the round-trip test asserts nothing."""
     config = get_preset("CLASSIC_MIT")
     a = bot_for(Role.WHOLESALER, config)
     b = bot_for(Role.WHOLESALER, config)
@@ -414,13 +408,13 @@ def test_ac13_declares_value_equality_so_the_round_trip_means_something() -> Non
 
 
 # --------------------------------------------------------------------------
-# AC 14, 15, 16 -- a real 36-week all-bot game against the gated GameEngine
+# A real 36-week all-bot game against the gated GameEngine
 # --------------------------------------------------------------------------
 
 
 def run_all_bot_game(config: GameConfig, seed: int) -> GameEngine:
-    """Exactly the §3.4 driving loop: observe() then decide(), once each, per
-    week, for every bot role, as soon as the decision window opens."""
+    """Exactly the play loop's driving order: observe() then decide(), once
+    each, per week, for every bot role, as soon as the decision window opens."""
     bots = {role: bot_for(role, config) for role in ROLE_ORDER}
     engine = GameEngine.start(config, seed, bot_roles=frozenset(ROLE_ORDER))
     while engine.phase is GamePhase.DECISION:
@@ -437,30 +431,28 @@ def run_all_bot_game(config: GameConfig, seed: int) -> GameEngine:
     return engine
 
 
-def test_ac14_a_full_36_week_all_bot_game_completes_without_violating_invariants() -> (
-    None
-):
+def test_a_full_36_week_all_bot_game_completes_without_violating_invariants() -> None:
     config = get_preset("CLASSIC_MIT")
     engine = run_all_bot_game(config, SEED)
 
     assert engine.phase is GamePhase.FINISHED
     assert engine.weeks_played == 36
 
-    # 06-role-agents.md §3.7's invariants, enforced by RoleAgent._check_invariants
-    # on every settle()/record_order() and re-asserted here from the WeekRecords:
-    # stock never negative, and inventory/backlog are never both held at once.
+    # The spec §7.2 invariants, enforced by RoleAgent._check_invariants on every
+    # settle()/record_order() and re-asserted here from the WeekRecords: stock
+    # never negative, and inventory/backlog are never both held at once.
     for record in engine.history:
         assert record.closing_inventory >= 0
         assert record.closing_backlog >= 0
         assert record.closing_inventory * record.closing_backlog == 0
 
-    # Invariant 6: accumulated cost is monotonically non-decreasing per role.
+    # Accumulated cost is monotonically non-decreasing per role.
     for role in ROLE_ORDER:
         costs = [r.cumulative_cost for r in engine.history if r.role is role]
         assert all(x <= y + 1e-9 for x, y in itertools.pairwise(costs))
 
 
-def test_ac15_the_bot_reproduces_bullwhip_amplification() -> None:
+def test_the_bot_reproduces_bullwhip_amplification() -> None:
     config = get_preset("CLASSIC_MIT")
     assert config.bot.beta == pytest.approx(0.25)
     engine = run_all_bot_game(config, SEED)
@@ -474,7 +466,7 @@ def test_ac15_the_bot_reproduces_bullwhip_amplification() -> None:
     assert factory_ratio > retailer_ratio
 
 
-def test_ac16_beta_1_damps_the_bullwhip_ratio_for_every_role() -> None:
+def test_beta_1_damps_the_bullwhip_ratio_for_every_role() -> None:
     low_beta_config = get_preset("CLASSIC_MIT")
     high_beta_config = with_bot(low_beta_config, beta=1.0)
 
@@ -500,13 +492,12 @@ def test_ac16_beta_1_damps_the_bullwhip_ratio_for_every_role() -> None:
         assert high_ratio < low_ratio
 
 
-def test_ac14a_beta_1_is_milder_not_steady_on_constant_demand() -> None:
-    """`08 §5` AC 14a (2026-11-03): the docs used to promise that a bot at
-    beta 1.0 "behaves stably". With demand flat at 4 it still orders well above
-    4 while it builds a target stock of 3x its opening stock, and then cuts
-    back below 4: its supply line is shipments in transit only, and it keeps
-    no target for the pipeline. The wording in `bot.py`, `08 §3.1` and the
-    host form's slider describes exactly this."""
+def test_beta_1_is_milder_not_steady_on_constant_demand() -> None:
+    """A bot at beta 1.0 is milder, not steady (spec §8.5). With demand flat
+    at 4 it still orders well above 4 while it builds a target stock of 3x its
+    opening stock, and then cuts back below 4: its supply line is shipments in
+    transit only, and it keeps no target for the pipeline. The wording in
+    `bot.py`, the spec and the host form's slider describes exactly this."""
     classic = get_preset("CLASSIC_MIT").to_payload()
     classic["demand"] = {"kind": "CONSTANT", "value": 4}
     config = with_bot(GameConfig.from_host_input(classic, DEFAULT_LIMITS), beta=1.0)
@@ -523,7 +514,7 @@ def test_ac14a_beta_1_is_milder_not_steady_on_constant_demand() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 17 -- app/core/bot.py imports only app.core and the stdlib, never random
+# app/core/bot.py imports only app.core and the stdlib, never random
 # --------------------------------------------------------------------------
 
 
@@ -544,7 +535,7 @@ def imported_modules(path: Path, package: str) -> set[str]:
     return found
 
 
-def test_ac17_bot_module_imports_only_app_core_and_the_stdlib_never_random() -> None:
+def test_bot_module_imports_only_app_core_and_the_stdlib_never_random() -> None:
     path = Path(__file__).resolve().parents[2] / "app" / "core" / "bot.py"
     assert path.is_file(), path
 
@@ -564,11 +555,11 @@ def test_ac17_bot_module_imports_only_app_core_and_the_stdlib_never_random() -> 
 
 
 # --------------------------------------------------------------------------
-# Failure mode 1 -- using this week's demand in this week's anchor
+# Using this week's demand in this week's anchor
 # --------------------------------------------------------------------------
 
 
-def test_fm1_the_lag_is_not_lost_observations_4_4_4_12() -> None:
+def test_the_lag_is_not_lost_observations_4_4_4_12() -> None:
     config = make_config(bot_kwargs={"theta": 1.0})
     bot = bot_for(Role.WHOLESALER, config)
 
@@ -583,11 +574,11 @@ def test_fm1_the_lag_is_not_lost_observations_4_4_4_12() -> None:
 
 
 # --------------------------------------------------------------------------
-# Failure mode 2 -- sign error on backlog
+# Sign error on backlog
 # --------------------------------------------------------------------------
 
 
-def test_fm2_backlog_increases_the_order() -> None:
+def test_backlog_increases_the_order() -> None:
     config = get_preset("CLASSIC_MIT")
 
     bot_no_backlog = bot_for(Role.WHOLESALER, config)
@@ -604,11 +595,11 @@ def test_fm2_backlog_increases_the_order() -> None:
 
 
 # --------------------------------------------------------------------------
-# Failure mode 3 -- supply line ignored entirely
+# Supply line ignored entirely
 # --------------------------------------------------------------------------
 
 
-def test_fm3_beta_0_and_beta_1_give_different_answers_on_the_backlogged_state() -> None:
+def test_beta_0_and_beta_1_give_different_answers_on_the_backlogged_state() -> None:
     base = get_preset("CLASSIC_MIT")
 
     beta_0_config = with_bot(base, beta=0.0)
@@ -631,11 +622,11 @@ def test_fm3_beta_0_and_beta_1_give_different_answers_on_the_backlogged_state() 
 
 
 # --------------------------------------------------------------------------
-# Failure mode 4 -- negative orders floor at 0
+# Negative orders floor at 0
 # --------------------------------------------------------------------------
 
 
-def test_fm4_deep_surplus_floors_at_0() -> None:
+def test_deep_surplus_floors_at_0() -> None:
     config = get_preset("CLASSIC_MIT")
     bot = bot_for(Role.WHOLESALER, config)
 
@@ -644,11 +635,11 @@ def test_fm4_deep_surplus_floors_at_0() -> None:
 
 
 # --------------------------------------------------------------------------
-# Failure mode 5 -- banker's rounding
+# Banker's rounding
 # --------------------------------------------------------------------------
 
 
-def test_fm5_a_raw_of_exactly_10_5_rounds_to_11_not_10() -> None:
+def test_a_raw_of_exactly_10_5_rounds_to_11_not_10() -> None:
     config = make_config(
         role_kwargs={"initial_order_in_pipeline": 0},
         bot_kwargs={"theta": 0.5, "alpha": 0.0},
@@ -664,7 +655,7 @@ def test_fm5_a_raw_of_exactly_10_5_rounds_to_11_not_10() -> None:
     assert order == 11
 
 
-def test_fm5_an_exact_half_lost_to_float_noise_still_rounds_up() -> None:
+def test_an_exact_half_lost_to_float_noise_still_rounds_up() -> None:
     # 4 + 0.4 * (5 - 0.55 * 25) is exactly 0.5, but the float arithmetic
     # gives 0.4999999999999991, which a bare floor(x + 0.5) sends to 0.
     config = make_config(
@@ -679,11 +670,11 @@ def test_fm5_an_exact_half_lost_to_float_noise_still_rounds_up() -> None:
 
 
 # --------------------------------------------------------------------------
-# Failure mode 6 -- shared memory between bots
+# Shared memory between bots
 # --------------------------------------------------------------------------
 
 
-def test_fm6_four_bots_from_one_config_do_not_share_memory() -> None:
+def test_four_bots_from_one_config_do_not_share_memory() -> None:
     config = get_preset("CLASSIC_MIT")
     bots = {role: bot_for(role, config) for role in ROLE_ORDER}
 
@@ -701,11 +692,11 @@ def test_fm6_four_bots_from_one_config_do_not_share_memory() -> None:
 
 
 # --------------------------------------------------------------------------
-# Failure mode 7 -- global RNG use
+# Global RNG use
 # --------------------------------------------------------------------------
 
 
-def test_fm7_two_bots_given_identical_inputs_agree_and_no_random_is_used() -> None:
+def test_two_bots_given_identical_inputs_agree_and_no_random_is_used() -> None:
     config = get_preset("CLASSIC_MIT")
     bot_a = bot_for(Role.WHOLESALER, config)
     bot_b = bot_for(Role.WHOLESALER, config)
@@ -725,11 +716,11 @@ def test_fm7_two_bots_given_identical_inputs_agree_and_no_random_is_used() -> No
 
 
 # --------------------------------------------------------------------------
-# Failure mode 8 -- float accumulation, approached from below
+# Float accumulation, approached from below
 # --------------------------------------------------------------------------
 
 
-def test_fm8_observing_12_repeatedly_from_an_anchor_of_4_converges_without_overshoot() -> (
+def test_observing_12_repeatedly_from_an_anchor_of_4_converges_without_overshoot() -> (
     None
 ):
     config = make_config(role_kwargs={"initial_order_in_pipeline": 4})
@@ -744,11 +735,11 @@ def test_fm8_observing_12_repeatedly_from_an_anchor_of_4_converges_without_overs
 
 
 # --------------------------------------------------------------------------
-# Failure mode 9 -- max_order_quantity must not be applied twice
+# max_order_quantity must not be applied twice
 # --------------------------------------------------------------------------
 
 
-def test_fm9_decide_does_not_clamp_to_max_order_quantity() -> None:
+def test_decide_does_not_clamp_to_max_order_quantity() -> None:
     config = make_config(
         role_kwargs={"initial_order_in_pipeline": 0, "initial_inventory": 10},
         bot_kwargs={"alpha": 1.0, "beta": 0.25, "target_stock_multiplier": 3.0},
@@ -762,11 +753,11 @@ def test_fm9_decide_does_not_clamp_to_max_order_quantity() -> None:
 
 
 # --------------------------------------------------------------------------
-# Failure mode 10 -- the Retailer bot still anchors on the preloaded pipeline
+# The Retailer bot still anchors on the preloaded pipeline
 # --------------------------------------------------------------------------
 
 
-def test_fm10_retailer_bot_anchors_on_initial_order_in_pipeline_not_zero() -> None:
+def test_retailer_bot_anchors_on_initial_order_in_pipeline_not_zero() -> None:
     config = make_config(per_role={Role.RETAILER: {"initial_order_in_pipeline": 7}})
     bot = bot_for(Role.RETAILER, config)
 

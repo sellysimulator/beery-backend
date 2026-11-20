@@ -1,11 +1,11 @@
 """``alembic upgrade head``, its downgrade, the drift detectors and the DDL.
 
-Covers ``13-db-models-and-migrations.md §5`` criteria 1 to 4 and §6 failure
-mode 3, plus the two checks every Novus backend shares: the migrated schema
-dumps to exactly the committed ``db/schema.postgres.sql``, and the models
-match the migrations.  Each test gets its own freshly created, completely empty database
-inside the session's container, so an upgrade/downgrade cycle here cannot
-disturb the migrated schema ``test_schema.py`` reads.
+Covers upgrade, downgrade, the round trip and autogenerate drift, plus the two
+checks every Novus backend shares: the migrated schema dumps to exactly the
+committed ``db/schema.postgres.sql``, and the models match the migrations.
+Each test gets its own freshly created, completely empty database inside the
+session's container, so an upgrade/downgrade cycle here cannot disturb the
+migrated schema ``test_schema.py`` reads.
 
 The ``alembic`` CLI is driven as a real subprocess whose ``DB_*``
 environment names the container -- ``alembic/env.py`` builds its URL from
@@ -70,14 +70,14 @@ def _version_rows(url: str) -> list[str]:
         engine.dispose()
 
 
-# --- criterion 1 -----------------------------------------------------------
+# --- upgrade on an empty database ------------------------------------------
 
 
 def test_upgrade_head_on_an_empty_database_creates_exactly_nine_tables(
     blank_database: str, alembic: AlembicRunner
 ) -> None:
-    """AC 1 -- on an empty PostgreSQL, ``alembic upgrade head`` creates the nine
-    tables of §2.1 to §2.9 plus ``alembic_version``, and nothing else."""
+    """On an empty PostgreSQL, ``alembic upgrade head`` creates the nine
+    tables plus ``alembic_version``, and nothing else."""
     assert _tables(blank_database) == set()
 
     alembic(blank_database, "upgrade", "head")
@@ -87,7 +87,7 @@ def test_upgrade_head_on_an_empty_database_creates_exactly_nine_tables(
 
 
 def test_the_revision_chain_is_linear_and_starts_at_the_baseline() -> None:
-    """§4.1 -- a single linear chain rooted at ``0001_postgres_baseline``.
+    """A single linear chain rooted at ``0001_postgres_baseline``.
 
     This deliberately does **not** assert the exact list of revision files:
     a migration chain grows by design. What must stay true is that it is one
@@ -119,15 +119,15 @@ def test_the_revision_chain_is_linear_and_starts_at_the_baseline() -> None:
     assert len(set(parents)) == len(parents), f"branched history: {parents}"
 
 
-# --- criterion 2 -----------------------------------------------------------
+# --- downgrade to base -----------------------------------------------------
 
 
 def test_downgrade_base_removes_all_nine_tables(
     blank_database: str, alembic: AlembicRunner
 ) -> None:
-    """AC 2 -- a real ``downgrade()``, dropping in reverse dependency order,
-    with no foreign-key errors.  A revision whose downgrade is ``pass``
-    cannot be tested (§4.1)."""
+    """A real ``downgrade()``, dropping in reverse dependency order, with no
+    foreign-key errors.  A revision whose downgrade is ``pass`` cannot be
+    tested."""
     alembic(blank_database, "upgrade", "head")
     completed = alembic(blank_database, "downgrade", "base")
 
@@ -138,13 +138,13 @@ def test_downgrade_base_removes_all_nine_tables(
     assert _version_rows(blank_database) == []
 
 
-# --- criterion 3 -----------------------------------------------------------
+# --- round trip ------------------------------------------------------------
 
 
 def test_upgrade_downgrade_upgrade_round_trip(
     blank_database: str, alembic: AlembicRunner
 ) -> None:
-    """AC 3 -- head, base, head again."""
+    """Head, base, head again."""
     alembic(blank_database, "upgrade", "head")
     first = _tables(blank_database)
     alembic(blank_database, "downgrade", "base")
@@ -154,7 +154,7 @@ def test_upgrade_downgrade_upgrade_round_trip(
     assert len(_version_rows(blank_database)) == 1
 
 
-# --- criterion 4, failure mode 3 ------------------------------------------
+# --- autogenerate drift ----------------------------------------------------
 
 
 def _ini_with_extra_version_path(destination: Path, extra: Path) -> Path:
@@ -183,7 +183,7 @@ def _ini_with_extra_version_path(destination: Path, extra: Path) -> Path:
 def test_autogenerate_against_head_produces_an_empty_revision(
     blank_database: str, alembic: AlembicRunner, tmp_path: Path
 ) -> None:
-    """AC 4 and failure mode 3 -- the models and the migration agree.
+    """The models and the migration agree.
 
     This is the drift detector: anything the models declare and the migration
     does not (or the other way round) shows up here as an ``op.`` call in an
@@ -235,9 +235,9 @@ def _operations(script: str, function: str) -> list[str]:
 
 
 def test_models_match_migrations(blank_database: str, alembic: AlembicRunner) -> None:
-    """The same drift check as AC 4, asked of Alembic's API directly:
-    ``compare_metadata`` between the migrated database and ``Base.metadata``
-    finds nothing to add, drop or alter."""
+    """The same drift check as the autogenerate test, asked of Alembic's API
+    directly: ``compare_metadata`` between the migrated database and
+    ``Base.metadata`` finds nothing to add, drop or alter."""
     import app.models  # noqa: F401  -- registers every table on Base.metadata
     from app.models.base import Base
 

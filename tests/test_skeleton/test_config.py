@@ -1,6 +1,7 @@
-"""``app/config.py`` -- the frozen ``Settings`` surface (01 §2).
+"""``app/config.py`` -- the frozen ``Settings`` surface.
 
-Acceptance criteria 6, 7 and 11, and failure modes 4, 8 and 9.
+Covers the database URL and TLS arguments, CORS origins, unknown variables and
+the hard ceilings.
 """
 
 from __future__ import annotations
@@ -43,32 +44,32 @@ def _isolated(monkeypatch, **overrides) -> Settings:
     return Settings(_env_file=None, **overrides)
 
 
-# --- identity / AC 2 --------------------------------------------------------
+# --- identity ---------------------------------------------------------------
 
 
 def test_app_name_and_version_defaults(monkeypatch):
-    """AC 2: ``GET /`` answers with these two values."""
+    """``GET /`` answers with these two values."""
     s = _isolated(monkeypatch)
     assert s.APP_NAME == "Beery"
     assert s.VERSION == "0.1.0"
 
 
 def test_debug_is_off_by_default(monkeypatch):
-    """AC 10 / 00-conventions.md §7: socket logging is driven from DEBUG, and
-    DEBUG is off unless a deployment says otherwise."""
+    """Socket logging is driven from DEBUG, and DEBUG is off unless a
+    deployment says otherwise."""
     assert _isolated(monkeypatch).DEBUG is False
 
 
 def test_module_level_settings_singleton_exists():
-    """§2: ``settings`` is a module-level singleton of type ``Settings``."""
+    """``settings`` is a module-level singleton of type ``Settings``."""
     assert isinstance(settings, Settings)
 
 
-# --- AC 6 / FM 9 ------------------------------------------------------------
+# --- db_url -----------------------------------------------------------------
 
 
 def test_db_url_shape(monkeypatch):
-    """AC 6: ``postgresql+psycopg://user:password@host:port/database``."""
+    """``postgresql+psycopg://user:password@host:port/database``."""
     s = _isolated(
         monkeypatch,
         DB_USER="beeruser",
@@ -84,7 +85,7 @@ def test_db_url_shape(monkeypatch):
 
 
 def test_db_url_uses_the_psycopg_driver(monkeypatch):
-    """§3.8: psycopg 3 (``psycopg[binary]``), the one PostgreSQL driver."""
+    """psycopg 3 (``psycopg[binary]``), the one PostgreSQL driver."""
     assert _isolated(monkeypatch).db_url.startswith("postgresql+psycopg://")
 
 
@@ -103,7 +104,7 @@ def test_db_url_uses_the_psycopg_driver(monkeypatch):
     ],
 )
 def test_db_password_with_url_metacharacters_round_trips(monkeypatch, password):
-    """FM 9 [HARD-WON]: a ``DB_PASSWORD`` containing ``@``, ``:``, ``/``,
+    """[HARD-WON] A ``DB_PASSWORD`` containing ``@``, ``:``, ``/``,
     ``#``, ``?``, ``%``, ``+`` or a space still produces a valid ``db_url``,
     and that URL round-trips back to the original password.
 
@@ -133,7 +134,7 @@ def test_db_password_with_url_metacharacters_round_trips(monkeypatch, password):
 
 
 def test_db_user_with_url_metacharacters_round_trips(monkeypatch):
-    """FM 9: the same encoding applies to the user half of the userinfo
+    """The same encoding applies to the user half of the userinfo
     component, which is the other thing a managed provider hands out with a
     ``@`` in it."""
     s = _isolated(
@@ -150,7 +151,7 @@ def test_db_user_with_url_metacharacters_round_trips(monkeypatch):
     assert url.host == "db.example.com"
 
 
-# --- AC 7 -------------------------------------------------------------------
+# --- db_connect_args --------------------------------------------------------
 
 _UTC = {"options": "-c timezone=UTC"}
 
@@ -165,14 +166,14 @@ def test_db_connect_args_always_pin_the_session_to_utc(monkeypatch):
 
 
 def test_db_connect_args_without_ssl_or_ca_use_libpq_defaults(monkeypatch):
-    """AC 7: with ``DB_REQUIRE_SSL`` false and no CA, no ``sslmode`` is set
+    """With ``DB_REQUIRE_SSL`` false and no CA, no ``sslmode`` is set
     (libpq's ``prefer``); only the UTC option is passed."""
     s = _isolated(monkeypatch, DB_REQUIRE_SSL=False)
     assert s.db_connect_args == _UTC
 
 
 def test_db_connect_args_encrypt_without_verifying_when_no_ca(monkeypatch):
-    """AC 7: TLS with no ``DB_SSL_CA`` is ``sslmode=require`` -- encrypted,
+    """TLS with no ``DB_SSL_CA`` is ``sslmode=require`` -- encrypted,
     never a plaintext fallback, but the server is not authenticated."""
     s = _isolated(monkeypatch, DB_REQUIRE_SSL=True)
     assert s.db_connect_args == {**_UTC, "sslmode": "require"}
@@ -198,7 +199,7 @@ def _ca_value(form, tmp_path) -> str:
 @pytest.mark.parametrize("require", [True, False])
 @pytest.mark.parametrize("form", _CA_FORMS)
 def test_db_connect_args_verify_against_the_ca(monkeypatch, tmp_path, form, require):
-    """AC 7: with ``DB_SSL_CA`` -- in any accepted form -- the server
+    """With ``DB_SSL_CA`` -- in any accepted form -- the server
     certificate and hostname are verified (``sslmode=verify-full``) against a
     readable file holding exactly that CA. libpq reads a CA only from a file,
     so PEM text is written to one; a path is passed through untouched."""
@@ -263,11 +264,11 @@ def test_boot_log_says_how_the_db_link_is_protected(
     assert text in record.getMessage()
 
 
-# --- AC 11 / FM 4 -----------------------------------------------------------
+# --- CORS -------------------------------------------------------------------
 
 
 def test_cors_origins_default_is_not_a_wildcard(monkeypatch):
-    """AC 11 / FM 4: the app sets ``allow_credentials=True``; combined with
+    """The app sets ``allow_credentials=True``; combined with
     ``["*"]`` that is an invalid, permissive configuration."""
     s = _isolated(monkeypatch)
     assert s.CORS_ORIGINS != ["*"]
@@ -276,16 +277,16 @@ def test_cors_origins_default_is_not_a_wildcard(monkeypatch):
 
 
 def test_live_cors_origins_is_not_a_wildcard():
-    """FM 4: nor may the *running* configuration be a wildcard."""
+    """Nor may the *running* configuration be a wildcard."""
     assert "*" not in settings.CORS_ORIGINS
     assert settings.CORS_ORIGINS != ["*"]
 
 
-# --- FM 8 -------------------------------------------------------------------
+# --- unknown variables are ignored ------------------------------------------
 
 
 def test_unknown_environment_variable_is_ignored(monkeypatch):
-    """FM 8: ``extra="ignore"`` -- an unrelated variable in the environment
+    """``extra="ignore"`` -- an unrelated variable in the environment
     must not stop the app booting."""
     monkeypatch.setenv("BEERY_SOMETHING_NOBODY_DECLARED", "1")
     monkeypatch.setenv("PATH_TO_NOWHERE", "x")
@@ -294,24 +295,24 @@ def test_unknown_environment_variable_is_ignored(monkeypatch):
 
 
 def test_unknown_keyword_is_ignored(monkeypatch):
-    """FM 8, the same guarantee reached through construction."""
+    """The same guarantee reached through construction."""
     s = _isolated(monkeypatch, SOMETHING_NOBODY_DECLARED="1")
     assert s.APP_NAME == "Beery"
     assert not hasattr(s, "SOMETHING_NOBODY_DECLARED")
 
 
-# --- hard ceilings (00-decisions.md §5, frozen into §2) ---------------------
+# --- hard ceilings (spec §12.1) ---------------------------------------------
 
 
 def test_hard_limit_defaults(monkeypatch):
-    """§5's ceilings, asserted at the place that actually enforces each one.
+    """The hard ceilings, asserted at the place that actually enforces each one.
 
     Only ``MAX_DISPLAY_NAME_LENGTH`` is a setting. The other ten were fields
     on ``Settings`` and were read by nothing -- ``app/core`` is pure and
     cannot import ``app.config``, so the game ceilings are injected as
     ``Limits`` and the store's ceilings are module constants. Asserting them
-    here, at their owners, keeps §5 covered without a ``.env`` variable that
-    silently does nothing.
+    here, at their owners, keeps every ceiling covered without a ``.env``
+    variable that silently does nothing.
     """
     from app.core.config_models import DEFAULT_LIMITS
     from app.services import state_service
@@ -392,7 +393,7 @@ def test_the_engine_uses_the_pool_settings():
 
 
 def test_settings_is_case_sensitive(monkeypatch):
-    """§2: ``case_sensitive=True`` -- a lower-cased variable is not picked up."""
+    """``case_sensitive=True`` -- a lower-cased variable is not picked up."""
     for name in Settings.model_fields:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("app_name", "NotBeery")

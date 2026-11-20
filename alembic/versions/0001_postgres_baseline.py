@@ -4,18 +4,17 @@ Revision ID: 0001
 Revises:
 Create Date: 2026-11-18
 
-Creates the nine tables of `13-db-models-and-migrations.md §2`: `users` (whose
-model belongs to section 02) plus the eight durable game-record tables in
-`app/models/game.py`, exactly as the models declare them.
+Creates the nine tables of spec §10.1: `users` plus the eight durable
+game-record tables in `app/models/game.py`, exactly as the models declare them.
 
 There is no `Base.metadata.create_all()` anywhere in the application -- this
 revision is the only thing that builds the schema. `downgrade()` is real and
 drops every table in reverse dependency order, because a revision with a
 `pass` downgrade cannot be tested.
 
-Every `TimestampMixin` column carries `server_default=now()`: section 14
-writes with batched raw inserts that bypass ORM-side defaults, and a NOT NULL
-column without a database-side default would reject them. They are the only
+Every `TimestampMixin` column carries `server_default=now()`: end-of-game
+persistence writes with batched raw inserts that bypass ORM-side defaults, and a
+NOT NULL column without a database-side default would reject them. They are the only
 server defaults: every fact column is written explicitly by the application. Timestamps are
 `timestamptz`; the application's sessions run in UTC. Constraint and index
 names come from the models or from `Base.metadata`'s naming convention, so

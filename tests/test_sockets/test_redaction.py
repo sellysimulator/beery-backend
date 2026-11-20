@@ -1,8 +1,7 @@
-"""Redaction (``12-socket-play.md §3.4``, ``00-conventions.md §3``).
+"""Redaction (spec §8.8).
 
-Covers failure modes 1, 2 and 3 -- the reason this section has a dedicated
-test agent. Only symbols from section 12's frozen *Public surface* are
-imported, plus section 11's lobby handlers to drive a room to ``RUNNING``.
+Only the play loop's public surface is imported, plus the lobby handlers to
+drive a room to ``RUNNING``.
 ``app/sockets/handlers/play.py`` and ``app/services/game_service.py`` are
 never read, only imported.
 """
@@ -32,13 +31,12 @@ pytestmark = pytest.mark.asyncio
 
 # Fields a room broadcast may legitimately, and expectedly, carry a small
 # varying integer under -- the per-room event counter and the week numbers
-# (``00-conventions.md §3``, ``12-socket-play.md §2``). Excluding exactly
-# these three keys from failure mode 1's probe-value scan avoids a false
-# leak report when a probe value coincides with the room's current `seq` or
-# `week`, without weakening the check anywhere else: none of the *other*
-# frozen room-broadcast fields (`role`, `display_name`, `is_bot`,
-# `awaiting_roles`) is ever numeric, so a real leak would surface under some
-# other key regardless.
+# (spec §11.2). Excluding exactly these three keys from the order-quantity
+# probe-value scan avoids a false leak report when a probe value coincides
+# with the room's current `seq` or `week`, without weakening the check
+# anywhere else: none of the *other* frozen room-broadcast fields (`role`,
+# `display_name`, `is_bot`, `awaiting_roles`) is ever numeric, so a real leak
+# would surface under some other key regardless.
 _SAFE_NUMERIC_KEYS = {"seq", "week", "next_week"}
 
 
@@ -71,7 +69,7 @@ async def _close_the_open_week(game, state_svc, order: int = 4):
         )
 
 
-# --- failure mode 1 -------------------------------------------------------- #
+# --- order quantities never reach a room ---------------------------------- #
 
 
 async def test_order_quantities_never_appear_in_a_room_broadcast(
@@ -92,12 +90,12 @@ async def test_order_quantities_never_appear_in_a_room_broadcast(
 
     for _room_id, event, payload in fake_socket_manager.room_emits:
         if event == "game_finished":
-            continue  # §3.4's single, documented exception -- not reached here
+            continue  # the single, documented exception -- not reached here
         for qty in probes.values():
             assert not _contains_leaked_value(payload, qty), (event, qty, payload)
 
 
-# --- failure mode 2 -------------------------------------------------------- #
+# --- no private key in a room broadcast ----------------------------------- #
 
 
 async def test_no_private_key_anywhere_in_a_room_broadcast(
@@ -144,7 +142,7 @@ async def test_no_private_key_anywhere_in_a_room_broadcast(
             assert not contains_key(payload, key), (event, key, payload)
 
 
-# --- failure mode 3 -------------------------------------------------------- #
+# --- per-role visibility -------------------------------------------------- #
 
 
 def _visibility_config(show_neighbour: bool) -> GameConfig:
@@ -204,7 +202,7 @@ async def test_retailer_your_state_shows_wholesaler_inventory_when_enabled(
     ), "show_neighbour_inventory=True must surface the Wholesaler's inventory"
 
 
-# --- BE-4: order_history is host-sid only (12 §2, §3.4; 07 §3.9) ----------- #
+# --- host_view.order_history is host-sid only (spec §9.6, §8.8) ----------- #
 
 _ORDER_PROBES = {"RETAILER": 111, "WHOLESALER": 222, "DISTRIBUTOR": 333, "FACTORY": 444}
 

@@ -1,8 +1,7 @@
 """The live schema, asserted against a real PostgreSQL 17.
 
-Covers ``13-db-models-and-migrations.md §5`` criteria 1, 5 to 18 and §6
-failure modes 1, 2, 4 to 11.  Criteria 2, 3 and 4 and failure mode 3 are
-``test_migration.py``'s, with the DDL snapshot and models-match checks.
+Upgrade, downgrade, autogenerate drift, the DDL snapshot and the
+models-match check are ``test_migration.py``'s.
 
 Everything here reads the **database**: ``information_schema``, raw SQL,
 real inserts and real deletes.  Nothing imports ``app/models/game.py`` --
@@ -43,7 +42,7 @@ from .conftest import (
 
 pytestmark = pytest.mark.dbschema
 
-#: §2.2, §2.4, §2.8, §2.9 -- everything the plan types ``NUMERIC(12, 2)``.
+#: Every money column, typed ``NUMERIC(12, 2)``.
 MONEY_COLUMNS = (
     ("games", "chain_total_cost"),
     ("role_configs", "holding_cost_per_unit_week"),
@@ -61,7 +60,7 @@ MONEY_COLUMNS = (
     ("user_stats", "avg_cost_per_week"),
 )
 
-#: §2.3 / §4.5 -- the four ``BotConfig`` fields.
+#: The four ``BotConfig`` fields.
 BOT_COLUMNS = ("theta", "alpha", "beta", "target_stock_multiplier")
 
 
@@ -74,27 +73,27 @@ def _parent_columns(db: Connection, table: str) -> dict[str, Any]:
     return {}
 
 
-# --- criterion 1 -----------------------------------------------------------
+# --- the tables ------------------------------------------------------------
 
 
 def test_migration_creates_exactly_the_nine_tables(db: Connection) -> None:
-    """AC 1 -- the nine tables of §2.1 to §2.9, ``alembic_version``, nothing
-    else.  §2.10's four spec tables are deliberately absent."""
+    """The nine tables, ``alembic_version``, nothing else.  ``sessions``,
+    ``events``, ``orders`` and ``pipeline_slots`` are deliberately absent."""
     found = table_names(db)
     assert found == EXPECTED_TABLES | {"alembic_version"}
     for absent in ("sessions", "events", "orders", "pipeline_slots"):
         assert absent not in found
 
 
-# --- criterion 5, failure mode 1 ------------------------------------------
+# --- timestamp server defaults ---------------------------------------------
 
 
 @pytest.mark.parametrize("table", TIMESTAMP_TABLES)
 def test_timestamp_columns_have_a_server_default(db: Connection, table: str) -> None:
-    """AC 5 -- ``created_at``/``updated_at`` carry a server-side default.
+    """``created_at``/``updated_at`` carry a server-side default.
 
-    Section 14 writes with batched raw inserts that bypass ORM defaults, so a
-    Python-side ``default=`` is not enough  ``[HARD-WON]``.
+    End-of-game persistence writes with batched raw inserts that bypass ORM
+    defaults, so a Python-side ``default=`` is not enough  ``[HARD-WON]``.
     """
     spec = columns(db, table)
     for name in ("created_at", "updated_at"):
@@ -113,10 +112,10 @@ def test_timestamp_columns_have_a_server_default(db: Connection, table: str) -> 
 def test_raw_insert_naming_neither_timestamp_succeeds(
     db: Connection, table: str
 ) -> None:
-    """AC 5 and failure mode 1 -- the insert section 14 actually performs.
+    """The insert end-of-game persistence actually performs.
 
     Without ``server_default`` this raises PostgreSQL's ``null value in column
-    "created_at" ... violates not-null constraint``, section 14 swallows it,
+    "created_at" ... violates not-null constraint``, persistence swallows it,
     and every completed game is silently dropped  ``[HARD-WON]``.
     """
     parents = _parent_columns(db, table)
@@ -149,18 +148,18 @@ def test_no_fact_column_has_a_database_default(db: Connection) -> None:
 
 
 def test_timestamp_free_tables_really_have_none(db: Connection) -> None:
-    """§2.7 and §2.8 -- bulk tables carry no timestamp columns."""
+    """The bulk tables carry no timestamp columns."""
     for table in ("demand_series", "weeks"):
         spec = columns(db, table)
         assert "created_at" not in spec
         assert "updated_at" not in spec
 
 
-# --- criterion 13, failure mode 2 -----------------------------------------
+# --- reserved words --------------------------------------------------------
 
 
 def test_no_column_is_named_after_a_reserved_word(db: Connection) -> None:
-    """AC 13 -- not ``order``, ``user``, ``group``, ``limit``, ``end``, nor
+    """Not ``order``, ``user``, ``group``, ``limit``, ``end``, nor
     ``min``, ``max``, ``key``, ``rank``..."""
     offenders = [
         f"{table}.{name}"
@@ -172,10 +171,10 @@ def test_no_column_is_named_after_a_reserved_word(db: Connection) -> None:
 
 
 def test_every_column_parses_unquoted(db: Connection) -> None:
-    """AC 13, the general case, asked of the server rather than a word list.
+    """The general case, asked of the server rather than a word list.
 
     A reserved identifier fails to parse without double quotes, which is a
-    permanent tax on every raw query section 14 and 15 write.  Each probe runs
+    permanent tax on every raw query persistence and results write.  Each probe runs
     in a savepoint: a failed statement aborts a PostgreSQL transaction.
     """
     offenders = []
@@ -193,7 +192,7 @@ def test_every_column_parses_unquoted(db: Connection) -> None:
 
 
 def test_renamed_columns_use_their_safe_names(db: Connection) -> None:
-    """§4.4 and failure mode 2 -- ``order_qty``, ``min_value``,
+    """``order_qty``, ``min_value``,
     ``max_value``, and a raw unquoted ``SELECT`` over them parses."""
     assert "order_qty" in columns(db, "weeks")
     demand = columns(db, "demand_configs")
@@ -203,12 +202,12 @@ def test_renamed_columns_use_their_safe_names(db: Connection) -> None:
     db.execute(text("SELECT min_value, max_value FROM demand_configs WHERE 1 = 0"))
 
 
-# --- criteria 6 to 9 and 12, failure mode 7 -------------------------------
+# --- unique keys -----------------------------------------------------------
 
 
 def test_weeks_is_unique_on_game_week_role(db: Connection) -> None:
-    """AC 6 and failure mode 7 -- without it a retried persistence writes
-    every week twice and every chart doubles."""
+    """Without it a retried persistence writes every week twice and every
+    chart doubles."""
     game_id = insert_game(db)
     assert ("game_id", "week", "role") in unique_key_columns(db, "weeks")
     insert_row(db, "weeks", game_id=game_id, week=1, role=Role.RETAILER.value)
@@ -219,7 +218,7 @@ def test_weeks_is_unique_on_game_week_role(db: Connection) -> None:
 
 
 def test_role_configs_is_unique_on_game_and_role(db: Connection) -> None:
-    """AC 7."""
+    """One row per role per game."""
     game_id = insert_game(db)
     assert ("game_id", "role") in unique_key_columns(db, "role_configs")
     for role in Role:
@@ -229,7 +228,7 @@ def test_role_configs_is_unique_on_game_and_role(db: Connection) -> None:
 
 
 def test_demand_series_is_unique_on_game_and_week(db: Connection) -> None:
-    """AC 8."""
+    """One demand row per week per game."""
     game_id = insert_game(db)
     assert ("game_id", "week") in unique_key_columns(db, "demand_series")
     insert_row(db, "demand_series", game_id=game_id, week=1, quantity=4)
@@ -240,7 +239,7 @@ def test_demand_series_is_unique_on_game_and_week(db: Connection) -> None:
 
 @pytest.mark.parametrize("table", ["game_configs", "demand_configs"])
 def test_one_row_per_game(db: Connection, table: str) -> None:
-    """AC 9 -- ``game_id`` is unique on both single-row config tables."""
+    """``game_id`` is unique on both single-row config tables."""
     game_id = insert_game(db)
     assert ("game_id",) in unique_key_columns(db, table)
     insert_row(db, table, game_id=game_id)
@@ -249,18 +248,18 @@ def test_one_row_per_game(db: Connection, table: str) -> None:
 
 
 def test_users_firebase_uid_is_unique_and_indexed(db: Connection) -> None:
-    """AC 12 and §2.1 -- unique, indexed."""
+    """Unique, indexed."""
     assert ("firebase_uid",) in unique_key_columns(db, "users")
     insert_user(db, firebase_uid="uid-duplicate")
     with pytest.raises(IntegrityError):
         insert_user(db, firebase_uid="uid-duplicate")
 
 
-# --- criteria 10 and 11, failure modes 4 and 5 ----------------------------
+# --- deletes and attribution -----------------------------------------------
 
 
 def test_deleting_a_game_cascades_to_every_child(db: Connection) -> None:
-    """AC 10 and failure mode 4 -- one statement deletes a whole game.
+    """One statement deletes a whole game.
 
     144 ``weeks`` rows is a full 36-week four-role game.
     """
@@ -291,7 +290,7 @@ def test_deleting_a_game_cascades_to_every_child(db: Connection) -> None:
 
 
 def test_deleting_a_user_keeps_the_games_they_played(db: Connection) -> None:
-    """AC 11 and failure mode 5 -- ``ON DELETE SET NULL`` from ``users``.
+    """``ON DELETE SET NULL`` from ``users``.
 
     Other players are entitled to their own records, so the rows survive with
     the attribution removed.
@@ -332,11 +331,11 @@ def _count(db: Connection, table: str, game_id: int) -> int:
     )
 
 
-# --- criteria 14 and 15 ----------------------------------------------------
+# --- guest hosts, guests and bots ------------------------------------------
 
 
 def test_a_guest_hosted_game_inserts_with_no_account(db: Connection) -> None:
-    """AC 14 and **D3** -- hosting is a capability, not an account. Who
+    """**D3** -- hosting is a capability, not an account. Who
     hosted lives only on the ``HOST`` participant row, so ``games`` names no
     account at all."""
     assert "host_user_id" not in columns(db, "games")
@@ -361,8 +360,8 @@ def test_a_guest_hosted_game_inserts_with_no_account(db: Connection) -> None:
 
 
 def test_participants_accepts_a_guest_and_a_bot(db: Connection) -> None:
-    """AC 15 and §2.6 -- exactly one of ``user_id`` / ``guest_identity`` for a
-    human; both NULL for a bot."""
+    """Exactly one of ``user_id`` / ``guest_identity`` for a human; both NULL
+    for a bot."""
     game_id = insert_game(db)
     guest = insert_row(
         db,
@@ -399,21 +398,21 @@ def test_participants_accepts_a_guest_and_a_bot(db: Connection) -> None:
     assert bool(by_id[bot].is_bot) is True
 
 
-# --- criterion 16, failure mode 6 -----------------------------------------
+# --- money and precision ---------------------------------------------------
 
 
 @pytest.mark.parametrize(("table", "column"), MONEY_COLUMNS)
 def test_money_columns_are_numeric_12_2(
     db: Connection, table: str, column: str
 ) -> None:
-    """AC 16 -- ``NUMERIC(12, 2)`` throughout (§4.5)."""
+    """``NUMERIC(12, 2)`` throughout."""
     spec = columns(db, table)[column]
     assert spec["DATA_TYPE"] == "numeric"
     assert (spec["NUMERIC_PRECISION"], spec["NUMERIC_SCALE"]) == (12, 2)
 
 
 def test_no_decimal_column_lost_its_scale(db: Connection) -> None:
-    """Failure mode 6, generalised -- a ``NUMERIC(12, 0)`` typo anywhere."""
+    """Generalised -- a ``NUMERIC(12, 0)`` typo anywhere."""
     for table in sorted(EXPECTED_TABLES):
         for name, spec in columns(db, table).items():
             if spec["DATA_TYPE"] == "numeric":
@@ -423,7 +422,7 @@ def test_no_decimal_column_lost_its_scale(db: Connection) -> None:
 def test_money_rounds_to_two_places_and_never_to_an_integer(
     db: Connection,
 ) -> None:
-    """AC 16 and failure mode 6 -- ``0.50`` reads back as ``0.50``.
+    """``0.50`` reads back as ``0.50``.
 
     A ``NUMERIC(12, 0)`` typo is invisible until a debrief shows every cost
     as a whole number.
@@ -447,7 +446,7 @@ def test_money_rounds_to_two_places_and_never_to_an_integer(
 
 
 def test_bot_and_bullwhip_precision(db: Connection) -> None:
-    """§4.5 -- ``NUMERIC(6, 4)`` for bot parameters, ``NUMERIC(10, 4)`` for
+    """``NUMERIC(6, 4)`` for bot parameters, ``NUMERIC(10, 4)`` for
     ``bullwhip_avg``, which is a ratio and needs precision, not range."""
     config_spec = columns(db, "game_configs")
     for name in BOT_COLUMNS:
@@ -455,7 +454,7 @@ def test_bot_and_bullwhip_precision(db: Connection) -> None:
         assert (spec["NUMERIC_PRECISION"], spec["NUMERIC_SCALE"]) == (6, 4), name
     bullwhip = columns(db, "user_stats")["bullwhip_avg"]
     assert (bullwhip["NUMERIC_PRECISION"], bullwhip["NUMERIC_SCALE"]) == (10, 4)
-    assert bullwhip["IS_NULLABLE"] == "YES"  # §2.9, and D12's null bullwhip
+    assert bullwhip["IS_NULLABLE"] == "YES"  # D12's null bullwhip
 
     game_id = insert_game(db)
     insert_row(db, "game_configs", game_id=game_id, theta=Decimal("0.2500"))
@@ -465,11 +464,11 @@ def test_bot_and_bullwhip_precision(db: Connection) -> None:
     assert stored == Decimal("0.2500")
 
 
-# --- criterion 17 ----------------------------------------------------------
+# --- enum-valued columns ---------------------------------------------------
 
 
 def test_enum_valued_columns_accept_every_member(db: Connection) -> None:
-    """AC 17 -- asserted at the application level, because v1 stores these as
+    """Asserted at the application level, because v1 stores these as
     ``VARCHAR`` rather than a DB ``ENUM``: every member of the corresponding
     enum fits its column and round-trips unchanged."""
     game_id = insert_game(db)
@@ -529,7 +528,7 @@ def test_enum_valued_columns_accept_every_member(db: Connection) -> None:
 def test_enum_columns_are_varchar_wide_enough_for_every_member(
     db: Connection,
 ) -> None:
-    """AC 17 -- the widths §2 fixes, checked against the enums themselves."""
+    """The column widths, checked against the enums themselves."""
     longest_role = max(len(role.value) for role in Role)
     for table in ("role_configs", "weeks", "participants"):
         spec = columns(db, table)["role"]
@@ -554,14 +553,14 @@ def test_enum_columns_are_varchar_wide_enough_for_every_member(
     )
 
 
-# --- criterion 18 ----------------------------------------------------------
+# --- Factory-only columns --------------------------------------------------
 
 
 def test_factory_only_columns_are_null_for_the_other_three_roles(
     db: Connection,
 ) -> None:
-    """AC 18 and §2.4 -- both Factory columns are nullable and a non-Factory
-    role row carries NULL."""
+    """Both Factory columns are nullable and a non-Factory role row carries
+    NULL."""
     spec = columns(db, "role_configs")
     for name in ("production_delay_weeks", "production_capacity_per_week"):
         assert spec[name]["IS_NULLABLE"] == "YES", name
@@ -592,21 +591,20 @@ def test_factory_only_columns_are_null_for_the_other_three_roles(
             assert row.production_capacity_per_week is None
 
 
-# --- failure mode 8 --------------------------------------------------------
+# --- recycled room codes ---------------------------------------------------
 
 
 def test_room_code_is_indexed_but_not_unique_on_its_own(db: Connection) -> None:
-    """§2.2 and failure mode 8 -- room codes are recycled once a room
-    expires, so two games may share one.
+    """Room codes are recycled once a room expires, so two games may share
+    one.
 
-    "Not unique" means **not unique on its own**. Section 14 added
-    ``UNIQUE (room_code, started_at)`` as the database-level backstop for
-    ``persist_game``'s idempotency (``14 §3.3``), so ``room_code`` is now a
-    member column of a unique index -- while remaining non-unique by itself,
-    which is the property this test exists to protect. The earlier form
-    asserted that *no* index touching ``room_code`` was unique, which no
-    schema carrying that constraint can satisfy, and which would have read as
-    a reason not to add the backstop at all.
+    "Not unique" means **not unique on its own**.
+    ``UNIQUE (room_code, started_at)`` is the database-level backstop for
+    ``persist_game``'s idempotency (spec §10.2), so ``room_code`` is a member
+    column of a unique index -- while remaining non-unique by itself, which
+    is the property this test exists to protect.  Asserting that *no* index
+    touching ``room_code`` is unique would fail against any schema carrying
+    that constraint, and would read as a reason not to have the backstop.
     """
     rows = indexes(db, "games")
     room_code_indexes = [row for row in rows if row["COLUMN_NAME"] == "room_code"]
@@ -641,13 +639,13 @@ def test_room_code_is_indexed_but_not_unique_on_its_own(db: Connection) -> None:
     )
 
 
-# --- failure mode 9 --------------------------------------------------------
+# --- UTC timestamps --------------------------------------------------------
 
 
 def test_timestamps_round_trip_as_utc(app_connection: Connection) -> None:
-    """Failure mode 9 -- no timezone drift.
+    """No timezone drift.
 
-    Uses section 01's own engine, because the ``options=-c timezone=UTC``
+    Uses the app's own engine, because the ``options=-c timezone=UTC``
     connect argument ``app/config.py`` gives it is what makes the session
     UTC.  The columns are ``timestamptz``, so a value reads back
     timezone-aware, and its offset must be zero whatever the server's own
@@ -685,14 +683,14 @@ def test_timestamp_columns_are_timestamptz(db: Connection) -> None:
                 ), f"{table}.{name} is {spec['DATA_TYPE']}"
 
 
-# --- failure mode 10 -------------------------------------------------------
+# --- the Docker guard ------------------------------------------------------
 
 
 def test_a_missing_docker_daemon_skips_loudly() -> None:
-    """Failure mode 10 -- the suite must not quietly evaporate.
+    """The suite must not quietly evaporate.
 
-    §3.1 rule 4: without a daemon the suite skips so the other twenty-odd
-    sections still run, but the skip is reported with a reason *and* a
+    Without a daemon the suite skips so the rest of the backend suite still
+    runs, but the skip is reported with a reason *and* a
     warning, so an all-skipped run does not read like a passing one.
     """
 
@@ -717,9 +715,9 @@ def test_a_missing_docker_daemon_skips_loudly() -> None:
 
 
 def test_every_module_in_this_suite_is_marked() -> None:
-    """Failure mode 10 -- every test here carries ``dbschema`` (§3).
+    """Every test here carries ``dbschema``.
 
-    That is what lets the gate run this section as ``pytest -m dbschema``
+    That is what lets the gate run this suite as ``pytest -m dbschema``
     and the rest as ``pytest -m "not dbschema"``; an unmarked test here runs
     on a machine with no Docker and fails for a reason that has nothing to
     do with the schema.
@@ -730,12 +728,12 @@ def test_every_module_in_this_suite_is_marked() -> None:
         assert module.pytestmark.name == "dbschema", module.__name__
 
 
-# --- failure mode 11 -------------------------------------------------------
+# --- the server refuses a missing default ----------------------------------
 
 
 def test_a_missing_server_default_is_rejected_not_filled_in(db: Connection) -> None:
-    """Failure mode 11 -- the raw-insert test (failure mode 1) can only catch
-    a missing ``server_default`` because the server refuses the insert.
+    """The raw-insert test can only catch a missing ``server_default``
+    because the server refuses the insert.
 
     PostgreSQL has no permissive mode that would quietly fill a ``NOT NULL``
     column with a zero value, so this proves the detector works on the same

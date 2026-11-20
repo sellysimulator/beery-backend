@@ -1,6 +1,6 @@
-"""Pure lobby and seating rules (``11-socket-lobby.md``).
+"""Pure lobby and seating rules (spec §4, §5).
 
-Owned solely by section 11 (**D19**). This module holds no I/O of its own:
+This module holds no I/O of its own:
 no Redis, no Socket.IO, no clock beyond what a caller hands it. Handlers in
 ``app/sockets/handlers/lobby.py`` call it inside ``state_svc.lock(room_code)``
 and persist the result themselves.
@@ -8,7 +8,7 @@ and persist the result themselves.
 ``RoomService`` is the one place the room document's membership and
 eligibility rules are written down. ``lobby.py`` calls it; it does not
 restate any of it -- ``can_start`` in particular is evaluated at exactly one
-place (``11-socket-lobby.md §2.2``) and consulted, never re-derived, at two
+place and consulted, never re-derived, at two
 collection points (the lobby's Start button and ``start_game`` itself).
 """
 
@@ -125,7 +125,7 @@ class RoomService:
     # --- display names ------------------------------------------------------#
 
     def sanitise_display_name(self, raw: str | None, fallback: str) -> str:
-        """Delegates to ``app/services/display_name.py`` (section 10)."""
+        """Delegates to ``app/services/display_name.py``."""
         return _sanitise_display_name(raw, fallback)
 
     # --- payload shaping ---------------------------------------------------#
@@ -168,9 +168,9 @@ class RoomService:
 
     def public_config(self, config: GameConfig, role: Role | None = None) -> dict:
         """The subset every player may see once running: no costs, no
-        delays, no demand parameters (``11-socket-lobby.md §3.6``).
+        delays, no demand parameters.
 
-        ``role`` is accepted for section 12's use and is ignored here --
+        ``role`` is accepted for the play loop's use and is ignored here --
         nothing in v1 varies the public subset by role.
         """
         visibility = config.visibility
@@ -218,7 +218,7 @@ class RoomService:
     # --- eligibility -----------------------------------------------------------#
 
     def can_start(self, room: dict) -> tuple[bool, str | None]:
-        """The single eligibility rule (``11-socket-lobby.md §2.2``).
+        """The single eligibility rule (spec §4.3).
         ``start_game`` calls this; it does not restate any part of it.
 
         In order: the room is not already running or over; the config builds;

@@ -1,29 +1,26 @@
 """Shared helpers for ``tests/test_api/``.
 
-Originally section 10's own file (``10-rooms-rest-api.md``): plain helper
-functions used by both ``test_rooms.py`` and ``test_room_config.py`` so the
-room-code oracle, recursive key/value scans and the "create a room and grab
-its secret" dance are not three implementations of the same thing. Nothing
-here overrides a fixture from the shared ``tests/conftest.py`` -- ``client``
-and ``fake_redis`` still come from there.
+Plain helper functions used by both ``test_rooms.py`` and
+``test_room_config.py`` so the room-code oracle, recursive key/value scans and
+the "create a room and grab its secret" dance are not three implementations of
+the same thing. Nothing here overrides a fixture from the shared
+``tests/conftest.py`` -- ``client`` and ``fake_redis`` still come from there.
 
-Extended by section 15 (``15-results-and-export-api.md``) with the
-Testcontainers PostgreSQL fixture chain and the game-persistence/auth helpers its
-three test files (``test_results.py``, ``test_export.py``, ``test_profile.py``)
-all need. This package had no conftest reaching those fixtures -- every
-other section that needs them lives in a directory whose *own* conftest.py
-does (``tests/test_models/conftest.py``, ``tests/test_services/conftest.py``)
--- so section 15's test agent first duplicated the import chain into all
-three files, then consolidated it here once asked to: a conftest.py's
-fixtures resolve for every module in this directory without an import, so
-the three files no longer need the chain, the ``api_client`` fixture, or an
-``__all__`` workaround for the linter.
+It also carries the Testcontainers PostgreSQL fixture chain and the
+game-persistence/auth helpers the three results/export/profile test files
+(``test_results.py``, ``test_export.py``, ``test_profile.py``) all need. Every
+other test package that needs those fixtures lives in a directory whose *own*
+conftest.py reaches them (``tests/test_models/conftest.py``,
+``tests/test_services/conftest.py``); this one imports the chain here, once: a
+conftest.py's fixtures resolve for every module in this directory without an
+import, so the three files need neither the chain, the ``api_client`` fixture,
+nor an ``__all__`` workaround for the linter.
 
-Nothing added below is ``autouse`` and none of it runs anything at import
-time (a pytest fixture body only runs when a test requests it), so section
-10's own ``test_rooms.py``/``test_room_config.py`` are unaffected by this
-extension -- they never request ``api_client``, ``session_factory`` or any
-of the Testcontainers fixtures.
+Nothing here is ``autouse`` and none of it runs anything at import time (a
+pytest fixture body only runs when a test requests it), so
+``test_rooms.py``/``test_room_config.py`` are unaffected by it -- they never
+request ``api_client``, ``session_factory`` or any of the Testcontainers
+fixtures.
 """
 
 from __future__ import annotations
@@ -38,7 +35,7 @@ from sqlalchemy import text
 from app.core.enums import Role
 from app.services.db_service import DbService, build_snapshot
 
-# --- section 13's Testcontainers PostgreSQL, imported wholesale (see module
+# --- the Testcontainers PostgreSQL fixtures, imported wholesale (see module
 # docstring for why this file, rather than each test module, imports it) ---
 from tests.test_models.conftest import (
     alembic,
@@ -50,7 +47,7 @@ from tests.test_models.conftest import (
     schema_engine,
 )
 
-# --- section 14's GameConfig/GameEngine/room-document helpers -------------
+# --- GameConfig/GameEngine/room-document helpers --------------------------
 from tests.test_services.conftest import (
     count_statements,
     make_config,
@@ -135,7 +132,7 @@ def values_recursive(obj: Any) -> list[Any]:
 
 
 # ---------------------------------------------------------------------------
-# Section 15 additions: an ``api_client`` bound to the Testcontainers PostgreSQL,
+# An ``api_client`` bound to the Testcontainers PostgreSQL,
 # and the game-persistence / auth helpers ``test_results.py``, ``test_export.py``
 # and ``test_profile.py`` all need.
 # ---------------------------------------------------------------------------
@@ -146,8 +143,8 @@ def api_client(client, session_factory):
     """``client`` with ``get_db`` overridden onto the Testcontainers PostgreSQL.
 
     Mirrors ``tests/test_auth/conftest.py::api_client`` exactly, except the
-    session comes from section 14's ``session_factory`` (a real, migrated
-    PostgreSQL) rather than an in-memory SQLite: section 15's routes read
+    session comes from ``session_factory`` (a real, migrated
+    PostgreSQL) rather than an in-memory SQLite: the routes under test read
     ``NUMERIC`` columns and run a grouped statistics query, neither of which
     a SQLite double would exercise honestly.
     """
@@ -221,9 +218,9 @@ def persist_full_game(
     order_fn=None,
     demand=None,
 ) -> dict[str, Any]:
-    """Play and persist one full game through only the frozen public surface
-    of sections 07, 09 and 14. Returns everything a test might need to
-    build expectations against the HTTP response.
+    """Play and persist one full game through only the public surface of the
+    engine, the room document and ``DbService``. Returns everything a test
+    might need to build expectations against the HTTP response.
     """
     config = make_config(duration_weeks=duration_weeks, demand=demand)
     engine = run_full_game(config, seed=seed, order_fn=order_fn)
@@ -267,11 +264,10 @@ def persist_full_game(
 
 
 async def write_live_redis_room(fake_redis, room_code: str, **overrides: Any) -> None:
-    """A minimal room document per ``09-state-service.md §2`` (FROZEN),
-    written directly into the shared ``fake_redis`` -- exactly the "built by
-    hand rather than through StateService" pattern section 14's own
-    ``make_room_document`` uses, since ``StateService`` is section 09's
-    surface and out of section 15's reading list.
+    """A minimal room document (spec §11.3), written directly into the shared
+    ``fake_redis`` -- the same "built by hand rather than through
+    StateService" pattern ``tests/test_services/conftest.py``'s
+    ``make_room_document`` uses.
     """
     doc = {
         "schema_version": 1,

@@ -1,10 +1,9 @@
 """Merging a host's partial config patch over the stored one.
 
-Owned by section 10, which ships first and whose `PUT /rooms/{code}/config`
-is the rule's first collection point (`10-rooms-rest-api.md §3.3`). Section
-11's `config_update` is the second (`11-socket-lobby.md §3.4`, which requires
-"identical merge semantics"), and it **delegates here** rather than
-reimplementing.
+`PUT /rooms/{code}/config` is the rule's first collection point and the
+lobby's `config_update` socket event is the second; the two need identical
+merge semantics (spec §6.6), so the socket handler **delegates here** rather
+than reimplementing.
 
 That is not stylistic. One rule with two collection points and no named owner
 is the defect this build has hit four times -- the display-name sanitiser, the
@@ -32,7 +31,7 @@ def deep_merge_dicts(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, A
     counterpart is also a dict, is merged recursively rather than replaced
     wholesale -- this is what keeps `PUT {"roles": {"RETAILER": {...}}}`
     from clobbering the other three roles, and the untouched fields of
-    RETAILER itself (`10 §5` failure mode 7).
+    RETAILER itself.
     """
     merged = dict(base)
     for key, value in patch.items():
@@ -44,7 +43,7 @@ def deep_merge_dicts(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, A
 
 
 def merge_config_patch(stored: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
-    """Merge a host's partial config over the stored one (`10 §3.3` step 4).
+    """Merge a host's partial config over the stored one.
 
     Deep for `roles`, `visibility` and `bot`. `demand` is the one exception:
     when the patch changes `kind`, the whole `demand` object is replaced --

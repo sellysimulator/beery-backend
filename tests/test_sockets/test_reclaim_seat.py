@@ -1,4 +1,4 @@
-"""A player takes back the seat the host swapped to a bot (2026-11-03).
+"""A player takes back the seat the host swapped to a bot.
 
 ``reclaim_seat`` is the way back from ``substitute_bot``: only the seat's own
 player can call it, from a connection ``join`` mapped to them, and the week
@@ -138,8 +138,8 @@ async def test_changing_the_bots_order_makes_the_week_the_players(
 async def test_a_swap_after_the_player_ordered_leaves_that_week_the_players(
     make_room, start_running_game, state_svc
 ):
-    """The week open at the swap used to be marked as the bot's even when the
-    player's own order was the one that stood."""
+    """The week open at the swap is not marked as the bot's when the player's
+    own order is the one that stood."""
     room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
     game = await start_running_game(room)
 

@@ -1,10 +1,9 @@
-"""``UserService`` -- the only writer of the ``users`` table (02 §2, §3.6).
+"""``UserService`` -- the only writer of the ``users`` table.
 
-Covers acceptance criterion 16 at the layer §3.6 puts it, and supports 11 and
-12.  Guests are never written here (§3.6): they exist only in Redis room state.
+Guests are never written here (spec §3.1): they exist only in Redis room state.
 
 Sanitisation lives in ``upsert_user`` rather than in the route so that **every**
-caller gets it -- including section 14's guest-claim path, which reaches the
+caller gets it -- including the guest-claim path, which reaches the
 service without an HTTP request.  So these tests call the service directly, with
 no client and no token in sight.
 """
@@ -19,8 +18,8 @@ from app.config import settings
 from app.models.user import User
 from app.services.user_service import UserService
 
-# VARCHAR widths declared in §2; §3.6 requires a truncated row rather than a
-# driver error when a caller sends more.
+# VARCHAR widths declared on the model; the service stores a truncated row
+# rather than raising a driver error when a caller sends more.
 EMAIL_WIDTH = 200
 PHOTO_URL_WIDTH = 500
 
@@ -37,7 +36,7 @@ def _control_characters(value: str) -> list[str]:
 
 
 def test_upsert_inserts_then_updates_the_same_row(db_session):
-    """§3.6: select by ``firebase_uid``, then update or insert."""
+    """Select by ``firebase_uid``, then update or insert."""
     service = UserService()
 
     created = service.upsert_user(
@@ -87,7 +86,7 @@ def test_upsert_keeps_two_uids_apart(db_session):
 
 
 def test_upsert_accepts_a_profile_with_nothing_in_it(db_session):
-    """Every profile field is optional (§2): a Google account may expose no
+    """Every profile field is optional: a Google account may expose no
     photo, and a user may have no display name at all."""
     service = UserService()
 
@@ -105,14 +104,14 @@ def test_get_by_firebase_uid_returns_none_for_an_unknown_uid(db_session):
     assert UserService().get_by_firebase_uid(db_session, "uid-nobody") is None
 
 
-# --- AC 16 -------------------------------------------------------------------
+# --- sanitisation in the service ----------------------------------------------
 
 
 def test_the_service_truncates_a_long_display_name(db_session):
-    """AC 16: 200 characters in, 24 stored -- asserted against the **service**,
-    which is where §3.6 puts the sanitisation.
+    """200 characters in, 24 stored -- asserted against the **service**,
+    which is where the sanitisation lives.
 
-    Section 14's guest-claim path calls this method with a name that never
+    The guest-claim path calls this method with a name that never
     passed through a request body, so a route-level truncation would leave
     ``display_name`` (``VARCHAR(24)``) to be enforced by the driver.
     """
@@ -128,8 +127,8 @@ def test_the_service_truncates_a_long_display_name(db_session):
 
 
 def test_the_service_truncates_an_over_long_email_and_photo_url(db_session):
-    """§3.6: truncate ``email`` and ``photo_url`` to their column widths "so an
-    over-long value becomes a truncated row rather than a driver error"."""
+    """Truncate ``email`` and ``photo_url`` to their column widths, so an
+    over-long value becomes a truncated row rather than a driver error."""
     long_email = "b" * 400 + "@example.com"
     long_photo = "https://example.com/" + "c" * 900
 
@@ -147,7 +146,7 @@ def test_the_service_truncates_an_over_long_email_and_photo_url(db_session):
 
 
 def test_the_service_strips_control_characters_from_all_three_fields(db_session):
-    """§3.6: strip Unicode category ``Cc`` from ``display_name``, ``email`` and
+    """Strip Unicode category ``Cc`` from ``display_name``, ``email`` and
     ``photo_url``.
 
     Every one of the three is rendered somewhere -- a name in a room broadcast
@@ -172,13 +171,13 @@ def test_the_service_strips_control_characters_from_all_three_fields(db_session)
 
 
 def test_a_name_that_sanitises_to_empty_is_stored_empty_not_null(db_session):
-    """§3.6: "A name that sanitises to the empty string is stored as ``""``,
-    not converted to ``None``."
+    """A name that sanitises to the empty string is stored as ``""``, not
+    converted to ``None``.
 
     ``""`` and ``None`` are different answers -- ``None`` is "this user has no
-    name on file", which is what the claim fallback in §3.6 fills in, and
+    name on file", which is what the claim fallback fills in, and
     turning a deliberately-blanked name into ``None`` would hand it straight
-    back to the Google one on the next sign-in (AC 19).
+    back to the Google one on the next sign-in.
     """
     created = UserService().upsert_user(
         db_session, "uid-caller", "\x00\x07\x1b", None, None

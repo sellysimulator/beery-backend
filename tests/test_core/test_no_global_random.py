@@ -1,6 +1,6 @@
 """No module under ``app/core`` draws from the global ``random`` module.
 
-``00-conventions.md §4`` and **D11**: every random draw comes from a seeded
+**D11**: every random draw comes from a seeded
 ``random.Random`` derived from the game's seed, so the same config, seed and
 order history replay byte-identically. A single ``random.randint`` anywhere
 in the core reads the process-wide generator instead, and the replay

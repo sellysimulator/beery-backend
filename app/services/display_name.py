@@ -1,7 +1,7 @@
-"""The shared display-name sanitiser (``10-rooms-rest-api.md`` §3.1a).
+"""The shared display-name sanitiser (spec §4.2).
 
 One implementation, used at every point a display name enters the backend.
-The algorithm is ``16-frontend-foundation.md`` §4's, step for step, because
+The algorithm is the frontend's, step for step, because
 the same rule applied at each of the several collection points is a rule one
 of them is guaranteed to get wrong independently -- which is exactly what
 happened twice on the frontend before it was written down here.
@@ -24,7 +24,7 @@ __all__ = ["sanitise_display_name"]
 # Whitespace control characters are *replaced* with a single space rather
 # than removed outright, so a tab- or newline-separated paste ("Ana\\nSmith")
 # does not have its words silently joined ("AnaSmith") -- the first of the
-# two mistakes `16 §4` records two agents making independently.
+# two mistakes made independently before this rule was written down.
 _WHITESPACE_CONTROL = frozenset("\t\n\r\v\f")
 
 _WHITESPACE_RUN = re.compile(r"\s+")

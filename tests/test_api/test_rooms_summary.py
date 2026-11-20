@@ -1,5 +1,4 @@
-"""``POST /api/v1/rooms/summary``: what the multi-game host dashboard polls
-(``10-rooms-rest-api.md §3.5d``).
+"""``POST /api/v1/rooms/summary``: what the multi-game host dashboard polls.
 
 Read-only, no oracle for which codes are live, and never a secret in the
 answer. ``can_start`` is ``RoomService.can_start``'s, the rule ``start_game``

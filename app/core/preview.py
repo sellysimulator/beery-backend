@@ -1,14 +1,14 @@
-"""What a draft config will play, for the host form (2026-11-03).
+"""What a draft config will play, for the host form.
 
-The host form used to carry its own copy of the demand generators (half-up
-rounding, the ramp's `+ 1`, the seasonal `w - 1` offset). Two copies agree on
-the day they are written. This module is the replacement: it answers "what
+The host form carries no copy of the demand generators (half-up rounding, the
+ramp's `+ 1`, the seasonal `w - 1` offset): two copies agree only on the day
+they are written. This module answers "what
 will this config play?" by calling **the functions the engine itself calls**
 -- `generate_demand_series` and `GameConfig.order_arrival_lead_weeks` -- and
 never a second implementation of either. `POST /api/v1/rooms/preview` serves
 it.
 
-Pure (`00-conventions.md` §4): no I/O, no clock, no global RNG.
+Pure: no I/O, no clock, no global RNG.
 """
 
 from __future__ import annotations
@@ -23,8 +23,8 @@ __all__ = ["EXAMPLE_SEED", "ConfigPreview", "preview_config"]
 
 # The seed an example draw uses when the host left `random_seed` blank. Fixed,
 # so the preview stays still while a host reads it rather than redrawing on
-# every keystroke. A blank seed is chosen at random when the game starts
-# (`11 §3.6`), so no seed here could show the series that will be played.
+# every keystroke. A blank seed is chosen at random when the game starts,
+# so no seed here could show the series that will be played.
 EXAMPLE_SEED = 0
 
 

@@ -1,5 +1,4 @@
-"""Black-box tests for ``host_view()['order_history']`` (``07 §3.9``,
-``CHARTS-PLAN.md`` BE-4).
+"""Black-box tests for ``host_view()['order_history']`` (spec §9.6).
 
 Driven only through ``GameEngine``'s frozen public surface. Orders are made
 distinct per role and per week so an off-by-one, a swapped role or a
@@ -24,7 +23,7 @@ from app.core.game_engine import GameEngine
 
 SEED = 20261102
 
-# `weeks_played` joined on 2026-11-03 (`07 §3.9`): the console's "ending now
+# `weeks_played` (spec §7): the console's "ending now
 # keeps N weeks" reads it instead of working it out from `week`.
 HOST_VIEW_KEYS = {
     "week",
@@ -153,7 +152,7 @@ def test_forced_week_contributes_the_zero_the_engine_recorded():
 
 def test_bot_week_contributes_the_order_that_was_recorded():
     """The engine refuses an order above the ceiling rather than clamping it,
-    so the play loop caps a bot's figure before submitting (`12 §3.2`); the
+    so the play loop caps a bot's figure before submitting (spec §12.1); the
     history carries exactly what was recorded."""
     engine = new_engine()
     engine.set_bot(Role.WHOLESALER)
@@ -223,7 +222,7 @@ def test_returned_history_is_a_snapshot_not_a_live_handle():
     assert history(engine)["RETAILER"] == [distinct_orders(1)[Role.RETAILER]]
 
 
-# --- player_view never carries it (AC 3) ---------------------------------- #
+# --- player_view never carries it ----------------------------------------- #
 
 
 @pytest.mark.parametrize("with_history", [True, False])

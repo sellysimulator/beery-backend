@@ -1,8 +1,5 @@
 """Black-box tests for ``GET /api/v1/games/{room_code}/export`` (host-only)
-and ``GET /api/v1/games/id/{public_id}/export`` (open, 2026-11-14).
-
-Covers ``15-results-and-export-api.md §4`` acceptance criteria 10-17 and
-``11a`` and ``§5`` failure modes 2, 4, 9 and 10.
+and ``GET /api/v1/games/id/{public_id}/export`` (open), against spec §9.5.
 
 Reuses ``persist_full_game``, ``register_user``, ``bearer_for``,
 ``write_live_redis_room`` and the ``api_client``/``session_factory``
@@ -42,10 +39,8 @@ def EXPORT_URL(room_code: str, fmt: str | None = None) -> str:
     return f"/api/v1/games/{room_code}/export?format={fmt}"
 
 
-# §3.2, column for column. ``was_bot`` sits between ``is_bot`` and
-# ``was_forced`` -- a late addition (00-decisions.md/15's own §3.1 already
-# named ``WeekRecord.was_bot`` as carried by the export; §3.2's column list
-# had simply omitted it).
+# The export file's columns, in order (spec §9.5). ``was_bot`` sits between
+# ``is_bot`` and ``was_forced``.
 EXPECTED_HEADER = [
     "room_code",
     "week",
@@ -77,17 +72,16 @@ EXPECTED_HEADER = [
     "production_queued",
 ]
 
-# A display name beginning "=" must be written with a leading "'" (failure
-# mode 9); the value that round-trips is that *sanitised* string, not the
-# original (the note under failure mode 10).
+# A formula-shaped display name. The export writes each seat's `P<N>`
+# (`export_service.seat_alias`) instead of a name, so neither this string nor
+# its `'`-prefixed form (what a CSV-injection guard would write) is in the file.
 INJECTION_NAME = "=cmd|'/c calc'!A1"
 SANITISED_INJECTION_NAME = "'" + INJECTION_NAME
 
 # Comma, quote, a real embedded newline, and a non-ASCII character, all in
 # one field -- and, at 6 characters, comfortably under the 24-character cap
-# (16 §4) so it is a realistic display name rather than a truncation edge
-# case. This is also the AC10 trap: the embedded newline makes the file's
-# *physical* line count larger than its row count.
+# so it is a realistic display name rather than a truncation edge case. The
+# export writes the seat's `P<N>` instead, so none of it reaches the file.
 UNICODE_NAME = 'A,"é\nZ'
 
 
@@ -149,11 +143,11 @@ def _persist_export_game(
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criteria 10, 11, 12
+# CSV row count, header and customer demand
 # ---------------------------------------------------------------------------
 
 
-def test_ac10_ac11_ac12_csv_row_count_header_and_customer_demand(
+def test_csv_row_count_header_and_customer_demand(
     api_client, session_factory, firebase_tokens, fake_redis
 ):
     game = _persist_export_game(session_factory, firebase_tokens, seed=31)
@@ -166,19 +160,16 @@ def test_ac10_ac11_ac12_csv_row_count_header_and_customer_demand(
     rows = list(csv.reader(io.StringIO(response.text)))
     header, data_rows = rows[0], rows[1:]
 
-    # AC 11
+    # The header, column for column.
     assert header == EXPECTED_HEADER
 
-    # AC 10 -- counted with csv.reader, never splitlines(): the embedded
-    # newline in UNICODE_NAME makes the physical line count larger than the
-    # true row count once it is correctly quoted.
+    # Row count, taken with csv.reader rather than splitlines().
     assert len(data_rows) == 8 * 4
-    # Since 2026-11-14 the file carries no chosen name (`15 §11`), so the
-    # embedded-newline name no longer reaches it; the count above is still
-    # taken with csv.reader, never splitlines().
+    # The file carries no chosen name (spec §9.5), so UNICODE_NAME's embedded
+    # newline does not reach it.
     assert "\nZ" not in response.text
 
-    # AC 12
+    # customer_demand is the same on all four rows of a week.
     demand_series = game["engine"].demand_series
     week_index = header.index("week")
     demand_index = header.index("customer_demand")
@@ -205,7 +196,7 @@ def test_ac10_ac11_ac12_csv_row_count_header_and_customer_demand(
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 11a
+# was_bot versus is_bot around a substitution
 # ---------------------------------------------------------------------------
 
 
@@ -214,10 +205,9 @@ def _build_manual_history(
 ) -> list[WeekRecord]:
     """A ``WeekRecord`` list built by hand rather than played, so
     ``was_bot`` can flip partway through one role's rows without driving
-    section 12's ``substitute_bot`` (out of this section's reading list).
-    ``persist_game`` takes a snapshot and does not care how the history was
-    produced -- exactly the pattern section 14's own ``test_fm7_money_
-    rounds_half_up_to_two_decimals_at_the_boundary`` uses.
+    ``substitute_bot``.  ``persist_game`` takes a snapshot and does not care
+    how the history was produced -- the same pattern the money-rounding test
+    in ``tests/test_services/test_db_service.py`` uses.
     """
     history: list[WeekRecord] = []
     for week in range(1, duration_weeks + 1):
@@ -335,12 +325,12 @@ def _persist_manual_game_with_substitution(
 
 def _parse_csv_bool(cell: str) -> bool:
     """Accepts any of the common boolean spellings a CSV writer might use --
-    the document specifies the two columns' semantics, not one literal
+    spec §9.5 specifies the two columns' semantics, not one literal
     string encoding for ``True``/``False``."""
     return cell.strip().lower() in ("true", "1", "yes")
 
 
-def test_ac11a_was_bot_differs_from_is_bot_around_a_mid_game_substitution(
+def test_was_bot_differs_from_is_bot_around_a_mid_game_substitution(
     api_client, session_factory, firebase_tokens, fake_redis
 ):
     game = _persist_manual_game_with_substitution(
@@ -389,11 +379,11 @@ def test_ac11a_was_bot_differs_from_is_bot_around_a_mid_game_substitution(
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 13
+# JSON export
 # ---------------------------------------------------------------------------
 
 
-def test_ac13_json_export_has_the_same_number_of_week_rows_as_the_csv(
+def test_json_export_has_the_same_number_of_week_rows_as_the_csv(
     api_client, session_factory, firebase_tokens, fake_redis
 ):
     game = _persist_export_game(session_factory, firebase_tokens, seed=33)
@@ -417,11 +407,11 @@ def test_ac13_json_export_has_the_same_number_of_week_rows_as_the_csv(
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 14 / failure mode 4
+# No credentials
 # ---------------------------------------------------------------------------
 
 
-def test_ac14_fm4_no_credentials_is_403_with_no_partial_body(
+def test_no_credentials_is_403_with_no_partial_body(
     api_client, session_factory, fake_redis
 ):
     game = persist_full_game(session_factory, duration_weeks=8, seed=34)
@@ -436,7 +426,7 @@ def test_ac14_fm4_no_credentials_is_403_with_no_partial_body(
 
 
 def test_export_for_a_room_with_no_finished_game_is_403(api_client, fake_redis):
-    """§3.2's evaluation order: "no finished games row for the code" -> 403,
+    """The route's evaluation order: "no finished games row for the code" -> 403,
     never 404 -- an unauthorised caller must not learn the code is unused."""
     response = api_client.get(EXPORT_URL("NOSUCH02", "csv"))
 
@@ -444,12 +434,12 @@ def test_export_for_a_room_with_no_finished_game_is_403(api_client, fake_redis):
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 15
+# Host secret on a live room
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_ac15_wrong_host_secret_on_a_live_room_is_403(
+async def test_wrong_host_secret_on_a_live_room_is_403(
     api_client, session_factory, fake_redis
 ):
     game = persist_full_game(session_factory, duration_weeks=8, seed=35)
@@ -482,11 +472,11 @@ async def test_export_with_matching_host_secret_on_a_live_room_succeeds(
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 16
+# Expired room: the host's bearer token
 # ---------------------------------------------------------------------------
 
 
-def test_ac16_after_room_expired_bearer_host_succeeds_others_get_403(
+def test_after_room_expired_bearer_host_succeeds_others_get_403(
     api_client, session_factory, firebase_tokens, fake_redis
 ):
     game = _persist_export_game(session_factory, firebase_tokens, seed=36)
@@ -542,9 +532,9 @@ def test_export_by_public_id_is_open_to_anyone_who_has_the_id(
 ):
     """`GET /games/id/{public_id}/export` names the game exactly, so a
     recycled room code cannot hand over a different game, and it is open like
-    the results by `public_id` (2026-11-14): no token, another account's token
-    and the host's own all get the same file. An unknown id is a 404, as its
-    results are. The export by room code stays host-only (AC 14-16 above)."""
+    the results by `public_id` (D22): no token, another account's token and
+    the host's own all get the same file. An unknown id is a 404, as its
+    results are. The export by room code stays host-only (the tests above)."""
     game = _persist_export_game(session_factory, firebase_tokens, seed=38)
     public_id = api_client.get(f"/api/v1/games/{game['room_code']}/results").json()[
         "public_id"
@@ -574,11 +564,11 @@ def test_export_by_public_id_is_open_to_anyone_who_has_the_id(
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criterion 17
+# Content-Disposition
 # ---------------------------------------------------------------------------
 
 
-def test_ac17_content_disposition_names_a_csv_file_with_the_room_code(
+def test_content_disposition_names_a_csv_file_with_the_room_code(
     api_client, session_factory, firebase_tokens, fake_redis
 ):
     game = _persist_export_game(session_factory, firebase_tokens, seed=37)
@@ -594,11 +584,11 @@ def test_ac17_content_disposition_names_a_csv_file_with_the_room_code(
 
 
 # ---------------------------------------------------------------------------
-# Failure mode 2
+# No identity leak
 # ---------------------------------------------------------------------------
 
 
-def test_fm2_no_identity_leak_in_csv_or_json_export(
+def test_no_identity_leak_in_csv_or_json_export(
     api_client, session_factory, firebase_tokens, fake_redis
 ):
     registered_uid = "uid-fm2-should-not-leak"
@@ -648,16 +638,16 @@ def test_fm2_no_identity_leak_in_csv_or_json_export(
 
 
 # ---------------------------------------------------------------------------
-# Failure mode 9
+# Formula-like display name
 # ---------------------------------------------------------------------------
 
 
-def test_fm9_a_formula_like_display_name_never_reaches_the_csv(
+def test_a_formula_like_display_name_never_reaches_the_csv(
     api_client, session_factory, firebase_tokens, fake_redis
 ):
-    """Superseded 2026-11-14 (`15 §11`): the export names every player by
-    seat, so the injection-shaped name is not defused but absent; the
-    Wholesaler's cell is its `P<N>`."""
+    """The export names every player by seat (spec §9.5), so the
+    injection-shaped name is not defused but absent; the Wholesaler's cell is
+    its `P<N>`."""
     game = _persist_export_game(session_factory, firebase_tokens, seed=32)
 
     response = api_client.get(
@@ -677,16 +667,16 @@ def test_fm9_a_formula_like_display_name_never_reaches_the_csv(
 
 
 # ---------------------------------------------------------------------------
-# Failure mode 10
+# Unicode display name
 # ---------------------------------------------------------------------------
 
 
-def test_fm10_a_unicode_display_name_never_reaches_the_csv(
+def test_a_unicode_display_name_never_reaches_the_csv(
     api_client, session_factory, firebase_tokens, fake_redis
 ):
-    """Superseded 2026-11-14 (`15 §11`): the Retailer's comma, quote, newline
-    and non-ASCII name is not in the file; its rows read `P1` and the file
-    still parses one row per `(week, role)`."""
+    """The export names every player by seat (spec §9.5): the Retailer's
+    comma, quote, newline and non-ASCII name is not in the file; its rows read
+    `P1` and the file still parses one row per `(week, role)`."""
     game = _persist_export_game(session_factory, firebase_tokens, seed=39)
 
     response = api_client.get(

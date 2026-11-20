@@ -1,7 +1,7 @@
-"""The test harness itself (01-backend-skeleton.md §4).
+"""The test harness itself.
 
-Acceptance criteria 13, 19, 20 and failure modes 1, 2 and 6, plus the two
-shared fakes §4 hands to sections 02, 11 and 12 -- ``firebase_tokens`` and
+The pytest configuration, the shared fixtures, and the two shared fakes the
+auth, lobby and play tests use -- ``firebase_tokens`` and
 ``fake_socket_manager``.  These tests exist because a harness that is wrong
 here makes *every* other test in the build error before any implementation is
 even wrong.
@@ -28,21 +28,21 @@ from conftest import (
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-# --- AC 13 / FM 1 -----------------------------------------------------------
+# --- strict asyncio mode ----------------------------------------------------
 
 
 def test_asyncio_mode_is_strict(pytestconfig):
-    """AC 13 / FM 1: the suite runs under ``asyncio_mode = strict``."""
+    """The suite runs under ``asyncio_mode = strict``."""
     assert pytestconfig.getini("asyncio_mode") == "strict"
 
 
 def test_asyncio_default_fixture_loop_scope_is_function(pytestconfig):
-    """AC 13: the second half of the fixed pytest.ini (00-conventions.md §5)."""
+    """The second half of the fixed pytest.ini."""
     assert pytestconfig.getini("asyncio_default_fixture_loop_scope") == "function"
 
 
 def test_unmarked_async_test_fails_rather_than_being_skipped(tmp_path):
-    """FM 1: under pytest-asyncio 0.21 an unmarked ``async def test_*`` was
+    """Under pytest-asyncio 0.21 an unmarked ``async def test_*`` was
     silently skipped, so whole files never ran.  Strict mode must fail it."""
     test_file = tmp_path / "test_unmarked_async.py"
     test_file.write_text(textwrap.dedent("""
@@ -73,13 +73,13 @@ def test_unmarked_async_test_fails_rather_than_being_skipped(tmp_path):
     assert "1 skipped" not in combined, combined
 
 
-# --- FM 2 -------------------------------------------------------------------
+# --- TestClient and lifespan ------------------------------------------------
 
 
 def test_bare_testclient_skips_lifespan_and_with_block_runs_it():
-    """FM 2: a bare ``TestClient(app)`` does not execute the lifespan handler;
+    """A bare ``TestClient(app)`` does not execute the lifespan handler;
     ``with TestClient(app)`` does.  Observed through the only public hook the
-    lifespan has -- ``run_startup_checks()`` (01 §3.2)."""
+    lifespan has -- ``run_startup_checks()``."""
     from fastapi.testclient import TestClient
 
     from app.core.checks import register_check
@@ -107,11 +107,11 @@ def test_lifespan_client_fixture_runs_startup(lifespan_client):
     assert lifespan_client.get("/api/v1/health").status_code == 200
 
 
-# --- AC 19 / FM 6 -----------------------------------------------------------
+# --- client does not drag in the Redis patch --------------------------------
 
 
 def test_client_fixture_does_not_depend_on_fake_redis(request, client):
-    """FM 6: ``client`` must not drag the Redis patch into every route test.
+    """``client`` must not drag the Redis patch into every route test.
 
     If ``client`` requested ``fake_redis`` the name would appear in this
     item's fixture closure -- and with ``app/services/`` absent the patch
@@ -121,11 +121,11 @@ def test_client_fixture_does_not_depend_on_fake_redis(request, client):
 
 
 def test_client_fixture_works_with_app_services_absent(client):
-    """AC 19 / FM 6: a test requesting ``client`` passes even with
-    ``app/services/`` not created at all.
+    """A test requesting ``client`` passes even with ``app/services/`` not
+    created at all.
 
-    Once section 09 lands, ``app/services/`` exists and this can no longer be
-    observed directly -- which is why the guarantee is *also* enforced
+    With ``app/services/`` in place this cannot be observed directly --
+    which is why the guarantee is *also* enforced
     structurally by ``test_client_fixture_does_not_depend_on_fake_redis``,
     which never goes stale.  Serving a route through the fixture stays
     meaningful either way, so this does not skip itself into silence."""
@@ -135,18 +135,18 @@ def test_client_fixture_works_with_app_services_absent(client):
 
 
 def test_naive_unconditional_patch_would_raise(monkeypatch):
-    """FM 6: demonstrates the bug the ``fake_redis`` fixture guards against --
+    """Demonstrates the bug the ``fake_redis`` fixture guards against --
     an unconditional ``monkeypatch.setattr`` on a module that does not exist.
 
     Aimed at a module that will never be written, not at
-    ``app.services.state_service``.  Pointed at the real one this skipped
-    itself the moment section 09 landed, which is the expiring-criterion trap
-    wearing a skip instead of a failure: a permanently-skipped test is worse
-    than a deleted one, because it keeps reporting and never reports anything.
-    The mechanism being demonstrated -- that resolving a dotted target imports
-    the module first, so the patch raises before it can patch -- is a property
-    of ``monkeypatch``, not of section 09, so any absent module shows it and
-    goes on showing it for the life of the project.
+    ``app.services.state_service``.  Pointed at the real one it would skip
+    itself once that module exists, which is the expiring-test trap wearing a
+    skip instead of a failure: a permanently-skipped test is worse than a
+    deleted one, because it keeps reporting and never reports anything.  The
+    mechanism being demonstrated -- that resolving a dotted target imports the
+    module first, so the patch raises before it can patch -- is a property of
+    ``monkeypatch``, not of the state service, so any absent module shows it
+    and goes on showing it for the life of the project.
     """
     absent = "app.services.a_module_no_section_will_ever_write"
     with pytest.raises(ModuleNotFoundError):
@@ -157,18 +157,18 @@ def test_naive_unconditional_patch_would_raise(monkeypatch):
         monkeypatch.setattr(f"{absent}.redis_client", object())
 
 
-# --- AC 20 ------------------------------------------------------------------
+# --- fake_redis -------------------------------------------------------------
 
 
 def test_fake_redis_fixture_is_usable_without_state_service(fake_redis):
-    """AC 20: ``fake_redis`` yields a usable ``FakeRedis`` with
+    """``fake_redis`` yields a usable ``FakeRedis`` with
     ``app/services/state_service.py`` absent."""
     assert isinstance(fake_redis, FakeRedis)
 
 
 @pytest.mark.asyncio
 async def test_fake_redis_implements_the_required_operations(fake_redis):
-    """AC 20 / §4: get, setex, delete, exists, incrby, expire and .lock()."""
+    """Get, setex, delete, exists, incrby, expire and .lock()."""
     assert await fake_redis.get("room:ABCD") is None
     assert await fake_redis.exists("room:ABCD") == 0
 
@@ -189,7 +189,7 @@ async def test_fake_redis_implements_the_required_operations(fake_redis):
 
 @pytest.mark.asyncio
 async def test_fake_redis_lock_serialises_concurrent_holders(fake_redis):
-    """§4: the per-key lock is a real ``asyncio.Lock``, so two concurrent
+    """The per-key lock is a real ``asyncio.Lock``, so two concurrent
     ``async with`` blocks against one room id serialise."""
     import asyncio
 
@@ -211,7 +211,7 @@ async def test_fake_redis_lock_serialises_concurrent_holders(fake_redis):
 
 @pytest.mark.asyncio
 async def test_fake_redis_lock_registry_is_cleared_between_tests(fake_redis):
-    """§4: "The registry is cleared between tests" -- otherwise a lock left
+    """The registry is cleared between tests -- otherwise a lock left
     held by a failed test wedges every later one."""
     lock = fake_redis.lock("room:ZZZZ")
     async with lock:
@@ -225,12 +225,12 @@ def test_two_fake_redis_instances_do_not_share_state(fake_redis):
     assert other is not fake_redis
 
 
-# --- the shared Firebase fake (§4) ------------------------------------------
+# --- the shared Firebase fake -----------------------------------------------
 
 
 def test_firebase_tokens_starts_empty_and_unconfigured(firebase_tokens):
-    """§4: "The default state is **unconfigured**, so nothing is ever trusted
-    by accident of test ordering"."""
+    """The default state is **unconfigured**, so nothing is ever trusted by
+    accident of test ordering."""
     from app.config import settings
 
     assert isinstance(firebase_tokens, FirebaseTokens)
@@ -250,7 +250,7 @@ def test_firebase_tokens_configure_and_unconfigure(firebase_tokens):
 
 
 def test_firebase_tokens_verifies_a_registered_token(firebase_tokens):
-    """§4: the fake is installed at ``auth.verify_id_token``, the SDK
+    """The fake is installed at ``auth.verify_id_token``, the SDK
     boundary -- so everything Beery wrote on top of it runs un-mocked."""
     from firebase_admin import auth
 
@@ -263,8 +263,8 @@ def test_firebase_tokens_verifies_a_registered_token(firebase_tokens):
 
 
 def test_firebase_tokens_rejects_an_unregistered_token(firebase_tokens):
-    """§4: "Any token **not** in the dict fails verification, matching the
-    real SDK for a bad or expired token" -- and it fails with the SDK's own
+    """Any token **not** in the dict fails verification, matching the
+    real SDK for a bad or expired token -- and it fails with the SDK's own
     error, not a generic one, so a handler's ``except`` clause is exercised
     exactly as it will be in production."""
     from firebase_admin import auth
@@ -276,7 +276,7 @@ def test_firebase_tokens_rejects_an_unregistered_token(firebase_tokens):
 
 
 def test_firebase_tokens_records_sdk_initialisation(firebase_tokens):
-    """§4: ``credentials.Certificate`` and ``initialize_app`` are faked too,
+    """``credentials.Certificate`` and ``initialize_app`` are faked too,
     so an init path can run without a service account and without a
     network."""
     import firebase_admin
@@ -299,11 +299,11 @@ def test_firebase_tokens_does_not_leak_between_tests(firebase_tokens):
     assert settings.FIREBASE_SERVICE_ACCOUNT_JSON == ""
 
 
-# --- the shared Socket.IO fake (§4) -----------------------------------------
+# --- the shared Socket.IO fake ----------------------------------------------
 
 
 def test_fake_socket_manager_is_patched_over_the_singleton(fake_socket_manager):
-    """§4: handlers run as real code against fakes for their two I/O
+    """Handlers run as real code against fakes for their two I/O
     dependencies, so the singleton they reach for must be the fake."""
     import app.sockets.manager as manager_module
 
@@ -313,8 +313,8 @@ def test_fake_socket_manager_is_patched_over_the_singleton(fake_socket_manager):
 
 @pytest.mark.asyncio
 async def test_fake_socket_manager_records_every_emit(fake_socket_manager):
-    """§4: "recording every emit as ``(target, event, data)`` instead of
-    touching transport"."""
+    """The fake records every emit as ``(target, event, data)`` instead of
+    touching transport."""
     await fake_socket_manager.emit_to_room("ABCD", "room_state", {"week": 1})
     await fake_socket_manager.emit_to_sid("sid-1", "your_state", {"inventory": 12})
 
@@ -333,7 +333,7 @@ async def test_fake_socket_manager_records_every_emit(fake_socket_manager):
 
 @pytest.mark.asyncio
 async def test_fake_socket_manager_mirrors_the_frozen_surface(fake_socket_manager):
-    """§2: the fake stands in for ``SocketManager``, so it tracks the same
+    """The fake stands in for ``SocketManager``, so it tracks the same
     three maps."""
     await fake_socket_manager.connect("sid-1", {})
     await fake_socket_manager.join_room("sid-1", "ABCD", "P1")
@@ -353,7 +353,7 @@ async def test_fake_socket_manager_mirrors_the_frozen_surface(fake_socket_manage
 def test_shared_fakes_compose_with_the_client_fixture(
     client, fake_redis, firebase_tokens, fake_socket_manager
 ):
-    """§4: a test that needs several of them simply requests several of them;
+    """A test that needs several of them simply requests several of them;
     none of the four drags another in behind it."""
     assert client.get("/api/v1/health").status_code == 200
     assert isinstance(fake_redis, FakeRedis)

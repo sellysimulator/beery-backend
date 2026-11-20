@@ -1,15 +1,12 @@
-"""``submit_order`` (``12-socket-play.md §3.1``).
+"""``submit_order`` (spec §11.2, §12.1).
 
-Covers acceptance criteria 1-9 and failure modes 4, 5, 6 and 7.
-
-Scope is exactly section 12's frozen *Public surface*: the ``submit_order``
-socket handler in ``app.sockets.handlers.play``, plus the room document and
-``GameEngine`` attributes ``09-state-service.md §2`` and
-``07-game-engine.md §2`` already freeze (``engine.week``,
+Scope is exactly the play loop's public surface: the ``submit_order`` socket
+handler in ``app.sockets.handlers.play``, plus the room document (spec §11.3)
+and the ``GameEngine`` attributes it freezes (``engine.week``,
 ``engine.pending_orders``). No private name, no internal data structure and
-no unspecified log message is asserted (``00-conventions.md §5``).
+no unspecified log message is asserted.
 
-A ``RUNNING`` game is reached only by driving section 11's lobby handlers
+A ``RUNNING`` game is reached only by driving the lobby handlers
 (``join``, ``claim_role``, ``join_waiting``, ``start_game``) through the
 shared ``start_running_game`` fixture -- ``app/sockets/handlers/play.py`` and
 ``app/services/game_service.py`` are never read, only imported.
@@ -33,7 +30,7 @@ async def _current_engine(state_svc, room_code: str):
     return state_svc.load_engine(stored)
 
 
-# --- AC 1 --------------------------------------------------------------- #
+# --- a recorded order --------------------------------------------------- #
 
 
 async def test_submit_records_order_and_emits_order_submitted_to_room(
@@ -55,7 +52,7 @@ async def test_submit_records_order_and_emits_order_submitted_to_room(
     assert "order_submitted" in fake_socket_manager.events_for(game["room_code"])
 
 
-# --- AC 2 --------------------------------------------------------------- #
+# --- order_submitted ---------------------------------------------------- #
 
 
 async def test_order_submitted_has_role_and_display_name_never_a_quantity(
@@ -84,21 +81,21 @@ async def test_order_submitted_has_role_and_display_name_never_a_quantity(
     assert 13 not in payload.values()
 
 
-# --- AC 3 --------------------------------------------------------------- #
+# --- resubmission ------------------------------------------------------- #
 
 
 async def test_resubmission_replaces_value_and_all_orders_in_needs_four_roles(
     make_room, start_running_game, state_svc
 ):
-    """AC 3's second half guards against a wrong implementation that counts
+    """This guards against a wrong implementation that counts
     *submissions* rather than *distinct roles*: two submissions from the same
     role plus two more roles is four total submissions but only three
     distinct roles, and ``all_orders_in`` must still be ``False``. (Checking
     it after all four *roles* have ordered is not observable here: that
-    submission is the one that auto-closes the week, per §3.1 step 8, so by
-    the time control returns the engine has already moved on to the next
-    week's empty ``pending_orders`` -- AC 10/11 in ``test_week_broadcast.py``
-    cover that closing behaviour directly.)"""
+    submission is the one that auto-closes the week, so by the time control
+    returns the engine has already moved on to the next week's empty
+    ``pending_orders`` -- ``test_week_broadcast.py`` covers that closing
+    behaviour directly.)"""
     room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
     game = await start_running_game(room)
     engine = await _current_engine(state_svc, game["room_code"])
@@ -124,7 +121,7 @@ async def test_resubmission_replaces_value_and_all_orders_in_needs_four_roles(
     assert engine.week == week  # the window is still open
 
 
-# --- AC 4 --------------------------------------------------------------- #
+# --- the resubmission cap ----------------------------------------------- #
 
 
 async def test_21st_submission_rejected_20th_stands(
@@ -156,7 +153,7 @@ async def test_21st_submission_rejected_20th_stands(
     assert error["code"] == "TOO_MANY_SUBMISSIONS"
 
 
-# --- AC 5 --------------------------------------------------------------- #
+# --- a stale week ------------------------------------------------------- #
 
 
 async def test_stale_week_is_rejected_and_triggers_your_state_resend(
@@ -186,7 +183,7 @@ async def test_stale_week_is_rejected_and_triggers_your_state_resend(
     assert any(event == "your_state" for event, _data in sid_events)
 
 
-# --- AC 6 --------------------------------------------------------------- #
+# --- an invalid order --------------------------------------------------- #
 
 
 @pytest.mark.parametrize("bad_order", ["abc", None, math.nan, math.inf, True, 7.5])
@@ -214,16 +211,15 @@ async def test_invalid_order_is_rejected_and_records_nothing(
     assert error["code"] == "INVALID_ORDER"
 
 
-# --- AC 7 --------------------------------------------------------------- #
+# --- an out-of-range order ---------------------------------------------- #
 
 
 @pytest.mark.parametrize("out_of_range", [1_000_000_000, 1e9, 10_000, -1, -5.0])
 async def test_an_out_of_range_order_is_refused_not_clamped(
     make_room, start_running_game, fake_socket_manager, state_svc, out_of_range
 ):
-    """Amended 2026-11-02 (was "huge order is clamped to 9999"). A clamped
-    order is an order nobody placed, and the player only found out from a
-    supply line that did not add up. The order is refused with
+    """A clamped order would be an order nobody placed, and the player would
+    only find out from a supply line that did not add up. The order is refused with
     ``INVALID_ORDER`` and a message naming the bounds -- the same two numbers
     ``your_state`` carries for the form -- records nothing, and does not use
     up one of the player's resubmissions."""
@@ -265,7 +261,7 @@ async def test_an_out_of_range_order_is_refused_not_clamped(
     assert engine.pending_orders[Role.RETAILER] == 9_999
 
 
-# --- AC 8 --------------------------------------------------------------- #
+# --- no alias ----------------------------------------------------------- #
 
 
 async def test_submit_from_sid_with_no_alias_is_rejected(
@@ -294,30 +290,22 @@ async def test_submit_from_sid_with_no_alias_is_rejected(
     assert len(engine.pending_orders) == 0
 
 
-# --- AC 9 --------------------------------------------------------------- #
+# --- no role ------------------------------------------------------------ #
 
 
 async def test_roleless_participant_cannot_order(
     make_room, start_running_game, fake_socket_manager, state_svc
 ):
-    """§3.1 step 3: a roleless participant is rejected with `error
-    {code: "NO_ROLE"}`.
+    """A roleless participant is rejected with `error {code: "NO_ROLE"}`.
 
-    A first attempt at this test seated a never-role-claiming bystander
-    alongside three role-claiming humans plus a bot-filled fourth role, on
-    the theory that ``seats_taken`` counting participants rather than roles
-    (``11-socket-lobby.md §2.1``) would let all five coexist. Run against the
-    real implementation, that bystander's ``submit_order`` came back
-    `NOT_IN_ROOM`, not `NO_ROLE`: whatever section 11's `start_game` does
-    with a participant who never claimed a seat, they are no longer found
-    by `room["sid_to_alias"]` once the game is `RUNNING`, which is section
-    11's behaviour and out of scope here to read or second-guess. That
-    means "seated, in `sid_to_alias`, but `role: None`" is not a state a
-    normal sequence of public lobby calls reaches during `RUNNING` -- so it
-    is built directly against the frozen room-document schema
-    (`09-state-service.md §2`, `"role": ... // or null while unassigned`),
-    exactly as section 11's own tests build an unreachable-by-sequence edge
-    case (e.g. `test_can_start_false_for_unbuildable_config`'s tampered
+    A participant who never claimed a seat is no longer found by
+    `room["sid_to_alias"]` once the game is `RUNNING` (their
+    ``submit_order`` comes back `NOT_IN_ROOM`), so "seated, in
+    `sid_to_alias`, but `role: None`" is not a state a normal sequence of
+    public lobby calls reaches during `RUNNING`. It is built directly against
+    the room-document schema (spec §11.3, `"role": ... // or null while
+    unassigned`), exactly as the lobby tests build an unreachable-by-sequence
+    edge case (e.g. `test_can_start_false_for_unbuildable_config`'s tampered
     ``config``)."""
     room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
     game = await start_running_game(room)
@@ -350,7 +338,7 @@ async def test_roleless_participant_cannot_order(
     assert dict(engine.pending_orders) == before_orders
 
 
-# --- failure mode 4 -------------------------------------------------------- #
+# --- a client-supplied alias ----------------------------------------------- #
 
 
 async def test_client_supplied_alias_is_ignored(
@@ -379,7 +367,7 @@ async def test_client_supplied_alias_is_ignored(
     assert Role.WHOLESALER not in engine.pending_orders
 
 
-# --- failure mode 5 -------------------------------------------------------- #
+# --- a client-supplied cost ------------------------------------------------ #
 
 
 async def test_client_supplied_accumulated_cost_is_ignored(
@@ -405,7 +393,7 @@ async def test_client_supplied_accumulated_cost_is_ignored(
     assert engine.agents[Role.RETAILER].accumulated_cost == before
 
 
-# --- failure mode 6 -------------------------------------------------------- #
+# --- a stale tab ----------------------------------------------------------- #
 
 
 async def test_stale_tab_double_week_leaves_earlier_week_untouched(
@@ -439,7 +427,7 @@ async def test_stale_tab_double_week_leaves_earlier_week_untouched(
     assert week4_record_after.order == 4
 
 
-# --- failure mode 7 -------------------------------------------------------- #
+# --- a resubmission storm -------------------------------------------------- #
 
 
 async def test_resubmission_storm_does_not_exceed_the_cap_or_append_history(
@@ -507,7 +495,7 @@ async def test_the_submission_that_closes_the_week_sends_the_host_both_states(
     """The closing submission sends the host a state showing every role
     decided, then the close sends the state for the new week. The first one
     is the only state the host gets for the final week's last submission,
-    which closes the game rather than opening a new week (12 §3.1 step 7)."""
+    which closes the game rather than opening a new week."""
     room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
     game = await start_running_game(room)
     engine = await _current_engine(state_svc, game["room_code"])
@@ -531,13 +519,13 @@ async def test_the_submission_that_closes_the_week_sends_the_host_both_states(
     assert submitted["seq"] < new_week["seq"]
 
 
-# --- A room in flight from before 2026-11-02 keeps playing ------------------ #
+# --- A room an older build saved keeps playing ------------------------------ #
 
 
 async def test_a_room_saved_before_the_removals_still_plays(
     make_room, start_running_game, state_svc
 ):
-    """A room already in the state store when this build deploys carries
+    """A room an older build saved to the state store carries
     ``visibility.allow_negative_orders`` in its config and ``week_cost`` in its
     history. Both are read (the first ignored, the second renamed), and the
     room plays on."""

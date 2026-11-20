@@ -1,10 +1,9 @@
-"""``join_waiting`` and ``config_update`` -- host authority (``11-socket-lobby.md``).
+"""``join_waiting`` and ``config_update`` -- host authority (spec §4.1, D18).
 
-Covers acceptance criteria 1-9, 20 and 21, and failure modes 4, 5, 6, 7, 8 and
-9. Driven entirely through ``app.sockets.handlers.lobby``'s frozen event
+Driven entirely through ``app.sockets.handlers.lobby``'s frozen event
 handlers plus the shared fixtures from ``tests/conftest.py`` and this
 package's own ``conftest.py``. No private name and no internal room-document
-shape beyond the one ``09-state-service.md §2`` freezes is asserted on.
+shape beyond the frozen one (spec §11.3) is asserted on.
 """
 
 from __future__ import annotations
@@ -30,7 +29,7 @@ def _contains_key_recursive(payload, key: str) -> bool:
     return False
 
 
-# --- AC 1 ---------------------------------------------------------------- #
+# --- the right secret claims the room ------------------------------------ #
 
 
 async def test_correct_secret_claims_the_room(
@@ -67,7 +66,7 @@ async def test_wrong_secret_and_no_identity_match_is_rejected(
     assert fake_socket_manager.events_for("sid-bad") == ["join_error"]
 
 
-# --- AC 2 ------------------------------------------------------------------ #
+# --- a secret claim records the identity ----------------------------------- #
 
 
 async def test_secret_claim_records_identity_and_emits_host_claimed(
@@ -95,7 +94,7 @@ async def test_secret_claim_records_identity_and_emits_host_claimed(
     assert "host_claimed" not in fake_socket_manager.events_for(room["room_code"])
 
 
-# --- AC 3 ------------------------------------------------------------------- #
+# --- identity recovery ------------------------------------------------------ #
 
 
 async def test_identity_recovery_reclaims_and_reemits_same_secret(
@@ -126,7 +125,7 @@ async def test_identity_recovery_reclaims_and_reemits_same_secret(
     assert claimed[0]["host_secret"] == room["host_secret"]
 
 
-# --- AC 4 -------------------------------------------------------------------- #
+# --- no secret, a different identity ----------------------------------------- #
 
 
 async def test_no_secret_from_different_identity_is_rejected(
@@ -151,7 +150,7 @@ async def test_no_secret_from_different_identity_is_rejected(
     assert fake_socket_manager.events_for("sid-b") == ["join_error"]
 
 
-# --- AC 5 / failure mode 6 --------------------------------------------------- #
+# --- a null host_identity ---------------------------------------------------- #
 
 
 async def test_null_host_identity_does_not_bootstrap(
@@ -174,7 +173,7 @@ async def test_null_host_identity_does_not_bootstrap(
     assert fake_socket_manager.events_for("sid-stranger") == ["join_error"]
 
 
-# --- AC 6 --------------------------------------------------------------------- #
+# --- the identity path never writes host_identity ----------------------------- #
 
 
 async def test_identity_path_never_overwrites_host_identity(
@@ -201,7 +200,7 @@ async def test_identity_path_never_overwrites_host_identity(
     assert stored["host_identity"] == identity_a
 
 
-# --- AC 7 --------------------------------------------------------------------- #
+# --- one rejection message ---------------------------------------------------- #
 
 
 async def test_rejection_message_is_identical_for_bad_secret_and_bad_identity(
@@ -221,7 +220,7 @@ async def test_rejection_message_is_identical_for_bad_secret_and_bad_identity(
     assert message_1 == message_2
 
 
-# --- AC 8 --------------------------------------------------------------------- #
+# --- the latest join_waiting is the host -------------------------------------- #
 
 
 async def test_join_waiting_twice_leaves_most_recent_as_host_sid(
@@ -244,7 +243,7 @@ async def test_join_waiting_twice_leaves_most_recent_as_host_sid(
     assert stored["host_sid"] == "sid-2"
 
 
-# --- AC 9 --------------------------------------------------------------------- #
+# --- the host holds no seat --------------------------------------------------- #
 
 
 async def test_host_holds_no_seat(make_room, fake_socket_manager, register_sid):
@@ -262,7 +261,7 @@ async def test_host_holds_no_seat(make_room, fake_socket_manager, register_sid):
     assert "sid-host" not in stored["sid_to_alias"]
 
 
-# --- failure mode 4 ----------------------------------------------------------- #
+# --- empty secrets ------------------------------------------------------------ #
 
 
 async def test_empty_secret_never_matches_empty_stored_secret(
@@ -304,7 +303,7 @@ async def test_secret_differing_by_one_character_is_rejected(
     assert fake_socket_manager.events_for("sid-1") == ["join_error"]
 
 
-# --- failure mode 5 ------------------------------------------------------------ #
+# --- a second claimant --------------------------------------------------------- #
 
 
 async def test_second_claimant_with_wrong_secret_does_not_become_host(
@@ -327,7 +326,7 @@ async def test_second_claimant_with_wrong_secret_does_not_become_host(
     assert stored["host_sid"] == "sid-1"
 
 
-# --- failure mode 7 ------------------------------------------------------------- #
+# --- recovery cannot seize a room ----------------------------------------------- #
 
 
 async def test_recovery_path_cannot_seize_a_room(
@@ -351,7 +350,7 @@ async def test_recovery_path_cannot_seize_a_room(
     assert stored["host_sid"] == "sid-a"
 
 
-# --- failure mode 8 -------------------------------------------------------------- #
+# --- no secret in a broadcast ---------------------------------------------------- #
 
 
 async def test_host_secret_never_appears_in_a_room_broadcast(
@@ -377,7 +376,7 @@ async def test_host_secret_never_appears_in_a_room_broadcast(
     assert host_claimed[0][0] == "sid-host"
 
 
-# --- AC 20 / AC 21 / failure mode 9 (config_update) ------------------------------ #
+# --- config_update --------------------------------------------------------------- #
 
 
 async def test_config_update_with_right_secret_updates_and_emits_to_host_only(

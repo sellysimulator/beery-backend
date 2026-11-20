@@ -1,13 +1,13 @@
-"""The Redis-backed store for live room and game state (`09-state-service.md`).
+"""The Redis-backed store for live room and game state (spec §11.3).
 
-This is the boundary between the pure core (sections 03-08) and the outside
+This is the boundary between the pure core (`app/core`) and the outside
 world: the core knows how to serialise itself, this module decides where
 those bytes live, how long they live, and who is allowed to touch them at a
-time. Implements `00-decisions.md` D4 -- Redis is authoritative for a live
-game; PostgreSQL is written at the end (section 14).
+time. Implements D4 -- Redis is authoritative for a live
+game; PostgreSQL is written at the end.
 
 This module does not validate config, does not check `host_secret`, does not
-emit anything, and does not touch PostgreSQL. See `09-state-service.md` §4.8, §7.
+emit anything, and does not touch PostgreSQL.
 """
 
 from __future__ import annotations
@@ -41,9 +41,9 @@ _MAX_CODE_ATTEMPTS = 10
 
 # Module-level singleton, deliberately built here rather than lazily. The
 # name stays `redis_client` although it may hold an `InMemoryBackend`: it is
-# read by that exact name at 25 call sites, in `09-state-service.md §3`, and
-# by `tests/conftest.py`'s monkeypatch. Renaming it buys clarity and costs a
-# sweep of all three; `build_state_backend` is where the choice is legible.
+# read by that exact name at 25 call sites and by `tests/conftest.py`'s
+# monkeypatch. Renaming it buys clarity and costs a sweep of both;
+# `build_state_backend` is where the choice is legible.
 # Every method below reads this name -- `redis_client`, exactly -- at call time
 # rather than capturing it anywhere, because `tests/conftest.py` monkeypatches
 # `app.services.state_service.redis_client` after `get_state_service()` has
@@ -57,14 +57,14 @@ redis_client: StateBackend = build_state_backend(
 def new_room_document(
     room_code: str, config: GameConfig, host_display_name: str
 ) -> dict:
-    """A fresh LOBBY document, §2 shape, with `host_secret` minted here.
+    """A fresh LOBBY document, with `host_secret` minted here.
 
     The secret is `secrets.token_urlsafe(32)` -- `secrets`, never `random`,
     which is seeded and predictable and is the module the rest of this build
     deliberately avoids. It is minted at this one point because the document
-    is the only thing that ever holds it: section 10's create endpoint reads
-    it back out of the returned document and hands it to the caller once
-    (`10 §3.1` step 4), and no other code path produces one.
+    is the only thing that ever holds it: the create endpoint reads it back
+    out of the returned document and hands it to the caller once, and no
+    other code path produces one.
     """
     now = datetime.now(timezone.utc).isoformat()
     return {
@@ -112,7 +112,7 @@ def next_free_alias(room: dict) -> str:
 
     A pre-start `leave()` frees a slot, and the count-based form then
     reissues a live participant's alias and silently overwrites their record
-    (`00-conventions.md` §2 rule 4, `[HARD-WON]`).
+    (`[HARD-WON]`).
     """
     participants = room["participants"]
     n = 1
@@ -174,7 +174,7 @@ class StateService:
 
         A document whose `schema_version` is absent or not equal to
         `SCHEMA_VERSION` is discarded rather than migrated in place
-        (`09-state-service.md` §2, `[HARD-WON]`). A malformed code is None
+        (`[HARD-WON]`). A malformed code is None
         without touching the store.
         """
         if not is_room_code(room_code):

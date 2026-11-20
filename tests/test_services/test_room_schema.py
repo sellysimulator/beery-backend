@@ -1,15 +1,13 @@
-"""Black-box tests for section 09 -- the room-document shape and the pure,
+"""Black-box tests for the room-document shape (spec §11.3) and the pure,
 non-Redis helpers of ``app/services/state_service.py``: ``new_room_document``,
 ``generate_room_code`` and ``next_free_alias``.
 
-Covers ``09-state-service.md §5`` acceptance criteria 2 and 4, and ``§6``
-failure modes 1 and 5.  Criteria and failure modes that need the Redis-backed
-``StateService`` (creation, lookup, locking, persistence) live in
-``test_state_service.py`` instead.
+What needs the Redis-backed ``StateService`` (creation, lookup, locking,
+persistence) lives in ``test_state_service.py`` instead.
 
-Only the frozen public surface of section 09 (``§3``) plus the public
-surfaces of sections 01, 03, 07 and 08 are imported. No private name and no
-internal data structure is asserted on.
+Only the public surface of the state service plus the public surfaces of the
+config, engine and bot modules are imported. No private name and no internal
+data structure is asserted on.
 """
 
 from __future__ import annotations
@@ -35,7 +33,7 @@ from app.services.state_service import (
     next_free_alias,
 )
 
-# The exact top-level key set of the §2 room document.
+# The exact top-level key set of the room document.
 EXPECTED_TOP_LEVEL_KEYS = {
     "schema_version",
     "room_code",
@@ -61,9 +59,9 @@ EXPECTED_TOP_LEVEL_KEYS = {
 
 
 def make_config(duration_weeks: int = 8) -> GameConfig:
-    """A minimal, valid ``GameConfig`` built only through section 03's frozen
-    surface (``from_host_input``), mirroring the helper pattern used by
-    section 07's own tests."""
+    """A minimal, valid ``GameConfig`` built only through the config's public
+    surface (``from_host_input``), mirroring the helper pattern used by the
+    engine's own tests."""
     roles = {
         Role.RETAILER.value: RoleConfig(),
         Role.WHOLESALER.value: RoleConfig(),
@@ -100,7 +98,7 @@ def test_module_constants_match_00_decisions_section_5():
 
 
 def test_room_code_alphabet_excludes_ambiguous_characters():
-    # FM 5 -- the alphabet itself must exclude the five confusable
+    # The alphabet itself must exclude the five confusable
     # characters, and it must be upper-case only.
     for ambiguous in "0O1IL":
         assert ambiguous not in ROOM_CODE_ALPHABET
@@ -109,7 +107,7 @@ def test_room_code_alphabet_excludes_ambiguous_characters():
 
 
 # ---------------------------------------------------------------------------
-# AC 2 -- new_room_document
+# new_room_document
 # ---------------------------------------------------------------------------
 
 
@@ -129,8 +127,7 @@ def test_new_room_document_fresh_lobby_defaults():
     for role in (Role.RETAILER, Role.WHOLESALER, Role.DISTRIBUTOR, Role.FACTORY):
         assert _role_to_alias_value(room["role_to_alias"], role) is None
 
-    # §1's illustrative values are shown populated only to document shape;
-    # a fresh room's collections are empty.
+    # A fresh room's collections are empty.
     assert room["participants"] == {}
     assert room["sid_to_alias"] == {}
     assert room["bots"] == {}
@@ -150,7 +147,7 @@ def test_new_room_document_mints_a_fresh_secret_each_call():
 
 
 # ---------------------------------------------------------------------------
-# AC 4 / FM 5 -- generate_room_code
+# generate_room_code
 # ---------------------------------------------------------------------------
 
 
@@ -175,7 +172,7 @@ def test_generate_room_code_accepts_an_explicit_random_for_determinism():
 
 
 # ---------------------------------------------------------------------------
-# AC 13 -- next_free_alias
+# next_free_alias
 # ---------------------------------------------------------------------------
 
 
@@ -190,11 +187,11 @@ def test_next_free_alias_returns_the_lowest_unused_slot():
 
 
 # ---------------------------------------------------------------------------
-# FM 1 -- alias reuse after a leave must not clobber a survivor
+# Alias reuse after a leave must not clobber a survivor
 # ---------------------------------------------------------------------------
 
 
-def test_fm1_alias_reuse_after_leave_reuses_the_freed_slot_not_the_count():
+def test_alias_reuse_after_leave_reuses_the_freed_slot_not_the_count():
     room = _room_with_aliases({"P1", "P2", "P3"})
     survivor_record = {"alias": "P3", "display_name": "Cid", "role": None}
     room["participants"]["P3"] = survivor_record

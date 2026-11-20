@@ -1,14 +1,14 @@
 """The immutable, validated, serialisable game configuration.
 
-`GameConfig` holds every parameter of a game (`beer-game-spec.md` §6, as amended
-by `00-decisions.md`). It is built during `CONFIGURING`, frozen at start, carried
-in the Redis room document for the life of the game, and written to PostgreSQL at the
-end. It knows nothing about players, rooms, sockets or the database.
+`GameConfig` holds every parameter of a game (`beer-game-spec.md` §6). It is
+built during `CONFIGURING`, frozen at start, carried in the Redis room document
+for the life of the game, and written to PostgreSQL at the end. It knows
+nothing about players, rooms, sockets or the database.
 
-Pure (`00-conventions.md` §4): this module imports nothing from `app.config`,
-`app.services`, `app.db`, `app.sockets` or `app.api`, performs no I/O, and reads
-no clock and no global RNG. The hard ceilings of `00-decisions.md` §5 arrive as
-an injected `Limits` rather than an import of `app.config`.
+Pure: this module imports nothing from `app.config`, `app.services`, `app.db`,
+`app.sockets` or `app.api`, performs no I/O, and reads no clock and no global
+RNG. The hard ceilings (spec §12.1) arrive as an injected `Limits` rather than
+an import of `app.config`.
 """
 
 from __future__ import annotations
@@ -46,10 +46,9 @@ class ConfigValidationError(ValueError):
 
     Carries the dotted path of the offending field and a human-readable message.
     Every number outside its range is refused with one of these, naming the
-    range, and is never silently clamped (`03-game-config.md` §3.1, amended
-    2026-11-02). The only repairs left are the ones that change nothing a host
-    chose: an inverted stochastic range is swapped, and a cap of `0` reads as
-    "unlimited".
+    range, and is never silently clamped (spec §6.6). The only repairs left are
+    the ones that change nothing a host chose: an inverted stochastic range is
+    swapped, and a cap of `0` reads as "unlimited".
     """
 
     field: str
@@ -65,7 +64,7 @@ class ConfigValidationError(ValueError):
 
 # --------------------------------------------------------------------------- #
 # Coercion helpers.  Every host-supplied number funnels through these, so a
-# non-finite float is caught once (§3.1 rule 8) and a value outside its range
+# non-finite float is caught once and a value outside its range
 # is refused, naming the range, rather than allowed to poison the simulation.
 # --------------------------------------------------------------------------- #
 
@@ -147,7 +146,7 @@ def _bounded_int(value: Any, low: int, high: int, default: int, path: str) -> in
     """A host-supplied integer in `[low, high]`, or `ConfigValidationError`.
 
     Never clamped: a host who typed 500 weeks is told the range, not handed a
-    104-week game they did not ask for (`03-game-config.md` §3.1).
+    104-week game they did not ask for (spec §6.6).
     """
     number = _as_int(value, default, path)
     if not low <= number <= high:
@@ -169,7 +168,7 @@ def _optional_cap(value: Any, high: int, path: str) -> int | None:
     """Read an optional `int | None` cap, where `0` means "unlimited".
 
     `None` and `0` both mean "no per-game cap": the global ceiling applies
-    (`03-game-config.md` §3.1). That is the one documented meaning of `0`, and
+    (spec §6.6). That is the one documented meaning of `0`, and
     the host form says so beside the field, because a cap of zero units would
     wedge the game outright. A negative value, or one above `high`, is refused.
     """
@@ -204,7 +203,7 @@ def _as_bool(value: Any, default: bool) -> bool:
 
 
 def _default_of(model: type[BaseModel], name: str) -> Any:
-    """The declared default of `model.name`, so clamping never restates one."""
+    """The declared default of `model.name`, so a fallback never restates one."""
     return model.model_fields[name].default
 
 
@@ -250,7 +249,7 @@ class FactoryConfig(RoleConfig):
 
 
 class BotConfig(BaseModel):
-    """Sterman anchor-and-adjust parameters. See 08-bot-agent.md."""
+    """Sterman anchor-and-adjust parameters. See spec §8.5."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -261,11 +260,11 @@ class BotConfig(BaseModel):
 
 
 # Keys a stored config may still carry from an earlier build, read and thrown
-# away. `allow_negative_orders` was removed on 2026-11-02: orders have a floor
-# of 0, and the option never worked (a negative order raised inside the
-# pipeline and froze the week). A room in flight in Redis, a host's saved
+# away. `allow_negative_orders` is one: orders have a floor of 0, and a
+# negative order raises inside the pipeline and freezes the week, so the
+# option must not come back. A room in flight in Redis, a host's saved
 # patch and an old export may all still hold it, and every one of them must
-# keep loading (`03-game-config.md` §2).
+# keep loading.
 LEGACY_VISIBILITY_KEYS: frozenset[str] = frozenset({"allow_negative_orders"})
 
 
@@ -383,9 +382,9 @@ DemandConfig = Annotated[_AnyDemand, Field(discriminator="kind")]
 class _RoleMap(dict[Role, RoleConfig]):
     """A `dict` that refuses to be mutated.
 
-    `GameConfig` is frozen, and `03-game-config.md` §6 failure mode 8 requires
-    that `cfg.roles[Role.RETAILER]` cannot be replaced either — a plain dict
-    would leave the whole per-role configuration writable behind the freeze.
+    `GameConfig` is frozen, and `cfg.roles[Role.RETAILER]` must not be
+    replaceable either — a plain dict would leave the whole per-role
+    configuration writable behind the freeze.
     """
 
     _MESSAGE = "GameConfig.roles is immutable."
@@ -427,7 +426,7 @@ class GameConfig(BaseModel):
     preset_name: str | None = None
     # An immutable mapping (`_RoleMap`), not a plain dict: pydantic's frozen=True
     # blocks attribute assignment only, so a plain dict behind it would leave the
-    # whole per-role configuration writable after the freeze (§6 failure mode 8).
+    # whole per-role configuration writable after the freeze.
     # FACTORY's value is a FactoryConfig.
     roles: Mapping[Role, RoleConfig]
     demand: DemandConfig
@@ -442,7 +441,7 @@ class GameConfig(BaseModel):
         """Accept string role keys and rebuild the Factory as a `FactoryConfig`.
 
         `to_payload` writes `"FACTORY": {...}`; without this the Factory would
-        come back as a plain `RoleConfig` and the §3.7 round-trip would fail.
+        come back as a plain `RoleConfig` and the payload round-trip would fail.
         """
         if not isinstance(data, Mapping):
             return data
@@ -509,12 +508,12 @@ class GameConfig(BaseModel):
         its orders come from the Distributor and still take time to arrive.
         The Retailer's value is carried but unused: customer demand reaches the
         Retailer immediately, so it has no incoming-order pipeline at all
-        (`03-game-config.md` §3.2).
+        (spec §6.2).
         """
         return self.role_config(role).information_delay_weeks
 
     def order_arrival_lead_weeks(self, role: Role) -> int:
-        """Weeks from `role` ordering to that order arriving (`07 §3.8`).
+        """Weeks from `role` ordering to that order arriving (spec §6.2).
 
         An order spends the **supplier's** order delay reaching them and the
         goods spend this role's own inbound delay coming back. The Factory has
@@ -522,7 +521,7 @@ class GameConfig(BaseModel):
 
         This is the one implementation. The engine sends it to the player as
         `order_arrival_lead_weeks`, and `core.preview` returns it to the host
-        form for a draft config (2026-11-03) -- no client assembles a lead time
+        form for a draft config -- no client assembles a lead time
         out of individual delays, because the Retailer and the Factory each
         break a different term of the sum.
         """
@@ -539,7 +538,7 @@ class GameConfig(BaseModel):
         """Build a config from untrusted host input.
 
         A value outside its range raises `ConfigValidationError` naming the
-        field and the range; nothing is clamped (`03-game-config.md` §3.1).
+        field and the range; nothing is clamped (spec §6.6).
         An inverted stochastic range is swapped, a cap of `0` means
         "unlimited", and a key from `LEGACY_VISIBILITY_KEYS` is ignored.
         """
@@ -770,7 +769,7 @@ def _checked_visibility(raw: Any, limits: Limits) -> VisibilityConfig:
 
 
 def _checked_bot(raw: Any, limits: Limits) -> BotConfig:
-    """The Sterman parameters, each refused when out of range (§3.5)."""
+    """The Sterman parameters, each refused when out of range."""
     fields = _mapping(raw) or {}
     values = {
         name: _bounded_float(
@@ -809,7 +808,7 @@ def _demand_int(
 
 def _checked_demand(raw: Any, duration_weeks: int, limits: Limits) -> _AnyDemand:
     """Build the demand generator, refusing any value outside its range and
-    swapping an inverted stochastic range (`03-game-config.md` §3.1)."""
+    swapping an inverted stochastic range (spec §6.6)."""
     fields = _mapping(raw)
     if fields is None:
         raise ConfigValidationError("demand", "demand must be a dict naming a kind.")
@@ -958,7 +957,7 @@ def _checked_demand(raw: Any, duration_weeks: int, limits: Limits) -> _AnyDemand
                 "demand.values",
                 f"CUSTOM demand values must be numbers, not {item!r}.",
             )
-        # Rule 2 is evaluated on the parsed number, *before* truncation. An
+        # The negative check runs on the parsed number, *before* truncation. An
         # entry in (-1, 0) truncates toward zero to 0, so truncating first
         # would repair an unambiguously negative entry into valid demand the
         # host never asked for.

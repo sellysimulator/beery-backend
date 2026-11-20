@@ -1,18 +1,18 @@
-"""The play loop's socket handlers (`12-socket-play.md`).
+"""The play loop's socket handlers.
 
 Registers by the ``@sio.event`` decorator firing at import (**D19**): this
 module is discovered by ``app/sockets/handlers/__init__.py`` and needs no
 edit anywhere upstream.
 
 Every read-modify-write of room state is wrapped in
-``async with state_svc.lock(room_code)`` (``00-conventions.md §3``), and,
-following the shape ``lobby.py`` already ships and this section's own
-locking contract (``§2.1``): payloads are built from values captured while
-the lock is held, the block exits, and only then are they emitted -- and
-only then does control pass into another ``GameService`` method. The one
-exception, matching ``lobby.py``'s own style, is a same-call rejection
-(``error``/``join_error``): those are cheap, terminal and emitted
-immediately, under the lock, exactly as ``lobby.py``'s ``_reject`` does.
+``async with state_svc.lock(room_code)``, and, following the shape
+``lobby.py`` already ships and the play loop's own locking contract: payloads
+are built from values captured while the lock is held, the block exits, and
+only then are they emitted -- and only then does control pass into another
+``GameService`` method. The one exception, matching ``lobby.py``'s own style,
+is a same-call rejection (``error``/``join_error``): those are cheap, terminal
+and emitted immediately, under the lock, exactly as ``lobby.py``'s ``_reject``
+does.
 
 Game rules live in ``app.core``; this module and ``app.services.game_service``
 only orchestrate sockets around them.
@@ -67,7 +67,7 @@ async def _emit_error(sid: str, message: str, code: str) -> None:
 @sio.event
 @guarded("error")
 async def submit_order(sid: str, data: dict | None = None) -> None:
-    """``§3.1``. All the behaviour lives in ``GameService.submit`` -- this
+    """All the behaviour lives in ``GameService.submit`` -- this
     handler only unpacks the wire payload."""
     data = _payload(data)
     room_id = _room_id_of(data)
@@ -83,7 +83,7 @@ async def submit_order(sid: str, data: dict | None = None) -> None:
 @sio.event
 @guarded("error")
 async def pause_game(sid: str, data: dict | None = None) -> None:
-    """``§3.6``. ``RUNNING`` -> ``PAUSED``. No-op if not currently running."""
+    """``RUNNING`` -> ``PAUSED``. No-op if not currently running."""
     data = _payload(data)
     room_id = _room_id_of(data)
     if room_id is None:
@@ -120,7 +120,7 @@ async def pause_game(sid: str, data: dict | None = None) -> None:
 @sio.event
 @guarded("error")
 async def resume_game(sid: str, data: dict | None = None) -> None:
-    """``§3.6``. ``PAUSED`` -> ``RUNNING``, a full state re-broadcast, then
+    """``PAUSED`` -> ``RUNNING``, a full state re-broadcast, then
     every bot seat still owing the open week its order plays
     (``GameService.resume_play``) -- a bot swapped in while paused included."""
     data = _payload(data)
@@ -164,7 +164,7 @@ async def resume_game(sid: str, data: dict | None = None) -> None:
 @sio.event
 @guarded("error")
 async def force_close_week(sid: str, data: dict | None = None) -> None:
-    """``§3.6``. Delegates the actual close to ``GameService`` with no lock
+    """Delegates the actual close to ``GameService`` with no lock
     held, exactly as a human submission does."""
     data = _payload(data)
     room_id = _room_id_of(data)
@@ -202,15 +202,15 @@ async def force_close_week(sid: str, data: dict | None = None) -> None:
 @sio.event
 @guarded("error")
 async def substitute_bot(sid: str, data: dict | None = None) -> None:
-    """``§3.6``. A no-op, not an error, when the role is already a bot.
+    """A no-op, not an error, when the role is already a bot.
     ``engine.set_bot(role)`` is what makes every subsequent ``WeekRecord``
     attribute the play correctly -- the participant flag alone is not
-    enough (module docstring, `07-game-engine.md`'s ``set_bot``).
+    enough (see ``GameEngine.set_bot``).
 
     Allowed while paused. The bot is asked to play at once, which does
     nothing in a paused room; ``resume_game`` plays it when the room runs
     again. The displaced player's ``identity`` stays on the seat, so the
-    finished game is still theirs (`14 §3.6`), and they can take the seat
+    finished game is still theirs (spec §10.4), and they can take the seat
     back with ``reclaim_seat``. The host gets a fresh ``host_state`` so the
     seat card shows the bot even in a paused room, where no bot round runs
     to send one."""
@@ -248,7 +248,7 @@ async def substitute_bot(sid: str, data: dict | None = None) -> None:
             await _emit_error(sid, _ROLE_UNFILLED, "UNKNOWN_ROLE")
             return
         if participant.get("is_bot"):
-            return  # already a bot -- no-op (§3.6)
+            return  # already a bot -- no-op
 
         engine = state_svc.load_engine(room)
         if engine is None:
@@ -306,8 +306,7 @@ _GAME_FINISHED_MSG = "The game has finished."
 @sio.event
 @guarded("error")
 async def reclaim_seat(sid: str, data: dict | None = None) -> None:
-    """The player whose seat the host swapped to a bot takes it back
-    (amended 2026-11-03; swapping used to be one-way).
+    """The player whose seat the host swapped to a bot takes it back.
 
     Only the seat's own player can: the seat is found from the caller's
     connection (``sid_to_alias``, which ``join`` maps by identity), never from
@@ -400,7 +399,7 @@ async def reclaim_seat(sid: str, data: dict | None = None) -> None:
 @sio.event
 @guarded("error")
 async def end_game_early(sid: str, data: dict | None = None) -> None:
-    """``§3.6``. Abandons the open week and finishes with the weeks
+    """Abandons the open week and finishes with the weeks
     actually played -- ``engine.end_early()`` never records it, and rolls its
     holding and backlog cost back out of every live total.
 
@@ -462,7 +461,7 @@ async def end_game_early(sid: str, data: dict | None = None) -> None:
 @sio.event
 @guarded("error")
 async def request_state(sid: str, data: dict | None = None) -> None:
-    """``§3.7``. Changes no game state; the one write is the event counter.
+    """Changes no game state; the one write is the event counter.
 
     The reply needs a ``seq`` of its own, above every number already sent.
     The client drops any event whose ``seq`` is not above the last one it
@@ -514,7 +513,7 @@ async def request_state(sid: str, data: dict | None = None) -> None:
 
 
 async def on_participant_disconnected(sid: str) -> None:
-    """**D7** (``§3.5``). Section 02's ``connection.py`` calls this BEFORE
+    """**D7**. ``connection.py`` calls this BEFORE
     ``socket_manager.disconnect(sid)`` -- afterwards, ``sid_to_room`` and
     ``sid_to_alias`` have already been popped and there is no room code
     left to look this participant up by.
@@ -534,7 +533,7 @@ async def on_participant_disconnected(sid: str) -> None:
 
 
 async def _disconnect_from_room(sid: str) -> None:
-    """The real behaviour of `§3.5`, split out so `on_participant_disconnected`
+    """The real disconnect behaviour, split out so `on_participant_disconnected`
     can wrap it in one broad, logged try/except."""
     room_code = socket_manager.sid_to_room.get(sid)
     if room_code is None:

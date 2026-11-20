@@ -3,8 +3,8 @@
 Run with:  uvicorn app.main:application --host 0.0.0.0 --port 8080
 
 This module is an assembly point and names no individual endpoint module and no
-individual socket handler module (00-decisions.md D19): both packages discover
-their own members, so a later section adds behaviour by dropping in a file.
+individual socket handler module (D19): both packages discover
+their own members, so new behaviour is added by dropping in a file.
 """
 
 import logging

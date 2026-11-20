@@ -8,7 +8,7 @@ The supply chain runs
     customer <- RETAILER <- WHOLESALER <- DISTRIBUTOR <- FACTORY <- production
 
 so a role's *downstream* neighbour is the one it ships to and its *upstream*
-neighbour is the one it orders from (`03-game-config.md` §3.3).
+neighbour is the one it orders from (spec §6.2).
 """
 
 from __future__ import annotations

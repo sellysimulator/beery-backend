@@ -1,4 +1,4 @@
-"""The three host-selectable configuration presets (`03-game-config.md` §3.8).
+"""The three host-selectable configuration presets (spec §6).
 
 Pure: no I/O, no clock, no RNG, and nothing imported from outside `app.core`.
 
@@ -7,8 +7,8 @@ Every preset carries its own key in `preset_name`, and every preset must survive
 is a bug.
 
 `scenario_summary` writes a preset card's figures out of the preset's own
-config (2026-11-03). The card copy used to restate them by hand, once here and
-once in the host form, and a number typed twice is a number that drifts.
+config, so no copy restates them by hand: a number typed twice is a number
+that drifts.
 """
 
 from __future__ import annotations

@@ -3,8 +3,9 @@
 FastAPI + Socket.IO server for the Beer Distribution Game. Python 3.11, PostgreSQL 17 (psycopg 3)
 for the durable record, and an optional Redis for live room state.
 
-Built section by section against `../docs/plan/`. Each section document is the contract; the
-plan's `BUILD-LOG.md` records what is done and every specification defect found along the way.
+The game's rules, data model and API are specified in
+`../Beery_Frontend/docs/beer-game-spec.md`; its §15 records the decisions (`D<n>`) that code
+comments cite.
 
 ---
 
@@ -77,7 +78,7 @@ Every router under `app/api/v1/` is auto-discovered, so this table is the whole 
 | `GET` | `/api/v1/games/{code}/results` | none | The full results payload for the latest finished game in that room — a results URL is shareable |
 | `GET` | `/api/v1/games/{code}/export` | host secret *or* the host's Firebase identity | The complete week-by-week record, `?format=csv` (default) or `json`, with every player as their seat's `P<N>`. Stays host-only: room codes are short and reissued, so an open export by code could be enumerated. Once authorised it shares the export cache below |
 | `GET` | `/api/v1/games/id/{public_id}/results` | none | The same results payload, by the game's permanent id |
-| `GET` | `/api/v1/games/id/{public_id}/export` | none | The same export by permanent id, open to anyone who can see the results (2026-11-14): a guest host has no account to fall back on. It carries the results screen's figures and no uid, email, user id, guest id, session token, secret **or chosen name**: every player is their seat's `P<N>` (Retailer `P1` … Factory `P4`), in CSV and JSON alike. 404 for an unknown id. Limited to 100 an hour per address (below). A finished export is kept in an in-process LRU (64 files, keyed by `(public_id, format)`, no expiry, 200s only), so a repeat download reads nothing from the database; the cache is per instance and empty after a restart |
+| `GET` | `/api/v1/games/id/{public_id}/export` | none | The same export by permanent id, open to anyone who can see the results (D22): a guest host has no account to fall back on. It carries the results screen's figures and no uid, email, user id, guest id, session token, secret **or chosen name**: every player is their seat's `P<N>` (Retailer `P1` … Factory `P4`), in CSV and JSON alike. 404 for an unknown id. Limited to 100 an hour per address (below). A finished export is kept in an in-process LRU (64 files, keyed by `(public_id, format)`, no expiry, 200s only), so a repeat download reads nothing from the database; the cache is per instance and empty after a restart |
 | `POST` | `/api/v1/games/claim` | Firebase | Attributes a guest's finished games to the signed-in caller |
 | `POST` | `/api/v1/users/upsert` | Firebase | Creates or refreshes the caller's profile. The uid comes from the token, never the body |
 | `GET` | `/api/v1/users/me` | Firebase | The caller's profile, or 404 if it was never upserted |
@@ -104,12 +105,13 @@ peer. Every window is 60 s except room creation's and the export's, which are an
 | What | Limit | Over it |
 |---|---|---|
 | Any REST request except `/api/v1/health` | 1200 per address | `429 {"detail": "Too many requests. Please slow down and try again."}`, `Retry-After` = seconds left in the window (60 at most) |
-| `POST /api/v1/rooms/create` | 30 rooms per address per **hour** (`ROOM_CREATE_LIMIT_PER_IP`, `ROOM_CREATE_WINDOW_SECONDS`; the standard across the Novus games, 2026-11-14) | the same 429, `Retry-After` = seconds left in that hour |
+| `POST /api/v1/rooms/create` | 30 rooms per address per **hour** (`ROOM_CREATE_LIMIT_PER_IP`, `ROOM_CREATE_WINDOW_SECONDS`; the standard across the Novus games) | the same 429, `Retry-After` = seconds left in that hour |
 | `POST /api/v1/rooms/batch-create` | `count` (at most 10) against the same 30 rooms per address per hour, all or nothing (`room_create_allowed`, charged by the route after validation; the middleware leaves it on the general limit): three full batches, then the next batch or single create is refused | the same 429; a refused batch, or one refused for its preset or config, is charged nothing |
 | `GET /api/v1/rooms/{code}/status` | 120 per address | the same 429 |
 | `POST /api/v1/rooms/preview` | 300 per address | the same 429 |
 | `GET /api/v1/games/…/export` (by `public_id` and by room code, CSV and JSON together) | 100 per address per **hour** (`GAME_EXPORT_LIMIT_PER_IP`, `GAME_EXPORT_WINDOW_SECONDS`). The export by `public_id` is open, so this is its compute guard; a classroom shares one address, so never lower it | the same 429, `Retry-After` = seconds left in that hour |
 | Open sockets | 200 per address | the handshake is refused (`connect_error`, message `Too many connections from your network. Try again in a minute.`; a failed ID token gets the generic refusal) |
+| `submit_order` resubmissions | 20 per role per week (`MAX_RESUBMISSIONS_PER_ROLE_PER_WEEK`). The counter is process-local, keyed by (room code, week, role), pruned at the week's close and deliberately not in the room document: a socket is pinned to one worker, and a document field would add a store write per increment | `error {message, code: "TOO_MANY_SUBMISSIONS"}`; the last accepted order stands |
 | Socket events | 120 per connection | `error {message, code: "RATE_LIMITED"}` (play) or `join_error {message}` (lobby); the handler does not run |
 | `join` + `join_waiting` | 300 per address | as above |
 | One socket message | 64 KB (`max_http_buffer_size`) | refused by Engine.IO |
@@ -130,9 +132,13 @@ resolved once, at `connect`, from an optional Firebase token in the handshake `a
   `set_role_mode`, `assign_role`, `claim_role`, `release_role`, `start_game`.
 - **Play** (`play.py`) — in: `submit_order`, `pause_game`, `resume_game`, `force_close_week`,
   `substitute_bot`, `reclaim_seat`, `end_game_early`, `request_state`.
-- **Out** — `joined`, `join_error`, `leave_ack`, `lobby_update`, `config_updated`,
-  `roles_assigned`, `game_started`, `game_paused`, `game_resumed`, `your_state`, `host_state`,
-  `order_submitted`, `your_week_closed`, `bot_substituted`, `seat_reclaimed`, `error`.
+- **Out** — `joined`, `join_error`, `host_claimed`, `leave_ack`, `lobby_update`,
+  `config_updated`, `roles_assigned`, `game_started`, `game_paused`, `game_resumed`,
+  `your_state`, `host_state`, `order_submitted`, `your_week_closed`, `week_closed`,
+  `participant_disconnected`, `participant_reconnected`, `host_disconnected`,
+  `host_reconnected`, `bot_substituted`, `seat_reclaimed`, `game_finished`,
+  `game_persisted` (after a successful database write; carries the `public_id`), `error`.
+  Recipients and payloads are in the spec's §11.2.
 
 `your_state` carries the role's whole `own_history` only where a client may have missed a
 record: game start, `join` (a reconnect), `request_state`, a stale-week resend and the
@@ -141,9 +147,10 @@ order, so a bot swapped in while paused does not freeze the week). The `your_sta
 submission or a week close leaves it
 out; the week's one new record travels in `your_week_closed` and the client appends it.
 Every `request_state` reply carries a fresh `seq`, above every number already sent. The host
-gets a fresh `host_state` after every submission (a person's, or a round of bot orders) that
-leaves the week open, so the console's "decided" marks tick as orders arrive; the close sends
-the one for the submission that completes the week.
+gets a fresh `host_state` after every submission (a person's, or a round of bot orders),
+including the one that completes the week, so the console's "decided" marks tick as orders
+arrive and the final week's console shows all four decided; the close then sends the new
+week's `host_state`.
 
 Every event name and payload here is a contract with `Beery_Frontend/src/api/socketHandlers.ts`.
 A change to either must ship with the other, backend first, unless the backend stops sending a
@@ -151,9 +158,9 @@ field the live frontend reads: then the frontend ships first (see `DEPLOY.md`).
 
 ### Not built here
 
-Deliberately out of v1 and listed in `../docs/plan/99-phase-2-backlog.md`: spectators, turn
-timers, chat, `clone_room`, per-week write-through to PostgreSQL, and chains that are not four
-stages. Check that file and `00-decisions.md` §3 before "adding" one.
+Deliberately out of v1: spectators, turn timers, chat, `clone_room`, per-week write-through to
+PostgreSQL, and chains that are not four stages. The spec's §13 Out of scope and §16 Not built
+yet list them; check there before "adding" one.
 
 ## Tests
 
@@ -170,6 +177,13 @@ Testcontainers:
 ```bash
 ./venv/bin/python -m pytest -m dbschema
 ```
+
+The schema suite cannot use SQLite: it would pass every constraint, reserved word and
+`server_default` check vacuously. `tests/test_models/conftest.py` starts one session-scoped
+`postgres:17` container, migrates it once and runs each test in a transaction it rolls back. It
+needs no `DB_*` credentials and refuses any target but its own container, so it can never be
+aimed at a real database. Without Docker it skips loudly (a skip reason plus a warning), and CI
+fails a run in which nothing passed.
 
 The skip is the Docker image build, which is opt-in because a cold build is minutes:
 
@@ -229,7 +243,7 @@ CRITICAL line rather than silence.
 ## Room state and Redis
 
 Live room state — lobbies, seating, the running `GameEngine` — is authoritative in a key-value
-store, and PostgreSQL is written only when a game finishes (`00-decisions.md` **D4**). Which store
+store, and PostgreSQL is written only when a game finishes (**D4** in the spec's §15). Which store
 holds it is a one-line switch.
 
 **`REDIS_ENABLED` is `false` by default**, so out of the box the app has no Redis dependency:
@@ -329,7 +343,7 @@ app/
 ├── core/                       pure domain logic — no I/O, no clock, no global RNG
 │   ├── enums.py                Role, RoomState, DemandKind, Distribution, …
 │   ├── config_models.py        GameConfig; validation (out of range is refused, never clamped)
-│   ├── limits.py               Limits/DEFAULT_LIMITS, the §5 hard ceilings
+│   ├── limits.py               Limits/DEFAULT_LIMITS, the hard ceilings
 │   ├── presets.py              CLASSIC_MIT, FAST_GAME, CHAOS; scenario_summary() writes their card figures
 │   ├── preview.py              what a draft config plays (demand series, lead times), for the host form
 │   ├── demand.py               the customer demand generator
@@ -343,6 +357,7 @@ app/
 │   ├── abuse.py                rate limits and socket caps (not a domain module — see below)
 │   └── checks/                 ← auto-discovered startup-check package
 │       ├── __init__.py         register_check(), run_startup_checks()
+│       ├── db_tls_check.py
 │       ├── firebase_check.py
 │       └── state_backend_check.py
 ├── db/
@@ -362,6 +377,7 @@ app/
 │   ├── stats_service.py        user_stats maintenance
 │   ├── claim_service.py        attributing a guest's games to an account
 │   ├── export_service.py       CSV and JSON export rows
+│   ├── export_cache.py         the in-process LRU of finished exports
 │   ├── config_merge.py         merge_config_patch — one implementation, two callers
 │   ├── display_name.py         sanitise_display_name — likewise
 │   └── user_service.py         profile upsert and lookup
@@ -394,14 +410,13 @@ tests/
 `app/sockets/handlers/` and `app/core/checks/` each import every module beside them at import
 time (as does `app/models/`), so behaviour is added by *dropping in a file* — `handlers/lobby.py`,
 `v1/rooms.py` — and nothing upstream is edited. `app/main.py` names no individual router and no individual
-handler, and has exactly one author. Each package also works while empty, which is what let
-section 01 ship and pass its own tests before any member existed.
+handler (D19). Each package also works while empty.
 
 **`app/core/` is pure, with three named exceptions.** The domain modules — `enums`,
 `config_models`, `limits`, `presets`, `preview`, `demand`, `pipeline`, `agents`, `game_engine`,
 `bot`, `records` and `stats` — import nothing from `app.config`, `app.services`, `app.db`, `app.sockets` or `app.api`,
-perform no I/O, and read no clock and no global RNG. The hard ceilings of `00-decisions.md` §5
-arrive as an injected `Limits`, never as an import of `settings`. `app/core/checks/`,
+perform no I/O, and read no clock and no global RNG. The hard ceilings arrive as an injected
+`Limits`, never as an import of `settings`. `app/core/checks/`,
 `app/core/firebase.py` and `app/core/abuse.py` are *not* domain modules (they perform I/O or
 read the clock); the rule that matters is that **no domain module may import any of them**.
 

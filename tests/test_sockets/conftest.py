@@ -1,18 +1,14 @@
-"""Shared fixtures for section 11 -- socket lobby, seating and start.
+"""Shared fixtures for the socket tests -- lobby, seating, start and play.
 
-Owned by section 11's test agent. Not one of the four files section 11's
-``Test agent writes`` line names, but ordinary pytest infrastructure shared
-by all of them, in the same spirit as ``tests/test_auth/conftest.py``
-(section 02) -- a per-file copy of the same room-building and identity
-helpers would drift, and ``00-conventions.md §5`` already tolerates a
-section owning fixtures beyond its literal file list (``firebase_tokens``
-and ``fake_socket_manager`` live in section 01's shared ``conftest.py`` for
-exactly this reason).
+A per-file copy of the same room-building and identity helpers would drift,
+so they live here, in the same spirit as ``tests/test_auth/conftest.py``
+(``firebase_tokens`` and ``fake_socket_manager`` live in the shared
+``tests/conftest.py`` for exactly this reason).
 
 ``register_sid`` exists because ``join_waiting`` calls the real
 ``sio.enter_room`` directly rather than the faked ``socket_manager``
-(``11-socket-lobby.md §3.1`` step 5, deliberately -- the host holds no alias
-and must never be written into ``socket_manager.sid_to_alias``). ``sio`` is
+(deliberately -- the host holds no alias and must never be written into
+``socket_manager.sid_to_alias``). ``sio`` is
 python-socketio's real ``AsyncServer``; without a genuine transport
 handshake it has never heard of a sid a test invents, and
 ``sio.enter_room`` raises ``KeyError``/``ValueError``. ``register_sid``
@@ -40,8 +36,8 @@ def make_config(
     bot_fill_empty_roles: bool = False,
     random_seed: int | None = None,
 ) -> GameConfig:
-    """A minimal, valid ``GameConfig``, built only through section 03's
-    frozen surface -- mirrors the helper sections 07 and 09's own tests
+    """A minimal, valid ``GameConfig``, built only through ``GameConfig``'s
+    public surface -- mirrors the helper the engine and state-service tests
     use."""
     roles = {
         Role.RETAILER.value: RoleConfig(),
@@ -80,8 +76,8 @@ def make_room(state_svc):
 def _reset_sio_manager():
     """Start every test with the real ``sio``'s room bookkeeping empty.
 
-    ``sio.manager`` is a process-wide singleton (section 01, ``app/sockets/
-    manager.py``), so without this a sid registered by one test would still
+    ``sio.manager`` is a process-wide singleton (``app/sockets/manager.py``),
+    so without this a sid registered by one test would still
     look "connected" to the next -- and a stale room membership from an
     earlier test would make a broadcast-target assertion pass for the wrong
     reason.
@@ -101,7 +97,7 @@ def register_sid() -> Callable[[str], Awaitable[None]]:
 
     Makes the real ``sio`` treat ``sid`` as a genuinely connected client of
     the default namespace, the way a real Socket.IO handshake would --
-    without a transport and without touching Redis. Section 09's
+    without a transport and without touching Redis. The
     ``AsyncRedisManager``-backed room tracking only publishes to Redis for a
     sid it does *not* recognise as locally connected; registering the sid
     first keeps every later ``sio.enter_room`` call on the fast, local-only
@@ -139,19 +135,18 @@ def connect_identity(register_sid, fake_socket_manager):
 
 
 def new_guest() -> str:
-    """A fresh ``guest_<uuid4>`` identity, shaped exactly as section 02
+    """A fresh ``guest_<uuid4>`` identity, shaped exactly as the handshake
     mints one."""
     return f"guest_{uuid.uuid4()}"
 
 
-# --- section 12 additions ---------------------------------------------------
+# --- play-loop helpers -------------------------------------------------------
 #
-# The play loop's tests need two more things beyond section 11's fixtures:
-# a way to recursively check a broadcast payload for a forbidden key or leaked
-# value (``12-socket-play.md §5``, failure modes 1-3), and a way to drive a
-# room all the way to ``RUNNING`` with four seated humans, since ``submit_order``
-# and the host controls only make sense once a game exists. Both are additive
-# -- nothing section 11 already defined above is changed.
+# The play loop's tests need two more things beyond the lobby fixtures: a way
+# to recursively check a broadcast payload for a forbidden key or leaked value
+# (spec §8.8), and a way to drive a room all the way to ``RUNNING`` with four
+# seated humans, since ``submit_order`` and the host controls only make sense
+# once a game exists.
 
 
 def contains_key(payload: Any, key: str) -> bool:
@@ -159,8 +154,8 @@ def contains_key(payload: Any, key: str) -> bool:
 
     Recursive means recursive: this descends into nested dicts *and* into
     lists (and tuples) of dicts, so a key hiding inside e.g.
-    ``participants[0]`` does not slip past a shallow ``key in payload`` check
-    (``12-socket-play.md §5`` failure mode 2).
+    ``participants[0]`` does not slip past a shallow ``key in payload``
+    check.
     """
     if isinstance(payload, dict):
         if key in payload:
@@ -177,10 +172,9 @@ def contains_value(payload: Any, value: Any) -> bool:
     Same recursive shape as ``contains_key``, but for values rather than
     keys. Used to probe for a specific number (an order quantity, or a
     role's inventory) leaking into a broadcast, without needing to know what
-    key it would be filed under (``12-socket-play.md §5`` failure modes 1 and
-    3) -- section 07's exact view-payload shape is not part of this section's
-    frozen surface, only the rule that certain numbers must never appear in a
-    room broadcast.
+    key it would be filed under -- the tests pin not the engine's exact
+    view-payload shape, only the rule that certain numbers must never appear
+    in a room broadcast.
 
     Booleans are excluded from the scan even though ``bool`` is a subclass of
     ``int`` in Python (``True == 1``), because probe values like ``0``/``1``
@@ -203,7 +197,7 @@ def make_room_from_config(state_svc):
     For tests that need a hand-built ``GameConfig`` (distinct per-role
     values, a non-default ``visibility`` or ``pause_on_disconnect``) rather
     than the fixed shape ``make_config``/``make_room`` produce. Built only
-    through section 03's frozen surface, exactly as ``tests/test_core/
+    through ``GameConfig``'s public surface, exactly as ``tests/test_core/
     test_game_config.py``'s ``hand_built_config`` does.
     """
 
@@ -218,7 +212,7 @@ def start_running_game(connect_identity, state_svc):
     """``await start_running_game(room) -> dict`` -- seats four human players
     (one per role) into ``room`` and starts it, leaving it ``RUNNING``.
 
-    Drives section 11's lobby handlers exactly as its own tests do (``join``,
+    Drives the lobby handlers exactly as their own tests do (``join``,
     ``claim_role``, ``join_waiting``, ``start_game``); never touches
     ``play.py``. ``room`` must already be in ``PLAYER_CHOOSES`` mode with
     ``bot_fill_empty_roles=False`` (or not set) for the four ``claim_role``

@@ -1,4 +1,4 @@
-"""The immutable records a role agent produces (`06-role-agents.md` §2).
+"""The immutable records a role agent produces (spec §8.4).
 
 Pure: this module imports only from `app.core` and the standard library. It
 performs no I/O, reads no clock, holds no RNG and does no logging.
@@ -8,7 +8,7 @@ the moment it is produced. Nothing here mutates, and nothing here holds a
 reference to an agent: a record is safe to keep, to compare and to project into
 a payload long after the week it describes has closed.
 
-Money is `float` and is never rounded here (`00-conventions.md` §4). Rounding
+Money is `float` and is never rounded here. Rounding
 to two decimals happens at the persistence and display boundaries only.
 """
 
@@ -27,14 +27,14 @@ class WeekSettlement:
 
     Every field is what a player is shown in the settlement recap. Costs are
     charged on the **closing** inventory and backlog, after shipping
-    (`06-role-agents.md` §3.3), so a role that receives exactly what it owes
+    (spec §8.4), so a role that receives exactly what it owes
     and ships it all pays nothing.
 
     There is deliberately no supply-line figure: a role's shipment pipeline is
     refilled by its upstream neighbour settling, so a snapshot taken inside
     `settle()` would depend on the order roles are visited — the very
-    order-dependence two-pass settlement exists to eliminate (`00-decisions.md`
-    D9). The engine samples the supply line after every role has settled.
+    order-dependence two-pass settlement exists to eliminate
+    (D9). The engine samples the supply line after every role has settled.
     """
 
     role: Role
@@ -45,7 +45,7 @@ class WeekSettlement:
     # Stock after receiving and before shipping: step 1 of `settle()`, read
     # off the agent rather than re-added. The recap shows it ("inventory 12 ->
     # 16"), and a client adding `opening_inventory + arrived` itself would be a
-    # second copy of the settlement order (2026-11-03).
+    # second copy of the settlement order.
     inventory_after_arrival: int
     incoming_order: int
     obligation: int  # incoming_order + opening_backlog
@@ -62,8 +62,8 @@ class WeekSettlement:
 class OrderCharge:
     """The result of Phase C for one role.
 
-    Order-related cost lands in the week the order is placed (`00-decisions.md`
-    D10), which is why it is a separate record from the settlement recap the
+    Order-related cost lands in the week the order is placed
+    (D10), which is why it is a separate record from the settlement recap the
     player saw before deciding.
     """
 

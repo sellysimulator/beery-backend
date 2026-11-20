@@ -20,7 +20,7 @@ def _sanitise(value: str | None, max_length: int) -> str | None:
     """Strip control characters from untrusted display data, then truncate.
 
     Truncation happens after stripping, so a name padded with control characters
-    is not silently shortened by them (00-decisions.md §5).
+    is not silently shortened by them (spec §6.6).
     """
     if value is None:
         return None

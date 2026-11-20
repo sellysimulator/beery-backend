@@ -1,26 +1,26 @@
-"""Shared fixtures and helpers for section 14's black-box test suite.
+"""Shared fixtures and helpers for the end-of-game persistence test suite.
 
-``14-end-of-game-persistence.md`` writes ``app/services/db_service.py``,
+The services under test are ``app/services/db_service.py``,
 ``app/services/stats_service.py`` and ``app/services/claim_service.py`` --
 none of which are opened from this package. Everything here is built only
 from:
 
-* the frozen public surfaces of sections 07 (``app/core/game_engine.py``,
-  ``app/core/stats.py``), 09 (the room document, ``09-state-service.md``
-  §2) and 13 (``app/models/game.py``, ``app/models/user.py``);
-* ``00-decisions.md`` and ``00-conventions.md``.
+* the public surfaces of ``app/core/game_engine.py``, ``app/core/stats.py``,
+  the room document (spec §11.3) and ``app/models/game.py`` /
+  ``app/models/user.py``;
+* spec §10 (persistence).
 
-Like section 13's suite, this one needs a **real** PostgreSQL: batched raw
-inserts, an idempotency lookup, a grouped statistics query, an upsert and
-NUMERIC rounding are all things a fake or a SQLite connection would either not
-enforce or would silently get right for the wrong reason. So it shares
-section 13's Testcontainers PostgreSQL (``tests/test_models/conftest.py``)
+Like the ``tests/test_models`` suite, this one needs a **real** PostgreSQL:
+batched raw inserts, an idempotency lookup, a grouped statistics query, an
+upsert and NUMERIC rounding are all things a fake or a SQLite connection would
+either not enforce or would silently get right for the wrong reason. So it
+shares that suite's Testcontainers PostgreSQL (``tests/test_models/conftest.py``)
 rather than inventing a second container: the fixtures below are *imported*
 from that module, not re-implemented, and every test that needs the
 database is marked ``dbschema`` so it lands in the same opt-in set.
 
 The three services under test commit real transactions (``persist_game``'s
-"one transaction ... commit" per §3.1), so -- unlike section 13's own
+"one transaction ... commit", spec §10.2), so -- unlike ``tests/test_models``'
 ``db`` fixture, which never commits and is cleaned up by a rollback -- the
 ``db`` fixture here truncates every table *after* each test
 (``TRUNCATE ... RESTART IDENTITY CASCADE``).
@@ -50,10 +50,10 @@ from app.core.enums import ROLE_ORDER, Role
 from app.core.game_engine import GameEngine, GamePhase
 from app.services.state_service import ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH
 
-# Reused wholesale from section 13's suite (00-conventions.md §5 / this
-# section's own instructions): the container, the migration, the engine,
-# and a couple of its raw-insert helpers. Importing them into this module's
-# namespace is what makes pytest see them as fixtures here too.
+# Reused wholesale from the ``tests/test_models`` suite: the container, the
+# migration, the engine, and a couple of its raw-insert helpers. Importing
+# them into this module's namespace is what makes pytest see them as fixtures
+# here too.
 from tests.test_models.conftest import (  # noqa: F401 -- fixtures, used by name
     alembic,
     columns,
@@ -110,9 +110,10 @@ def unique_room_code() -> str:
 def session_factory(schema_engine: Engine) -> Iterator[Callable[[], Session]]:
     """Build as many independent ``Session`` objects as a test needs.
 
-    Section 14's services commit for real (persistence is idempotent by a
+    The persistence services commit for real (persistence is idempotent by a
     lookup, not by an outer rollback), so cleanup here is a truncate after
-    the test rather than the rollback section 13's ``db`` fixture uses.
+    the test rather than the rollback ``tests/test_models``' ``db`` fixture
+    uses.
     """
     factory = sessionmaker(bind=schema_engine, future=True)
     opened: list[Session] = []
@@ -142,15 +143,14 @@ def app_db_pointed_at_container(migrated_url: str) -> Iterator[None]:  # noqa: F
     """Point the *application's own* database session at the container.
 
     ``persist_finished_game`` (``app/services/game_service.py``) opens its
-    own session rather than taking one from the caller (§3.1: "Open a
-    session"), so it goes through ``app/db/session.py``'s module-level
-    engine -- which ``tests/conftest.py`` (section 01) deliberately points
-    at a dead port for every other test, so that nothing touches a real
-    database by accident. Tests that call ``persist_finished_game`` (rather
+    own session rather than taking one from the caller, so it goes through
+    ``app/db/session.py``'s module-level engine -- which ``tests/conftest.py``
+    deliberately points at a dead port for every other test, so that nothing
+    touches a real database by accident. Tests that call ``persist_finished_game`` (rather
     than ``DbService.persist_game`` with an explicit session) need that
     engine repointed at the throwaway container for the duration of the
-    test, exactly as section 13's own ``app_connection`` fixture
-    (``tests/test_models/conftest.py``) does for its failure mode 9.
+    test, exactly as the ``app_connection`` fixture
+    (``tests/test_models/conftest.py``) does for its own tests.
     """
     import importlib
 
@@ -185,7 +185,7 @@ def app_db_pointed_at_container(migrated_url: str) -> Iterator[None]:  # noqa: F
 
 
 # ---------------------------------------------------------------------------
-# Statement counting (failure modes 4 and 5)
+# Statement counting (bounded statements and batched inserts)
 # ---------------------------------------------------------------------------
 
 
@@ -201,8 +201,8 @@ class StatementLog:
     """What ran against the engine while the log was attached.
 
     Records ``executemany`` per statement -- via ``before_cursor_execute``'s
-    own flag, not by guessing from parameter shape -- because failure mode 5
-    is specifically about *one* ``executemany`` with 144 parameter dicts
+    own flag, not by guessing from parameter shape -- because the batching
+    test is specifically about *one* ``executemany`` with 144 parameter dicts
     versus 144 separate single-row executes; a plain statement count
     conflates the two.
     """
@@ -254,9 +254,9 @@ def count_statements(engine: Engine) -> Iterator[StatementLog]:
 
 
 # ---------------------------------------------------------------------------
-# GameConfig / GameEngine helpers (07-game-engine.md, 03-game-config.md via
-# app/core/config_models.py, which every other section's suite already
-# imports directly -- see tests/test_services/test_state_service.py)
+# GameConfig / GameEngine helpers (via app/core/config_models.py, which every
+# other suite already imports directly -- see
+# tests/test_services/test_state_service.py)
 # ---------------------------------------------------------------------------
 
 
@@ -296,7 +296,7 @@ def run_full_game(
     """Play a whole game through the frozen public surface only.
 
     ``stop_after`` calls ``end_early()`` once that many weeks have closed,
-    modelling **acceptance criterion 5**'s "ended early at week 10 of 36".
+    modelling a game "ended early at week 10 of 36".
 
     ``force_missing_role`` / ``force_missing_at_week`` skips submitting an
     order for one role in one week and force-closes that week instead, so a
@@ -328,9 +328,8 @@ def run_full_game(
 
 
 # ---------------------------------------------------------------------------
-# Room document (09-state-service.md §2, FROZEN) -- built by hand rather
-# than through StateService, which is section 09's own public surface
-# (§3) and out of this section's reading list.
+# Room document (spec §11.3, FROZEN) -- built by hand rather than through
+# StateService, so these tests do not depend on the state service.
 # ---------------------------------------------------------------------------
 
 
@@ -365,7 +364,7 @@ def make_room_document(
     started_at: datetime | None = None,
     finished_at: datetime | None = None,
 ) -> dict[str, Any]:
-    """A room document matching ``09-state-service.md §2`` exactly, for a
+    """A room document matching the frozen room document exactly, for a
     finished game -- the shape ``build_snapshot`` reads."""
     participants = participants or {}
     started = started_at or datetime(2026, 1, 1, tzinfo=timezone.utc)

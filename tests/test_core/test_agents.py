@@ -1,13 +1,12 @@
-"""Black-box tests for section 06 -- ``app/core/agents.py`` and ``records.py``.
+"""Black-box tests for ``app/core/agents.py`` and ``records.py`` (spec §8.4).
 
-Covers ``06-role-agents.md §5`` acceptance criteria 1-5, 7-10 and 13-16, and
-``§6`` failure modes 1-4 and 8-10, plus §3.3's rejection of a negative input
-and §3.8's ``from_payload`` dispatch.  The Factory-only criteria (6, 11, 12),
-failure modes (5, 6, 7) and §3.6's cancellations live in
-``test_factory_agent.py``, together with the Factory §4 worked example.
+Covers the role agents' construction, ``advance()``, settlement and order
+charges, the invariants (spec §7.2), the payload round trip, the rejection of a
+negative input and the ``from_payload`` dispatch.  The Factory-only behaviour
+lives in ``test_factory_agent.py``, together with the Factory worked example.
 
-Everything is driven through the frozen public surface of §2 plus section 03's
-and section 05's public surfaces.  No private name, no internal data structure
+Everything is driven through the agents' frozen public surface plus the config's
+and the pipeline's public surfaces.  No private name, no internal data structure
 and no log message is asserted on.
 """
 
@@ -55,10 +54,10 @@ def make_config(
     role_kwargs: dict[str, Any] | None = None,
     factory_kwargs: dict[str, Any] | None = None,
 ) -> GameConfig:
-    """A `GameConfig` built only from section 03's public surface.
+    """A `GameConfig` built only from the config's public surface.
 
-    ``from_host_input`` accepts "plain JSON or already-built config models"
-    (``03-game-config.md §2``), which is what lets a test vary one role
+    ``from_host_input`` accepts "plain JSON or already-built config models",
+    which is what lets a test vary one role
     parameter without reaching past the frozen surface.
     """
     role_kwargs = dict(role_kwargs or {})
@@ -91,7 +90,7 @@ def walk_values(value: Any) -> list[Any]:
 
 
 # --------------------------------------------------------------------------
-# AC 1 -- agent_for returns the right subclass
+# agent_for returns the right subclass
 # --------------------------------------------------------------------------
 
 
@@ -113,7 +112,7 @@ def test_agent_for_returns_a_fresh_agent_each_call() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 2, 3 -- construction from CLASSIC_MIT
+# Construction from CLASSIC_MIT
 # --------------------------------------------------------------------------
 
 
@@ -161,7 +160,7 @@ def test_construction_reads_the_role_config() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 4 -- advance()
+# advance()
 # --------------------------------------------------------------------------
 
 
@@ -194,7 +193,7 @@ def test_advance_changes_nothing_but_the_pipelines(role: Role) -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 5 -- worked example: the Retailer's week 6
+# Worked example: the Retailer's week 6
 # --------------------------------------------------------------------------
 
 
@@ -242,7 +241,7 @@ def test_worked_example_retailer_week_six() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 5 -- worked example: a role that cannot ship in full
+# Worked example: a role that cannot ship in full
 # --------------------------------------------------------------------------
 
 
@@ -272,12 +271,12 @@ def test_worked_example_wholesaler_short_shipment() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 7 and FM 1 -- costs are charged on the CLOSING values
+# Costs are charged on the CLOSING values
 # --------------------------------------------------------------------------
 
 
 def test_settle_that_ships_everything_costs_nothing() -> None:
-    """AC 7: receive exactly what is owed, ship it all, pay 0."""
+    """Receive exactly what is owed, ship it all, pay 0."""
     agent = agent_for(Role.DISTRIBUTOR, get_preset("CLASSIC_MIT"))
     agent.inventory = 0
     agent.backlog = 0
@@ -293,7 +292,7 @@ def test_settle_that_ships_everything_costs_nothing() -> None:
 
 
 def test_holding_cost_is_not_charged_on_opening_inventory() -> None:
-    """FM 1: opening 12, ships 12, closes at 0 -- pays 0, not 6.00.
+    """Opening 12, ships 12, closes at 0 -- pays 0, not 6.00.
 
     An implementation that charges before shipping bills ``0.50 * 12``.
     """
@@ -311,7 +310,7 @@ def test_holding_cost_is_not_charged_on_opening_inventory() -> None:
 
 
 def test_backlog_cost_is_not_charged_on_opening_backlog() -> None:
-    """The mirror of FM 1: a backlog cleared this week costs nothing."""
+    """The mirror of the test above: a backlog cleared this week costs nothing."""
     agent = agent_for(Role.WHOLESALER, get_preset("CLASSIC_MIT"))
     agent.inventory = 0
     agent.backlog = 6
@@ -328,12 +327,12 @@ def test_backlog_cost_is_not_charged_on_opening_backlog() -> None:
 
 
 # --------------------------------------------------------------------------
-# FM 2 -- the backlog carried in is part of the obligation
+# The backlog carried in is part of the obligation
 # --------------------------------------------------------------------------
 
 
 def test_carried_backlog_is_part_of_the_obligation_and_is_cleared() -> None:
-    """FM 2: backlog 2 + order 6 owes 8, and stock is enough to clear it.
+    """Backlog 2 + order 6 owes 8, and stock is enough to clear it.
 
     An implementation that ships ``min(inventory, incoming_order)`` and only
     *adds* the shortfall to the backlog ships 6, closes at inventory 4 and
@@ -358,7 +357,7 @@ def test_carried_backlog_is_part_of_the_obligation_and_is_cleared() -> None:
 
 
 def test_carried_backlog_is_partly_cleared_when_stock_is_short() -> None:
-    """FM 2, the partial case: backlog 5 + order 5 owes 10, stock 7."""
+    """The partial case: backlog 5 + order 5 owes 10, stock 7."""
     agent = agent_for(Role.DISTRIBUTOR, get_preset("CLASSIC_MIT"))
     agent.inventory = 4
     agent.backlog = 5
@@ -373,7 +372,7 @@ def test_carried_backlog_is_partly_cleared_when_stock_is_short() -> None:
 
 
 # --------------------------------------------------------------------------
-# FM 3 -- never stock and backlog at once
+# Never stock and backlog at once
 # --------------------------------------------------------------------------
 
 
@@ -398,7 +397,7 @@ def test_inventory_and_backlog_are_never_both_positive() -> None:
 
 
 # --------------------------------------------------------------------------
-# FM 4 -- a role can never ship more than it holds
+# A role can never ship more than it holds
 # --------------------------------------------------------------------------
 
 
@@ -417,7 +416,7 @@ def test_cannot_ship_more_than_is_held() -> None:
 
 
 # --------------------------------------------------------------------------
-# §3.3 -- settle() refuses a negative input
+# settle() refuses a negative input
 # --------------------------------------------------------------------------
 
 
@@ -450,7 +449,7 @@ def test_settle_accepts_zero_on_both_inputs() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 8, 9 -- record_order charges
+# record_order charges
 # --------------------------------------------------------------------------
 
 
@@ -500,8 +499,7 @@ def test_both_order_cost_terms_add_up() -> None:
 
 
 def test_a_negative_order_is_refused_and_charges_nothing() -> None:
-    """§3.4, amended 2026-11-02: there are no negative orders (the
-    cancellation option was removed), so one is refused before any cost is
+    """There are no negative orders, so one is refused before any cost is
     charged rather than booked as a negative purchase."""
     config = make_config({"fixed_order_cost": 3.0, "unit_purchase_cost": 0.5})
     agent = agent_for(Role.WHOLESALER, config)
@@ -513,7 +511,7 @@ def test_a_negative_order_is_refused_and_charges_nothing() -> None:
 
 
 def test_a_zero_order_is_not_charged_the_fixed_cost() -> None:
-    """§3.4: an order of 0 is not an order."""
+    """An order of 0 is not an order."""
     config = make_config({"fixed_order_cost": 3.0, "unit_purchase_cost": 0.5})
     agent = agent_for(Role.WHOLESALER, config)
 
@@ -538,7 +536,7 @@ def test_record_order_does_not_touch_inventory_or_pipelines() -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 10 -- the Retailer has no order pipeline to receive into
+# The Retailer has no order pipeline to receive into
 # --------------------------------------------------------------------------
 
 
@@ -573,7 +571,7 @@ def test_receive_shipment_refills_the_shipment_pipeline(role: Role) -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 13 -- the six invariants of §3.7 over randomised cycles
+# The six invariants (spec §7.2) over randomised cycles
 # --------------------------------------------------------------------------
 
 
@@ -621,7 +619,7 @@ def test_invariants_hold_over_one_hundred_randomised_cycles(role: Role) -> None:
 
 
 # --------------------------------------------------------------------------
-# AC 14, 15 and FM 8 -- state_payload / from_payload
+# state_payload / from_payload
 # --------------------------------------------------------------------------
 
 
@@ -725,13 +723,13 @@ def test_a_payload_round_trip_survives_json_encoding() -> None:
 
 
 # --------------------------------------------------------------------------
-# §3.8 -- from_payload dispatches on payload["role"]
+# from_payload dispatches on payload["role"]
 # --------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("role", list(ROLE_ORDER))
 def test_from_payload_dispatches_on_the_payload_role(role: Role) -> None:
-    """Section 07 rehydrates four agents from one document and must not
+    """The engine rehydrates four agents from one document and must not
     have to pick the class itself."""
     config = get_preset("CLASSIC_MIT")
     agent = agent_for(role, config)
@@ -781,7 +779,7 @@ def test_from_payload_rejects_a_role_that_lost_its_order_pipeline(
 
 
 # --------------------------------------------------------------------------
-# §3.8 -- equality
+# Equality
 # --------------------------------------------------------------------------
 
 
@@ -836,7 +834,7 @@ def test_an_agent_is_unhashable() -> None:
 
 
 # --------------------------------------------------------------------------
-# FM 8 -- no neighbour references
+# No neighbour references
 # --------------------------------------------------------------------------
 
 
@@ -850,7 +848,7 @@ def test_a_wired_up_chain_leaves_no_agent_inside_a_payload() -> None:
     config = get_preset("CLASSIC_MIT")
     agents = {role: agent_for(role, config) for role in ROLE_ORDER}
 
-    # Route one week's worth of goods and orders the way section 07 will.
+    # Route one week's worth of goods and orders the way the engine does.
     for agent in agents.values():
         agent.advance()
     for role, agent in agents.items():
@@ -868,12 +866,12 @@ def test_a_wired_up_chain_leaves_no_agent_inside_a_payload() -> None:
 
 
 # --------------------------------------------------------------------------
-# FM 9 -- cost accumulates as a running float
+# Cost accumulates as a running float
 # --------------------------------------------------------------------------
 
 
 def test_cost_accumulation_is_not_rounded_every_week() -> None:
-    """FM 9: 200 settles of ``carrying_cost == 0.125`` total 25.0.
+    """200 settles of ``carrying_cost == 0.125`` total 25.0.
 
     Rounding to 2 decimals at each step gives 26.0 or 24.0.
     """
@@ -908,7 +906,7 @@ def test_cost_accumulation_does_not_drift_on_a_repeating_decimal() -> None:
 
 
 # --------------------------------------------------------------------------
-# FM 10 -- settle() does not touch the pipelines
+# settle() does not touch the pipelines
 # --------------------------------------------------------------------------
 
 
@@ -942,7 +940,7 @@ def test_settle_after_advance_leaves_the_pipeline_one_slot_short(
 
 
 # --------------------------------------------------------------------------
-# AC 16 -- app/core/agents.py imports only app.core and the standard library
+# app/core/agents.py imports only app.core and the standard library
 # --------------------------------------------------------------------------
 
 

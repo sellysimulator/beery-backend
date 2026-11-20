@@ -1,19 +1,18 @@
-"""The hard ceilings of `00-decisions.md` §5, in a module of their own.
+"""The hard ceilings (spec §6.6, §12.1), in a module of their own.
 
-They used to live inside `config_models.py`. They are here so that a caller
-needing one ceiling does not import the whole config model to get it;
+They are here, not in `config_models.py`, so that a caller needing one
+ceiling does not import the whole config model to get it;
 `config_models` re-exports both names, so `from app.core.config_models import
 DEFAULT_LIMITS` keeps working.
 
 **This is the one copy of every range a host or player can type into.** The
 config validator refuses a value outside them, `GET /api/v1/rooms/limits`
 serves them, and the host form builds its checks from that response -- the
-frontend keeps no hand-copied number (2026-11-02). Add a bound here, not in a
-form.
+frontend keeps no hand-copied number. Add a bound here, not in a form.
 
 Pure: imports nothing but pydantic and the standard library. The limits arrive
 in the domain as an injected `Limits` rather than through `app.config`, which
-`app/core` may not import (`00-conventions.md` §4).
+`app/core` may not import.
 """
 
 from __future__ import annotations
@@ -26,7 +25,7 @@ __all__ = ["DEFAULT_LIMITS", "Limits"]
 
 
 class Limits(BaseModel):
-    """The hard ceilings from `00-decisions.md` §5, injected rather than imported,
+    """The hard ceilings (spec §12.1), injected rather than imported,
     so `app/core` stays free of `app.config`."""
 
     model_config = ConfigDict(frozen=True)
@@ -51,7 +50,6 @@ class Limits(BaseModel):
     min_step_week: int = 2
     # `SEASONAL` demand. A period of one week is not a cycle, and a period
     # longer than the longest game is already flat over any game `max_weeks`
-    # allows. It was `2**31 - 1` (the column's ceiling) until 2026-11-02.
     min_period_weeks: int = 2
     max_period_weeks: int = 104
     # `SEASONAL` phase, in radians: one full turn either way.

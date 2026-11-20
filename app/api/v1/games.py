@@ -1,20 +1,20 @@
-"""Results, export and guest-claim routes (``15-results-and-export-api.md``).
+"""Results, export and guest-claim routes (spec §9.8, §9.5, §3.1).
 
 Everything here reads from **PostgreSQL**, never Redis, except the export route's
 host-secret check, which reads the *live room document* when one still
-exists (`§3.2`) -- that is the one place this module touches Redis, and it
+exists -- that is the one place this module touches Redis, and it
 never mutates it.
 
 `GET /results` and `GET /export` both resolve "the game for this room code"
 the same way: the most recently finished `games` row for that code, because
-codes are reused once a room expires (`13 §2.2`). Since only *finished*
+codes are reused once a room expires. Since only *finished*
 games are ever written to PostgreSQL (**D4**), any row found here is by
 definition a finished game -- there is no separate status filter.
 
 `GET /games/id/{public_id}/results` serves the same payload addressed by the
 game's permanent `public_id`, for links that must outlive the room code, and
 `GET /games/id/{public_id}/export` the export, open to anyone who has that
-id, as the results are (2026-11-14). The export by room code stays host-only.
+id, as the results are. The export by room code stays host-only.
 """
 
 from __future__ import annotations
@@ -69,9 +69,8 @@ _ROLE_INDEX = {role.value: index for index, role in enumerate(ROLE_ORDER)}
 def find_latest_finished_game(db: Session, room_code: str) -> Game | None:
     """The most recently finished game for a room code, or None.
 
-    A room code is reused once a room expires (`13-db-models-and-
-    migrations.md §2.2`), so "the game for this code" means the newest
-    `finished_at`, never an arbitrary match.
+    A room code is reused once a room expires, so "the game for this code"
+    means the newest `finished_at`, never an arbitrary match.
 
     Case-insensitive, like the live room lookup (`state_service._room_key`):
     codes are minted and stored upper-case, and PostgreSQL compares strings
@@ -100,7 +99,7 @@ def find_game_by_public_id(db: Session, public_id: str) -> Game | None:
 def week_record_from_row(row: Week) -> WeekRecord:
     """Rebuild the `WeekRecord` `compute_stats` expects from a persisted row.
 
-    `order_qty` is the one renamed column (`13 §2.8`); every other field
+    `order_qty` is the one renamed column; every other field
     keeps its name. Money columns cross back from `Decimal` to `float` here,
     the mirror image of `db_service.round_money`.
     """
@@ -140,8 +139,8 @@ def build_results_response(db: Session, game: Game) -> ResultsResponse:
     `average_order`, `chain_total_cost` and `demand_variance` -- comes from
     `app.core.stats.compute_stats` over the reconstructed `weeks` rows and
     `demand_series`, never from a stored column and never recomputed in SQL
-    (`§3.1`). `games.chain_total_cost` exists only for cheap listing
-    elsewhere (`13 §2.2`); it is not read here.
+    (spec §10.3). `games.chain_total_cost` exists only for cheap listing
+    elsewhere; it is not read here.
     """
     game_config = db.execute(
         select(GameConfigRow).where(GameConfigRow.game_id == game.id)
@@ -223,7 +222,7 @@ def build_week_export_rows(db: Session, game: Game) -> list[dict]:
     `display_name` holds the seat's `P<N>` (`export_service.seat_alias`), not
     the player's chosen name: the export carries no name anyone typed.
 
-    Ordered `week` ascending, then `ROLE_ORDER` within a week (`§3.2`) --
+    Ordered `week` ascending, then `ROLE_ORDER` within a week --
     frozen so two exports of the same finished game are byte-identical.
     """
     participants = (
@@ -259,9 +258,8 @@ def build_week_export_rows(db: Session, game: Game) -> list[dict]:
                 "room_code": game.room_code,
                 "week": row.week,
                 "role": row.role,
-                # The seat's `P<N>`, never the name the player chose
-                # (2026-11-14, `15 §11`): the screens show names, the file
-                # does not.
+                # The seat's `P<N>`, never the name the player chose: the
+                # screens show names, the file does not.
                 "display_name": seat_alias(row.role),
                 "is_bot": bool(participant.is_bot) if participant else True,
                 "was_bot": row.was_bot,
@@ -277,7 +275,7 @@ def build_week_export_rows(db: Session, game: Game) -> list[dict]:
                 "closing_inventory": row.closing_inventory,
                 "closing_backlog": row.closing_backlog,
                 "supply_line_after": row.supply_line_after,
-                # Renamed at the boundary only (`15 §3.2`): the column holds
+                # Renamed at the boundary only: the column holds
                 # orders coming TO the role, and the player's on-screen "orders
                 # in flight" are their own orders going upstream.
                 "incoming_orders_in_flight_after": row.orders_in_flight_after,
@@ -302,7 +300,7 @@ def _resolve_export_authority(
     host_secret_header: str,
     authorization_header: str,
 ) -> None:
-    """`§3.2`'s evaluation order, first match wins.
+    """The export authority's evaluation order (spec §9.5), first match wins.
 
     The room-existence check has already happened (a caller reaches this
     function only once a finished `games` row was found). This function only
@@ -353,7 +351,7 @@ def get_results(
     room_code: str, db: Annotated[Session, Depends(get_db)]
 ) -> ResultsResponse:
     """The full results payload for a finished game. No authentication --
-    a results URL is shareable (`§3.1`).
+    a results URL is shareable (spec §9.8).
     """
     try:
         game = find_latest_finished_game(db, room_code)
@@ -406,13 +404,13 @@ async def export_game(
     authorization: str = Header(default=""),
 ) -> Response:
     """CSV (default) or JSON of the complete record, by room code. Host-only
-    (`§3.2`): the live room's secret or the registered host's token.
+    (spec §9.5): the live room's secret or the registered host's token.
 
     Unlike `export_game_by_public_id`, this stays closed: a room code is six
     characters and reissued once its room expires, so an open export by code
     would let anyone walk the code space and download every finished game.
     Once the caller is authorised it shares the export cache, keyed by the
-    game's `public_id` (`§11`).
+    game's `public_id`.
     """
     try:
         game = find_latest_finished_game(db, room_code)
@@ -449,13 +447,13 @@ def export_game_by_public_id(
     format: Literal["csv", "json"] = "csv",
 ) -> Response:
     """The same export, addressed by the game's permanent `public_id`. No
-    authentication, like `get_results_by_public_id` (2026-11-14).
+    authentication, like `get_results_by_public_id`.
 
     Anyone who can open a finished game's results screen may download its
     raw data: a host may be a guest with no account to fall back on once the
     room and the tab are gone, so the export is not bound to the host. The
     export carries the figures the results screen shows and no name anyone
-    typed: every player is their seat's `P<N>` (`§11`), and there is no
+    typed: every player is their seat's `P<N>`, and there is no
     account or credential in it.
 
     A repeat download is served from the in-process export cache
@@ -524,7 +522,7 @@ def claim_games(
     db: Annotated[Session, Depends(get_db)],
     claims: Annotated[dict, Depends(get_current_firebase_user)],
 ) -> ClaimResponse:
-    """Attribute a guest's finished games to the signed-in caller (`§3.3`)."""
+    """Attribute a guest's finished games to the signed-in caller (spec §3.1)."""
     try:
         claimed = _claim_service.claim_guest_results(
             db, claims["uid"], payload.guest_identity

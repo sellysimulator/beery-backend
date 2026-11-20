@@ -4,7 +4,7 @@ source = ["app"]
 [tool.coverage.report]
 fail_under = 80
 show_missing = true
-# Some section 01 tests exercise the checks/ discovery loop by writing a
+# Some skeleton tests exercise the checks/ discovery loop by writing a
 # throwaway module inside app/core/checks/ and deleting it once the test
 # ends. Coverage still has line hits recorded against that path by the time
 # a standalone `coverage report` runs afterwards, and without this the

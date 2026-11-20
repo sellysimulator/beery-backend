@@ -20,8 +20,8 @@ It is wired in at four single points and nowhere else:
 * ``socket_event_allowed`` -- inside ``@guarded`` (``app/sockets/errors.py``),
   which every socket event handler already wears.
 
-The numbers are module constants, not settings (the §5 rule in
-``CLAUDE.md``). They are sized for a classroom behind one NAT address --
+The numbers are module constants, not settings (the hard-limits rule
+in ``CLAUDE.md``). They are sized for a classroom behind one NAT address --
 about forty people sharing one IP -- not for one person.
 """
 
@@ -62,7 +62,7 @@ REST_LIMIT_PER_IP = 1200
 #: ``POST /api/v1/rooms/create`` (one each) and ``POST /api/v1/rooms/batch-create``
 #: (one per room, at most ``max_batch_rooms`` = 10 a request). Unauthenticated,
 #: and each one is a room held in memory for 24 h. The standard across every
-#: Novus game (2026-11-14): 30 an hour, so three full batches.
+#: Novus game: 30 an hour, so three full batches.
 ROOM_CREATE_LIMIT_PER_IP = 30
 #: The room-create budget's window: an hour, not ``WINDOW_SECONDS``.
 ROOM_CREATE_WINDOW_SECONDS = 3600.0

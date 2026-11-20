@@ -1,6 +1,6 @@
-"""Versioned REST package and router discovery point (00-decisions.md D19).
+"""Versioned REST package and router discovery point (D19).
 
-A later section adds an endpoint by dropping a module into this package that
+An endpoint is added by dropping a module into this package that
 exports a module-level `router: APIRouter`. Nothing upstream is edited, and the
 package works while it holds no router at all.
 """
