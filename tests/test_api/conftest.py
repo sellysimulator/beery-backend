@@ -8,7 +8,7 @@ here overrides a fixture from the shared ``tests/conftest.py`` -- ``client``
 and ``fake_redis`` still come from there.
 
 Extended by section 15 (``15-results-and-export-api.md``) with the
-Testcontainers MySQL fixture chain and the game-persistence/auth helpers its
+Testcontainers PostgreSQL fixture chain and the game-persistence/auth helpers its
 three test files (``test_results.py``, ``test_export.py``, ``test_profile.py``)
 all need. This package had no conftest reaching those fixtures -- every
 other section that needs them lives in a directory whose *own* conftest.py
@@ -38,15 +38,15 @@ from sqlalchemy import text
 from app.core.enums import Role
 from app.services.db_service import DbService, build_snapshot
 
-# --- section 13's Testcontainers MySQL, imported wholesale (see module
+# --- section 13's Testcontainers PostgreSQL, imported wholesale (see module
 # docstring for why this file, rather than each test module, imports it) ---
 from tests.test_models.conftest import (
     alembic,
     docker_daemon,
     insert_user,
     migrated_url,
-    mysql_container,
-    mysql_url,
+    postgres_container,
+    postgres_url,
     schema_engine,
 )
 
@@ -78,9 +78,9 @@ __all__ = [
     "make_participant",
     "make_room_document",
     "migrated_url",
-    "mysql_container",
-    "mysql_url",
     "persist_full_game",
+    "postgres_container",
+    "postgres_url",
     "register_user",
     "run_full_game",
     "schema_engine",
@@ -135,7 +135,7 @@ def values_recursive(obj: Any) -> list[Any]:
 
 
 # ---------------------------------------------------------------------------
-# Section 15 additions: an ``api_client`` bound to the Testcontainers MySQL,
+# Section 15 additions: an ``api_client`` bound to the Testcontainers PostgreSQL,
 # and the game-persistence / auth helpers ``test_results.py``, ``test_export.py``
 # and ``test_profile.py`` all need.
 # ---------------------------------------------------------------------------
@@ -143,12 +143,12 @@ def values_recursive(obj: Any) -> list[Any]:
 
 @pytest.fixture()
 def api_client(client, session_factory):
-    """``client`` with ``get_db`` overridden onto the Testcontainers MySQL.
+    """``client`` with ``get_db`` overridden onto the Testcontainers PostgreSQL.
 
     Mirrors ``tests/test_auth/conftest.py::api_client`` exactly, except the
     session comes from section 14's ``session_factory`` (a real, migrated
-    MySQL) rather than an in-memory SQLite: section 15's routes read
-    ``DECIMAL`` columns and run a grouped statistics query, neither of which
+    PostgreSQL) rather than an in-memory SQLite: section 15's routes read
+    ``NUMERIC`` columns and run a grouped statistics query, neither of which
     a SQLite double would exercise honestly.
     """
     from app.db.session import get_db

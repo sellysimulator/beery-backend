@@ -37,7 +37,7 @@ jobs:
           python-version: "3.11"
       - name: Install dependencies
         run: pip install -r requirements.txt -r requirements-dev.txt
-      - name: Schema suite against ephemeral MySQL (Testcontainers)
+      - name: Schema suite against ephemeral PostgreSQL 17 (Testcontainers)
         run: |
           set -o pipefail
           pytest -m dbschema -q | tee /tmp/dbschema.log

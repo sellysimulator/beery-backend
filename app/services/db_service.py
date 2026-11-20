@@ -1,4 +1,4 @@
-"""Move a finished game out of Redis and into MySQL (`14-end-of-game-persistence.md`).
+"""Move a finished game out of Redis and into PostgreSQL (`14-end-of-game-persistence.md`).
 
 This is the only path that writes game data to the database (**D4**). Nothing
 here runs under the Redis lock: `build_snapshot` copies everything it needs
@@ -15,7 +15,7 @@ the two batched tables that carry `TimestampMixin`; `weeks` and
 `demand_series` have no timestamp columns at all (`13-db-models-and-
 migrations.md §2.7`, §2.8`).
 
-Money crosses from `float` to `DECIMAL(12, 2)` here, and only here, rounded
+Money crosses from `float` to `NUMERIC(12, 2)` here, and only here, rounded
 half-up at the moment of the insert (`00-conventions.md §4`, `§3.5`).
 """
 
@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -56,7 +56,7 @@ __all__ = [
 
 def round_money(value: float | Decimal) -> Decimal:
     """Round half-up to two decimals -- the one place `float` crosses to
-    `DECIMAL(12, 2)` (`00-conventions.md §4`, `§3.5`). The engine's
+    `NUMERIC(12, 2)` (`00-conventions.md §4`, `§3.5`). The engine's
     accumulated values are never rounded mid-game, so `sum(total_week_cost)` may
     differ from `cumulative_cost` by less than a cent; that is expected and
     is not "fixed" here by re-summing.
@@ -71,8 +71,8 @@ _money = round_money
 
 def _decimal(value: float | Decimal | None) -> Decimal | None:
     """A plain, exact `float` -> `Decimal` conversion for the non-money
-    fixed-point columns (`DECIMAL(6, 4)`, `DECIMAL(10, 4)`). MySQL rounds a
-    value to the column's declared scale on insert; this only avoids the
+    fixed-point columns (`NUMERIC(6, 4)`, `NUMERIC(10, 4)`). PostgreSQL rounds
+    a value to the column's declared scale on insert; this only avoids the
     binary-float noise of passing the `float` through directly."""
     if value is None:
         return None
@@ -127,18 +127,25 @@ def _parse_timestamp(value: Any) -> datetime:
     state-service.md §2`). A finished game always has both set; a missing one
     is a bug elsewhere and must not be silently invented.
 
-    Truncated to whole seconds: `games.started_at` is a plain MySQL
-    `DATETIME`, which stores no fractional seconds, so a microsecond-bearing
-    Python value round-trips lossily. Truncating here, before it is ever
-    written or compared, keeps the idempotency lookup in `persist_game`
-    (`§3.3` -- keyed on `(room_code, started_at)`) matching what a second
-    call, and what the database, actually hold.
+    Returned timezone-aware in UTC (a naive value is taken to be UTC, which
+    every writer of the room document uses), because `games.started_at` and
+    `finished_at` are `timestamptz`.
+
+    Truncated to whole seconds. `timestamptz` keeps microseconds, so this is
+    what makes the idempotency key `(room_code, started_at)` stable
+    (`persist_game`, `§3.3`, and the `uq_games_room_code_started_at`
+    constraint): every caller, and the stored row, agree on the same
+    second-precision value whatever fraction the room document carried.
     """
     if isinstance(value, datetime):
-        return value.replace(microsecond=0)
-    if not isinstance(value, str) or not value:
+        parsed = value
+    elif isinstance(value, str) and value:
+        parsed = datetime.fromisoformat(value)
+    else:
         raise ValueError("Room document is missing a required timestamp.")
-    return datetime.fromisoformat(value).replace(microsecond=0)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).replace(microsecond=0)
 
 
 def build_snapshot(room: dict, config: GameConfig, engine: GameEngine) -> GameSnapshot:
@@ -567,7 +574,7 @@ class DbService:
                 "closing_backlog": record.closing_backlog,
                 "supply_line_after": record.supply_line_after,
                 "orders_in_flight_after": record.orders_in_flight_after,
-                # `order` is a MySQL reserved word -- the one rename (`§2.1`).
+                # `order` is a PostgreSQL reserved word -- the one rename (`§2.1`).
                 "order_qty": record.order,
                 "was_bot": record.was_bot,
                 "was_forced": record.was_forced,

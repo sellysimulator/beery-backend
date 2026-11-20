@@ -6,11 +6,10 @@ Acceptance criteria 6, 7 and 11, and failure modes 4, 8 and 9.
 from __future__ import annotations
 
 import logging
-import ssl
+import os
+from pathlib import Path
 
-import pymysql
 import pytest
-from pymysql.constants import CLIENT
 from sqlalchemy.engine import make_url
 
 from app.config import Settings, settings
@@ -69,21 +68,24 @@ def test_module_level_settings_singleton_exists():
 
 
 def test_db_url_shape(monkeypatch):
-    """AC 6: ``mysql+pymysql://user:password@host:port/database``."""
+    """AC 6: ``postgresql+psycopg://user:password@host:port/database``."""
     s = _isolated(
         monkeypatch,
         DB_USER="beeruser",
         DB_PASSWORD="s3cret",
         DB_HOST="db.example.com",
-        DB_PORT=3307,
+        DB_PORT=5433,
         DB_DATABASE="beery_test",
     )
-    assert s.db_url == "mysql+pymysql://beeruser:s3cret@db.example.com:3307/beery_test"
+    assert (
+        s.db_url
+        == "postgresql+psycopg://beeruser:s3cret@db.example.com:5433/beery_test"
+    )
 
 
-def test_db_url_uses_the_pymysql_driver(monkeypatch):
-    """§3.8: PyMySQL, never mysql-connector-python."""
-    assert _isolated(monkeypatch).db_url.startswith("mysql+pymysql://")
+def test_db_url_uses_the_psycopg_driver(monkeypatch):
+    """§3.8: psycopg 3 (``psycopg[binary]``), the one PostgreSQL driver."""
+    assert _isolated(monkeypatch).db_url.startswith("postgresql+psycopg://")
 
 
 @pytest.mark.parametrize(
@@ -116,15 +118,15 @@ def test_db_password_with_url_metacharacters_round_trips(monkeypatch, password):
         DB_USER="beeruser",
         DB_PASSWORD=password,
         DB_HOST="db.example.com",
-        DB_PORT=3306,
+        DB_PORT=5432,
         DB_DATABASE="beery",
     )
     url = make_url(s.db_url)
-    assert url.drivername == "mysql+pymysql"
+    assert url.drivername == "postgresql+psycopg"
     assert url.username == "beeruser"
     assert url.password == password
     assert url.host == "db.example.com"
-    assert url.port == 3306
+    assert url.port == 5432
     assert url.database == "beery"
     # Exactly one unescaped '@' -- the credentials/host separator.
     assert s.db_url.count("@") == 1
@@ -139,7 +141,7 @@ def test_db_user_with_url_metacharacters_round_trips(monkeypatch):
         DB_USER="beery@tenant",
         DB_PASSWORD="plain",
         DB_HOST="db.example.com",
-        DB_PORT=3306,
+        DB_PORT=5432,
         DB_DATABASE="beery",
     )
     url = make_url(s.db_url)
@@ -150,21 +152,30 @@ def test_db_user_with_url_metacharacters_round_trips(monkeypatch):
 
 # --- AC 7 -------------------------------------------------------------------
 
+_UTC = {"options": "-c timezone=UTC"}
 
-def test_db_connect_args_empty_without_ssl(monkeypatch):
-    """AC 7: ``{}`` when ``DB_REQUIRE_SSL`` is false."""
-    s = _isolated(monkeypatch, DB_REQUIRE_SSL=False, DB_SSL_CA="/etc/ssl/ca.pem")
-    assert s.db_connect_args == {}
+
+def test_db_connect_args_always_pin_the_session_to_utc(monkeypatch):
+    """Every session reads and writes ``timestamptz`` in UTC, whatever the
+    server's ``TimeZone`` -- the connect option replaces a per-connection
+    ``SET`` listener."""
+    for require in (True, False):
+        args = _isolated(monkeypatch, DB_REQUIRE_SSL=require).db_connect_args
+        assert args["options"] == "-c timezone=UTC"
+
+
+def test_db_connect_args_without_ssl_or_ca_use_libpq_defaults(monkeypatch):
+    """AC 7: with ``DB_REQUIRE_SSL`` false and no CA, no ``sslmode`` is set
+    (libpq's ``prefer``); only the UTC option is passed."""
+    s = _isolated(monkeypatch, DB_REQUIRE_SSL=False)
+    assert s.db_connect_args == _UTC
 
 
 def test_db_connect_args_encrypt_without_verifying_when_no_ca(monkeypatch):
-    """AC 7: TLS with no ``DB_SSL_CA`` is encrypted but does not authenticate
-    the server."""
+    """AC 7: TLS with no ``DB_SSL_CA`` is ``sslmode=require`` -- encrypted,
+    never a plaintext fallback, but the server is not authenticated."""
     s = _isolated(monkeypatch, DB_REQUIRE_SSL=True)
-    ctx = s.db_connect_args["ssl"]
-    assert isinstance(ctx, ssl.SSLContext)
-    assert ctx.verify_mode == ssl.CERT_NONE
-    assert ctx.check_hostname is False
+    assert s.db_connect_args == {**_UTC, "sslmode": "require"}
 
 
 # Every form DB_SSL_CA accepts: a path, the PEM text as Render stores it, and
@@ -184,16 +195,30 @@ def _ca_value(form, tmp_path) -> str:
     return ""
 
 
+@pytest.mark.parametrize("require", [True, False])
 @pytest.mark.parametrize("form", _CA_FORMS)
-def test_db_connect_args_verify_against_the_ca(monkeypatch, tmp_path, form):
+def test_db_connect_args_verify_against_the_ca(monkeypatch, tmp_path, form, require):
     """AC 7: with ``DB_SSL_CA`` -- in any accepted form -- the server
-    certificate and hostname are verified against exactly that CA."""
-    s = _isolated(monkeypatch, DB_REQUIRE_SSL=True, DB_SSL_CA=_ca_value(form, tmp_path))
-    ctx = s.db_connect_args["ssl"]
-    assert isinstance(ctx, ssl.SSLContext)
-    assert ctx.verify_mode == ssl.CERT_REQUIRED
-    assert ctx.check_hostname is True
-    assert ctx.cert_store_stats()["x509_ca"] == 1
+    certificate and hostname are verified (``sslmode=verify-full``) against a
+    readable file holding exactly that CA. libpq reads a CA only from a file,
+    so PEM text is written to one; a path is passed through untouched."""
+    value = _ca_value(form, tmp_path)
+    s = _isolated(monkeypatch, DB_REQUIRE_SSL=require, DB_SSL_CA=value)
+    args = s.db_connect_args
+    assert args["sslmode"] == "verify-full"
+    assert args["options"] == "-c timezone=UTC"
+    root = Path(args["sslrootcert"])
+    assert root.is_file() and os.access(root, os.R_OK)
+    assert root.read_text().strip() == _TEST_CA_PEM.strip()
+    if form == "path":
+        assert args["sslrootcert"] == value
+
+
+def test_db_connect_args_write_a_pem_ca_once(monkeypatch):
+    """The PEM-text CA is written to one temp file per distinct value, not
+    one per engine (``alembic/env.py`` and the app each build one)."""
+    s = _isolated(monkeypatch, DB_SSL_CA=_TEST_CA_PEM)
+    assert s.db_connect_args["sslrootcert"] == s.db_connect_args["sslrootcert"]
 
 
 @pytest.mark.parametrize(
@@ -210,17 +235,11 @@ def test_db_connect_args_fail_loudly_on_an_unloadable_ca(monkeypatch, bad):
         _ = s.db_connect_args
 
 
-@pytest.mark.parametrize("form", ["none", *_CA_FORMS])
-def test_pymysql_refuses_plaintext_with_these_connect_args(monkeypatch, tmp_path, form):
-    """PyMySQL sets ``CLIENT.SSL`` up front only in REQUIRED mode; in
-    PREFERRED mode it silently drops to plaintext if the server offers no TLS.
-    An empty ``ssl`` dict lands in PREFERRED mode, which is why the args carry
-    an ``SSLContext``."""
-    s = _isolated(monkeypatch, DB_REQUIRE_SSL=True, DB_SSL_CA=_ca_value(form, tmp_path))
-    conn = pymysql.connections.Connection(
-        host="db.example.com", defer_connect=True, **s.db_connect_args
-    )
-    assert conn.client_flag & CLIENT.SSL
+def test_db_connect_args_are_empty_for_a_non_postgres_url(monkeypatch):
+    """A SQLite engine (the fast unit suites) never gets libpq options."""
+    s = _isolated(monkeypatch, DB_SSL_CA=_TEST_CA_PEM)
+    monkeypatch.setattr(Settings, "db_url", property(lambda self: "sqlite://"))
+    assert s.db_connect_args == {}
 
 
 @pytest.mark.parametrize(
@@ -332,15 +351,44 @@ def test_transport_and_service_defaults(monkeypatch):
     assert s.HOST == "0.0.0.0"
     assert s.PORT == 8080
     assert s.DB_HOST == "localhost"
-    assert s.DB_PORT == 3306
-    assert s.DB_USER == "root"
+    assert s.DB_PORT == 5432
+    assert s.DB_USER == "postgres"
     assert s.DB_PASSWORD == ""
-    assert s.DB_DATABASE == "beery"
+    assert s.DB_DATABASE == "beerydb"
     assert s.DB_REQUIRE_SSL is True
     assert s.DB_SSL_CA == ""
     assert s.REDIS_ENABLED is False
     assert s.REDIS_URL == ""
     assert s.FIREBASE_SERVICE_ACCOUNT_JSON == ""
+
+
+def test_pool_defaults_fit_the_aiven_free_plan(monkeypatch):
+    """2 + 1 per instance on the Aiven Free service the four Novus games share:
+    Selly, Pulky and Beery 3 each, Lemony 4, plus one game's second instance
+    during its deploy (at most 4), the pre-deploy migration (1) and one psql
+    session (1) stay within 20."""
+    s = _isolated(monkeypatch)
+    assert (s.DB_POOL_SIZE, s.DB_MAX_OVERFLOW) == (2, 1)
+    beery = s.DB_POOL_SIZE + s.DB_MAX_OVERFLOW
+    assert 3 + 3 + beery + 4 + 4 + 2 <= 20
+
+
+def test_pool_size_is_overridable_from_the_environment(monkeypatch):
+    for name in Settings.model_fields:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("DB_POOL_SIZE", "12")
+    monkeypatch.setenv("DB_MAX_OVERFLOW", "6")
+    s = Settings(_env_file=None)
+    assert (s.DB_POOL_SIZE, s.DB_MAX_OVERFLOW) == (12, 6)
+
+
+def test_the_engine_uses_the_pool_settings():
+    """`app/db/session.py` reads the two settings and bounds the wait."""
+    from app.db.session import engine
+
+    assert engine.pool.size() == settings.DB_POOL_SIZE
+    assert engine.pool._max_overflow == settings.DB_MAX_OVERFLOW
+    assert engine.pool._timeout == 10
 
 
 def test_settings_is_case_sensitive(monkeypatch):

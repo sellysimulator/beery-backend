@@ -2,7 +2,7 @@
 
 `GameConfig` holds every parameter of a game (`beer-game-spec.md` §6, as amended
 by `00-decisions.md`). It is built during `CONFIGURING`, frozen at start, carried
-in the Redis room document for the life of the game, and written to MySQL at the
+in the Redis room document for the life of the game, and written to PostgreSQL at the
 end. It knows nothing about players, rooms, sockets or the database.
 
 Pure (`00-conventions.md` §4): this module imports nothing from `app.config`,

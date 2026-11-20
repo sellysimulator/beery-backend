@@ -5,16 +5,16 @@ These shapes are FROZEN: the shipped frontend (``21 §2.0``, ``22 §2.0``)
 already expects exactly these field names and this nullability. Money fields
 are declared ``float`` -- never ``Decimal`` -- so pydantic coerces whatever
 ``Decimal`` the database hands back into a plain JSON number; a ``Decimal``
-leaking into a response body breaks the frontend's charts.
+leaking into a response body breaks the frontend's charts. Timestamps are
+``UtcDateTime``: ISO-8601 UTC with a ``Z`` suffix.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
-
 from pydantic import BaseModel
 
 from ..core.enums import Role
+from .types import UtcDateTime
 
 __all__ = [
     "ClaimRequest",
@@ -54,8 +54,8 @@ class ResultsResponse(BaseModel):
     duration_weeks: int
     ended_early: bool
     currency_symbol: str
-    started_at: datetime
-    finished_at: datetime
+    started_at: UtcDateTime
+    finished_at: UtcDateTime
     demand_series: list[int]
     chain_total_cost: float
     demand_variance: float
@@ -87,7 +87,7 @@ class UserStatsResponse(BaseModel):
 class MatchSummary(BaseModel):
     game_id: int
     room_code: str
-    finished_at: datetime
+    finished_at: UtcDateTime
     role: Role
     weeks_played: int
     total_cost: float

@@ -178,6 +178,8 @@ def test_ac20_ac21_match_history_is_own_newest_first_and_clamped(
     assert returned_ids == {games[2]["game_id"], games[1]["game_id"]}
     finished_at_values = [m["finished_at"] for m in first_page["matches"]]
     assert finished_at_values == sorted(finished_at_values, reverse=True)
+    # ISO-8601 UTC with a `Z`, so a browser never reads it as local time.
+    assert finished_at_values[0] == "2026-01-03T00:00:00Z"
 
     second_page = api_client.get(
         GAMES_URL, params={"page": 2, "page_size": 2}, headers=headers

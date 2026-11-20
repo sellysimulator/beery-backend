@@ -1,6 +1,6 @@
 """Results, export and guest-claim routes (``15-results-and-export-api.md``).
 
-Everything here reads from **MySQL**, never Redis, except the export route's
+Everything here reads from **PostgreSQL**, never Redis, except the export route's
 host-secret check, which reads the *live room document* when one still
 exists (`§3.2`) -- that is the one place this module touches Redis, and it
 never mutates it.
@@ -8,7 +8,7 @@ never mutates it.
 `GET /results` and `GET /export` both resolve "the game for this room code"
 the same way: the most recently finished `games` row for that code, because
 codes are reused once a room expires (`13 §2.2`). Since only *finished*
-games are ever written to MySQL (**D4**), any row found here is by
+games are ever written to PostgreSQL (**D4**), any row found here is by
 definition a finished game -- there is no separate status filter.
 
 `GET /games/id/{public_id}/results` serves the same payload addressed by the
@@ -72,10 +72,15 @@ def find_latest_finished_game(db: Session, room_code: str) -> Game | None:
     A room code is reused once a room expires (`13-db-models-and-
     migrations.md §2.2`), so "the game for this code" means the newest
     `finished_at`, never an arbitrary match.
+
+    Case-insensitive, like the live room lookup (`state_service._room_key`):
+    codes are minted and stored upper-case, and PostgreSQL compares strings
+    case-sensitively, so the code from the URL is normalised here rather than
+    trusting the database's collation to fold it.
     """
     return db.execute(
         select(Game)
-        .where(Game.room_code == room_code)
+        .where(Game.room_code == room_code.strip().upper())
         .order_by(Game.finished_at.desc())
         .limit(1)
     ).scalar_one_or_none()

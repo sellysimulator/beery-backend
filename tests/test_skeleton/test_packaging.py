@@ -24,7 +24,7 @@ RUNTIME_PINS = {
     "pydantic": "2.13.5",
     "pydantic-settings": "2.15.0",
     "sqlalchemy": "2.0.54",
-    "pymysql": "1.2.3",
+    "psycopg": "3.3.9",
     "alembic": "1.20.0",
     "firebase-admin": "7.6.0",
     "python-dotenv": "1.2.3",
@@ -46,7 +46,7 @@ DEV_PINS = {
 
 def _container_class(module: str, name: str):
     """``testcontainers.<module>`` moved to ``testcontainers.community.<module>``;
-    the plan pins ``testcontainers[mysql]`` but not its version, so accept
+    the plan pins ``testcontainers[postgres]``; accept
     either layout rather than a DeprecationWarning per run."""
     import importlib
 
@@ -133,9 +133,12 @@ def test_dev_dependencies_are_installed_at_the_declared_pins():
 
 
 def test_testcontainers_is_installed_and_pinned():
-    """§3.8: ``testcontainers[mysql]`` -- version resolved at install time, but
-    it must actually be installed or section 13 has no MySQL to migrate."""
-    assert _installed("testcontainers") is not None
+    """§3.8: ``testcontainers[postgres]==4.15.0`` -- it must actually be
+    installed or section 13 has no PostgreSQL to migrate."""
+    assert _installed("testcontainers") == "4.15.0"
+    assert "testcontainers[postgres]==4.15.0" in (
+        (PROJECT_ROOT / "requirements-dev.txt").read_text().split()
+    )
 
 
 def test_asyncio_is_not_a_declared_dependency():
@@ -160,24 +163,25 @@ def test_alembic_upgrade_head_creates_exactly_the_declared_tables():
     later revision as well, and still catches the thing this test is for: a
     migration that creates a table nobody declared, or fails to create one
     somebody did."""
-    pytest.importorskip("testcontainers.mysql")
+    pytest.importorskip("testcontainers.postgres")
     if not _docker_available():
-        pytest.skip("Docker is not available; cannot start a throwaway MySQL")
+        pytest.skip("Docker is not available; cannot start a throwaway PostgreSQL")
 
     import sqlalchemy
 
-    MySqlContainer = _container_class("mysql", "MySqlContainer")
+    PostgresContainer = _container_class("postgres", "PostgresContainer")
 
-    with MySqlContainer("mysql:8.4") as mysql:
+    with PostgresContainer("postgres:17", driver="psycopg") as pg:
         env = dict(os.environ)
         env.update(
             {
-                "DB_HOST": mysql.get_container_host_ip(),
-                "DB_PORT": str(mysql.get_exposed_port(3306)),
-                "DB_USER": mysql.username,
-                "DB_PASSWORD": mysql.password,
-                "DB_DATABASE": mysql.dbname,
+                "DB_HOST": pg.get_container_host_ip(),
+                "DB_PORT": str(pg.get_exposed_port(5432)),
+                "DB_USER": pg.username,
+                "DB_PASSWORD": pg.password,
+                "DB_DATABASE": pg.dbname,
                 "DB_REQUIRE_SSL": "False",
+                "DB_SSL_CA": "",
             }
         )
         proc = subprocess.run(
@@ -191,11 +195,7 @@ def test_alembic_upgrade_head_creates_exactly_the_declared_tables():
         )
         assert proc.returncode == 0, proc.stdout + proc.stderr
 
-        url = (
-            f"mysql+pymysql://{mysql.username}:{mysql.password}"
-            f"@{env['DB_HOST']}:{env['DB_PORT']}/{mysql.dbname}"
-        )
-        engine = sqlalchemy.create_engine(url)
+        engine = sqlalchemy.create_engine(pg.get_connection_url())
         try:
             tables = set(sqlalchemy.inspect(engine).get_table_names())
         finally:

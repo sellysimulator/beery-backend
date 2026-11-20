@@ -18,7 +18,7 @@ This file adds only what is genuinely section 02's:
   section tests upsert **logic** -- that the uid comes from the verified token,
   that a second call updates rather than inserts, that ``display_name`` is
   truncated -- none of which depends on the dialect.  Section 13 tests the
-  **schema**, which does, and uses Testcontainers against a real MySQL for
+  **schema**, which does, and uses Testcontainers against a real PostgreSQL for
   exactly that reason.  There is deliberately no Docker dependency here.
 
 * **A cold Firebase singleton between tests.**  ``init_firebase`` memoises a

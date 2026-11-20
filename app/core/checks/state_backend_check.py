@@ -38,6 +38,6 @@ def check_state_backend() -> None:
         "serving the app, because two players in one room landing on "
         "different instances would never see each other, with no error "
         "anywhere; (2) restarting this process ends every game in progress, "
-        "because a game reaches MySQL only when it finishes. See README.md, "
+        "because a game reaches PostgreSQL only when it finishes. See README.md, "
         "'Room state and Redis'."
     )

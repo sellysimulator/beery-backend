@@ -1,6 +1,6 @@
 """The room-state backend, and the switch between Redis and process memory.
 
-`00-decisions.md D4` makes the room document authoritative and writes MySQL
+`00-decisions.md D4` makes the room document authoritative and writes PostgreSQL
 only at the end of a game. It does not say *where* that document lives, and
 for a single-instance deployment it does not need to be Redis: the state
 service uses six operations, all of which a dict implements exactly.

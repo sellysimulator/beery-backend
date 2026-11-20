@@ -46,6 +46,9 @@ _FINAL_COST_BY_GAME_ROLE = text("""
     GROUP BY game_id, role
     """).bindparams(bindparam("game_ids", expanding=True))
 
+# `ON CONFLICT ... DO UPDATE ... EXCLUDED.x` is PostgreSQL's upsert, and SQLite
+# (>= 3.24) parses the same statement, so it stays portable to a SQLite test
+# database. The conflict target is the primary key, `user_id`.
 _UPSERT_USER_STATS = text("""
     INSERT INTO user_stats (
         user_id, games_played, weeks_played, total_cost, avg_cost_per_week,
@@ -56,17 +59,17 @@ _UPSERT_USER_STATS = text("""
         :best_game_id, :bullwhip_avg, :games_as_retailer, :games_as_wholesaler,
         :games_as_distributor, :games_as_factory
     )
-    ON DUPLICATE KEY UPDATE
-        games_played = VALUES(games_played),
-        weeks_played = VALUES(weeks_played),
-        total_cost = VALUES(total_cost),
-        avg_cost_per_week = VALUES(avg_cost_per_week),
-        best_game_id = VALUES(best_game_id),
-        bullwhip_avg = VALUES(bullwhip_avg),
-        games_as_retailer = VALUES(games_as_retailer),
-        games_as_wholesaler = VALUES(games_as_wholesaler),
-        games_as_distributor = VALUES(games_as_distributor),
-        games_as_factory = VALUES(games_as_factory),
+    ON CONFLICT (user_id) DO UPDATE SET
+        games_played = EXCLUDED.games_played,
+        weeks_played = EXCLUDED.weeks_played,
+        total_cost = EXCLUDED.total_cost,
+        avg_cost_per_week = EXCLUDED.avg_cost_per_week,
+        best_game_id = EXCLUDED.best_game_id,
+        bullwhip_avg = EXCLUDED.bullwhip_avg,
+        games_as_retailer = EXCLUDED.games_as_retailer,
+        games_as_wholesaler = EXCLUDED.games_as_wholesaler,
+        games_as_distributor = EXCLUDED.games_as_distributor,
+        games_as_factory = EXCLUDED.games_as_factory,
         updated_at = CURRENT_TIMESTAMP
     """)
 

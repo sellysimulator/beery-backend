@@ -14,9 +14,10 @@ two foreign keys that reference it resolve and so the whole schema is registered
 on `Base.metadata` by importing this one module. The `users` **migration** lives
 with this section's revision.
 
-Column naming: `order`, `min` and `max` are MySQL reserved words, so the columns
-are `order_qty`, `min_value` and `max_value`. A quoted identifier would be a
-permanent tax on every raw query section 14 and 15 write.
+Column naming: `order` is a PostgreSQL reserved word and `min` / `max` are
+aggregate names that read badly as columns, so the columns are `order_qty`,
+`min_value` and `max_value`. A quoted identifier would be a permanent tax on
+every raw query section 14 and 15 write.
 """
 
 from datetime import datetime
@@ -33,7 +34,6 @@ from sqlalchemy import (
     Numeric,
     String,
     UniqueConstraint,
-    false,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -90,9 +90,7 @@ class Game(Base, TimestampMixin):
     duration_weeks: Mapped[int] = mapped_column(Integer, nullable=False)
     # May be fewer than `duration_weeks`, after `end_game_early`.
     weeks_played: Mapped[int] = mapped_column(Integer, nullable=False)
-    ended_early: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=false()
-    )
+    ended_early: Mapped[bool] = mapped_column(Boolean, nullable=False)
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
@@ -105,10 +103,11 @@ class Game(Base, TimestampMixin):
     # Authorised late addition by section 14 (`14-end-of-game-persistence.md
     # §3.3`): the documented idempotency key, `(room_code, started_at)`, as a
     # real database constraint rather than a check-then-insert with no
-    # backstop. `started_at` has no fractional seconds (MySQL `DATETIME`),
-    # and `persist_game` truncates to whole seconds before comparing, so two
-    # games in the same room starting in the same microsecond -- not a case
-    # to design for -- is the only thing this could ever reject in error.
+    # backstop. `timestamptz` keeps microseconds, so the key is only stable
+    # because `persist_game` truncates `started_at` to whole seconds before
+    # writing or comparing it: two games in the same room starting in the
+    # same second -- not a case to design for -- is the only thing this could
+    # ever reject in error.
     __table_args__ = (
         UniqueConstraint(
             "room_code", "started_at", name="uq_games_room_code_started_at"
@@ -150,7 +149,7 @@ class GameConfigRow(Base, TimestampMixin):
     show_running_cost_to_players: Mapped[bool] = mapped_column(Boolean, nullable=False)
     show_leaderboard_during_game: Mapped[bool] = mapped_column(Boolean, nullable=False)
     max_order_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # `allow_negative_orders` was dropped by revision 0005 (2026-11-02).
+    # No `allow_negative_orders` column: that option was removed on 2026-11-02.
 
     # --- BotConfig ---
     theta: Mapped[Decimal] = mapped_column(BOT_PARAM, nullable=False)
@@ -205,7 +204,7 @@ class DemandConfigRow(Base, TimestampMixin):
     populated. `CUSTOM` stores nothing here -- its values are the
     `demand_series` rows, which every kind writes anyway.
 
-    `min` and `max` are MySQL reserved words, hence `min_value` / `max_value`.
+    `min` and `max` are SQL aggregate names, hence `min_value` / `max_value`.
     """
 
     __tablename__ = "demand_configs"
@@ -270,9 +269,7 @@ class Participant(Base, TimestampMixin):
     role: Mapped[str | None] = mapped_column(String(16), nullable=True)
     display_name: Mapped[str] = mapped_column(String(24), nullable=False)
     participant_type: Mapped[str] = mapped_column(String(12), nullable=False)
-    is_bot: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=false()
-    )
+    is_bot: Mapped[bool] = mapped_column(Boolean, nullable=False)
     user_id: Mapped[int | None] = mapped_column(
         Integer,
         ForeignKey("users.id", ondelete="SET NULL", name="fk_participants_user_id"),
@@ -317,8 +314,8 @@ class DemandSeries(Base):
 class Week(Base):
     """One `WeekRecord`: what one role did and was charged in one week.
 
-    The source of truth for the results screen. `order` is a MySQL reserved
-    word, so the decision column is `order_qty`. No `TimestampMixin`.
+    The source of truth for the results screen. `order` is a PostgreSQL
+    reserved word, so the decision column is `order_qty`. No `TimestampMixin`.
 
     `orders_in_flight_after` is the role's OWN incoming-order pipeline:
     orders its downstream customer placed that are still travelling to it.
@@ -358,9 +355,9 @@ class Week(Base):
     backlog_cost: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
     fixed_order_cost: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
     purchase_cost: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
-    # Holding + backlog + fixed order + purchase cost. Called `week_cost`
-    # until revision 0005 renamed it, so nobody reads it as either of the two
-    # figures the screens show separately.
+    # Holding + backlog + fixed order + purchase cost. Named `total_week_cost`,
+    # not `week_cost`, so nobody reads it as either of the two figures the
+    # screens show separately.
     total_week_cost: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
     cumulative_cost: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
 

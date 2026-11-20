@@ -13,9 +13,9 @@ surfaces of ``GameEngine``/``WeekRecord`` (07), the room document (09 §2),
 freezes and this section fills the body of. ``app/services/db_service.py``
 itself is never opened.
 
-Needs a real MySQL (Testcontainers, shared with section 13's suite) because
+Needs a real PostgreSQL (Testcontainers, shared with section 13's suite) because
 the behaviour under test -- batched raw inserts, an idempotency lookup, an
-all-or-nothing transaction and DECIMAL rounding -- is either unenforced or
+all-or-nothing transaction and NUMERIC rounding -- is either unenforced or
 silently "correct for the wrong reason" against a fake.
 """
 
@@ -396,7 +396,7 @@ def test_ac5c_a_seat_swapped_to_a_bot_keeps_its_player(db):
 
 def test_ac5b_reading_weeks_back_reproduces_the_engines_game_stats(db):
     # Default role costs (0.50 / 1.00 / 0 / 0) are exact multiples of a cent,
-    # so the DECIMAL(12,2) round trip introduces no rounding drift here.
+    # so the NUMERIC(12,2) round trip introduces no rounding drift here.
     config = make_config(duration_weeks=16)
     engine = run_full_game(config, seed=23)
     expected_stats = compute_stats(
@@ -469,15 +469,101 @@ def test_ac6_persist_game_called_twice_writes_once_and_returns_same_id(session_f
     assert verify_db.query(Game).filter_by(room_code=room["room_code"]).count() == 1
 
 
+def _snapshot_started_at(room_code: str, started_at: datetime, seed: int):
+    config = make_config(duration_weeks=8)
+    engine = run_full_game(config, seed=seed)
+    room = make_room_document(
+        config, engine, room_code=room_code, started_at=started_at
+    )
+    return build_snapshot(room, config, engine)
+
+
+def test_ac6_same_room_and_second_is_one_game_whatever_the_microseconds(
+    session_factory,
+):
+    """`timestamptz` keeps microseconds, so the idempotency key is only stable
+    because `started_at` is truncated to whole seconds before it is written
+    or compared: two snapshots of one game whose room documents disagree on
+    the fraction are still one game."""
+    room_code = unique_room_code()
+    first = _snapshot_started_at(
+        room_code, datetime(2026, 1, 1, 8, 0, 0, 100_000, tzinfo=timezone.utc), 41
+    )
+    second = _snapshot_started_at(
+        room_code, datetime(2026, 1, 1, 8, 0, 0, 900_000, tzinfo=timezone.utc), 41
+    )
+
+    game_id_1 = DbService().persist_game(session_factory(), first)
+    game_id_2 = DbService().persist_game(session_factory(), second)
+
+    assert game_id_1 == game_id_2
+    verify_db = session_factory()
+    assert verify_db.query(Game).filter_by(room_code=room_code).count() == 1
+    stored = verify_db.get(Game, game_id_1)
+    assert stored is not None
+    assert stored.started_at == datetime(2026, 1, 1, 8, 0, 0, tzinfo=timezone.utc)
+    assert stored.started_at.utcoffset() == timezone.utc.utcoffset(None)
+
+
+def test_ac6_same_room_in_a_different_second_is_a_second_game(session_factory):
+    """A recycled room code is a new game as soon as it started in another
+    second: two rows, two ids."""
+    room_code = unique_room_code()
+    first = _snapshot_started_at(
+        room_code, datetime(2026, 1, 1, 8, 0, 0, tzinfo=timezone.utc), 43
+    )
+    second = _snapshot_started_at(
+        room_code, datetime(2026, 1, 1, 8, 0, 1, tzinfo=timezone.utc), 43
+    )
+
+    game_id_1 = DbService().persist_game(session_factory(), first)
+    game_id_2 = DbService().persist_game(session_factory(), second)
+
+    assert game_id_1 != game_id_2
+    verify_db = session_factory()
+    assert verify_db.query(Game).filter_by(room_code=room_code).count() == 2
+
+
+def test_fm6_a_lost_insert_race_returns_the_winners_id(session_factory, monkeypatch):
+    """The `UNIQUE (room_code, started_at)` backstop: a caller whose lookup ran
+    before the winner committed reaches the `INSERT`, hits the constraint, and
+    gets the winner's id back instead of an error -- with nothing half
+    written."""
+    config = make_config(duration_weeks=8)
+    engine = run_full_game(config, seed=47)
+    room = make_room_document(config, engine)
+    snapshot = build_snapshot(room, config, engine)
+    winner_id = DbService().persist_game(session_factory(), snapshot)
+
+    loser = DbService()
+    real_find = loser._find_existing
+    lookups: list[int | None] = []
+
+    def _stale_first_lookup(db, snap):
+        found = None if not lookups else real_find(db, snap)
+        lookups.append(found)
+        return found
+
+    monkeypatch.setattr(loser, "_find_existing", _stale_first_lookup)
+
+    assert loser.persist_game(session_factory(), snapshot) == winner_id
+    assert lookups == [None, winner_id]
+    verify_db = session_factory()
+    assert verify_db.query(Game).filter_by(room_code=room["room_code"]).count() == 1
+    assert verify_db.query(Week).filter_by(game_id=winner_id).count() == len(
+        engine.history
+    )
+
+
 def test_fm6_concurrent_persist_calls_write_one_game_row(session_factory):
     """Best-effort concurrency probe.
 
-    `games` carries no unique constraint on `(room_code, started_at)` --
-    only the explicit lookup `persist_game` performs guards it (§3.3) --
-    so true simultaneous overlap cannot be forced from a black-box test
-    without a synchronisation hook into the implementation. Five threads
-    racing to persist the same snapshot at least catches an implementation
-    with no idempotency guard at all.
+    True simultaneous overlap cannot be forced from a black-box test without
+    a synchronisation hook into the implementation; the `UNIQUE (room_code,
+    started_at)` backstop is exercised deterministically by
+    `test_fm6_a_lost_insert_race_returns_the_winners_id`. Five threads racing
+    to persist the same snapshot at least catches an implementation with no
+    idempotency guard at all.
     """
     import threading
 

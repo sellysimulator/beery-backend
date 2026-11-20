@@ -5,7 +5,7 @@ performs no I/O, reads no clock and holds no RNG.
 
 `compute_stats` reads a list of `WeekRecord`s and the demand series and never
 touches live agent state, so it works identically on a finished in-memory engine
-and on rows loaded back out of MySQL.
+and on rows loaded back out of PostgreSQL.
 """
 
 from __future__ import annotations

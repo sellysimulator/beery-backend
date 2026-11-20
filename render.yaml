@@ -2,10 +2,11 @@
 # 23-deployment-and-ci.md §3). One web service, built from the committed
 # Dockerfile -- plain uvicorn, no gunicorn (game_stack.md §3).
 #
-# Managed MySQL is NOT declared here: Render's own managed database offering
-# is PostgreSQL, so this project's managed MySQL is provisioned separately
-# (e.g. PlanetScale/RDS) and wired in through the DB_* environment variables
-# below, set on the platform, never committed. See DEPLOY.md.
+# The database is NOT declared here: it is the database `beerydb` on the Aiven
+# PostgreSQL service all four Novus games share (each game its own database
+# and role), provisioned outside Render and wired in through the DB_*
+# environment variables below, set on the platform, never committed. See
+# DEPLOY.md.
 #
 # Redis is OPTIONAL and is likewise not declared here. Since the state
 # backend became switchable, REDIS_ENABLED=false (the default) keeps live
@@ -15,10 +16,10 @@
 # it on means provisioning Redis separately (e.g. Redis Cloud/Upstash) and
 # setting both REDIS_ENABLED and REDIS_URL below. See DEPLOY.md.
 #
-# The managed MySQL instance MUST run engine version 8.4 -- the same
-# `mysql:8.4` image `tests/test_models/conftest.py` pins its Testcontainers
-# schema suite to (23-deployment-and-ci.md AC 15). Provisioning a different
-# major version makes CI prove the wrong engine.
+# The managed instance MUST run PostgreSQL 17 -- the same `postgres:17` image
+# `tests/test_models/conftest.py` pins its Testcontainers schema suite to
+# (23-deployment-and-ci.md AC 15). Provisioning a different major version
+# makes CI prove the wrong engine.
 services:
   - type: web
     name: beery-backend
@@ -32,7 +33,8 @@ services:
     # deploy job or deploy hook in ci.yml: with both, a passing push deploys
     # twice, and with plain on-commit auto-deploy a failing push ships anyway.
     autoDeployTrigger: checksPass
-    # Runs once per deploy, before traffic is switched to the new instance --
+    # Runs once per deploy, before traffic is switched to the new instance
+    # (a no-op when the database is already at head) --
     # not `create_all()`, and not at application startup, where a migration
     # racing N container instances is a lock-contention problem waiting to
     # happen (§3.3).
@@ -53,11 +55,13 @@ services:
         sync: false
       - key: DB_DATABASE
         sync: false
-      # TLS to MySQL, no plaintext fallback.
+      # TLS to PostgreSQL, no plaintext fallback (sslmode=require, or
+      # verify-full once DB_SSL_CA is set).
       - key: DB_REQUIRE_SSL
         value: "true"
-      # This project's MySQL CA certificate: paste the PEM as-is. Not a
-      # secret, but set per service -- never shared with another game.
+      # The CA certificate of the shared Novus Aiven PostgreSQL service: paste
+      # the PEM as-is (it turns on sslmode=verify-full). Not a secret; the same
+      # certificate for all four games.
       - key: DB_SSL_CA
         sync: false
       # Optional. "false" keeps live room state in this process, which

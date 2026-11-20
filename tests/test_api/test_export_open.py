@@ -6,7 +6,7 @@ figures and names the results screen shows, and no account or credential.
 This file plays and persists one game into an in-memory SQLite database (the
 route reads nothing dialect-specific) so the privacy check runs in the
 ordinary `-m "not dbschema"` suite; `test_export.py` repeats the routes'
-behaviour against the real MySQL schema.
+behaviour against the real PostgreSQL schema.
 
 What must never appear, in CSV or JSON: a player's Firebase uid or email, an
 internal user id, a guest identity, a session token, the host's secret or the
@@ -91,7 +91,7 @@ FORBIDDEN_KEYS = {
 @pytest.fixture()
 def sqlite_engine(monkeypatch: pytest.MonkeyPatch) -> Iterator[Engine]:
     # `persist_game` binds `Decimal` money through raw `text()` inserts, which
-    # the sqlite3 driver cannot bind by itself; MySQL's driver can. Scoped to
+    # the sqlite3 driver cannot bind by itself; psycopg can. Scoped to
     # this test with monkeypatch, so no other SQLite test sees the adapter.
     monkeypatch.setitem(sqlite3.adapters, (Decimal, sqlite3.PrepareProtocol), str)
     import app.models  # noqa: F401  -- registers every table on Base.metadata
@@ -276,6 +276,28 @@ def test_the_open_export_carries_only_what_the_results_screen_shows(
     assert json.dumps(
         {k: v for k, v in payload.items() if k != "weeks"}, sort_keys=True
     ) == json.dumps(expected, sort_keys=True)
+
+
+def test_timestamps_and_money_keep_their_wire_types(
+    open_client, db_factory, fake_redis
+):
+    """Results and the JSON export carry timestamps as ISO-8601 UTC with a
+    `Z` (a naive SQLite value is UTC too) and money as JSON numbers, never as
+    `Decimal` strings, whichever database the row came from."""
+    game = _persist(db_factory)
+    results = open_client.get(
+        f"/api/v1/games/{game['room_code'].lower()}/results"
+    ).json()
+    payload = open_client.get(
+        f"/api/v1/games/id/{results['public_id']}/export", params={"format": "json"}
+    ).json()
+
+    for body in (results, payload):
+        assert body["started_at"] == "2026-11-01T09:00:00Z"
+        assert body["finished_at"] == "2026-11-01T10:00:00Z"
+        assert isinstance(body["chain_total_cost"], float)
+        assert all(isinstance(r["total_cost"], float) for r in body["per_role"])
+    assert all(isinstance(w["cumulative_cost"], float) for w in payload["weeks"])
 
 
 # --- names: P<N> only, in the export (2026-11-14) --------------------------
