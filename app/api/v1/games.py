@@ -1,29 +1,24 @@
 """Results, export and guest-claim routes (spec §9.8, §9.5, §3.1).
 
-Everything here reads from **PostgreSQL**, never Redis, except the export route's
-host-secret check, which reads the *live room document* when one still
-exists -- that is the one place this module touches Redis, and it
-never mutates it.
+Everything here reads from **PostgreSQL**, never the live room state: a
+finished game's results are addressed only by its permanent `public_id`
+(D22), the same way in every Novus game. There is no route by room code --
+codes are six characters and reissued once a room expires, so a code names
+no particular game and an open route by code could be enumerated. The
+public_id is a uuid4, unguessable, and never expires.
 
-`GET /results` and `GET /export` both resolve "the game for this room code"
-the same way: the most recently finished `games` row for that code, because
-codes are reused once a room expires. Since only *finished*
+`GET /games/id/{public_id}/results` and `GET /games/id/{public_id}/export`
+take no credential and answer 404 for an unknown id. Since only *finished*
 games are ever written to PostgreSQL (**D4**), any row found here is by
-definition a finished game -- there is no separate status filter.
-
-`GET /games/id/{public_id}/results` serves the same payload addressed by the
-game's permanent `public_id`, for links that must outlive the room code, and
-`GET /games/id/{public_id}/export` the export, open to anyone who has that
-id, as the results are. The export by room code stays host-only.
+definition a finished game.
 """
 
 from __future__ import annotations
 
-import hmac
 import logging
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -33,7 +28,6 @@ from ...core.game_engine import WeekRecord
 from ...core.stats import compute_stats
 from ...db.session import get_db
 from ...models.game import DemandSeries, Game, GameConfigRow, Participant, Week
-from ...models.user import User
 from ...schemas.results import (
     ClaimRequest,
     ClaimResponse,
@@ -43,17 +37,14 @@ from ...schemas.results import (
 from ...services.claim_service import ClaimService
 from ...services.export_cache import CachedExport, export_cache
 from ...services.export_service import ExportService, seat_alias
-from ...services.state_service import get_state_service
-from ..deps import get_current_firebase_user, get_optional_firebase_user
+from ..deps import get_current_firebase_user
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/games", tags=["games"])
 
 _INTERNAL_ERROR_DETAIL = "Internal server error."
-_NO_RESULTS_DETAIL = "No finished game found for that code."
 _NO_GAME_DETAIL = "No finished game found for that id."
-_EXPORT_FORBIDDEN_DETAIL = "Not authorised to export this game."
 
 _claim_service = ClaimService()
 _export_service = ExportService()
@@ -64,25 +55,6 @@ _ROLE_INDEX = {role.value: index for index, role in enumerate(ROLE_ORDER)}
 # --------------------------------------------------------------------------- #
 # Shared lookups, reused by `user_games.py` for the caller's own single game.
 # --------------------------------------------------------------------------- #
-
-
-def find_latest_finished_game(db: Session, room_code: str) -> Game | None:
-    """The most recently finished game for a room code, or None.
-
-    A room code is reused once a room expires, so "the game for this code"
-    means the newest `finished_at`, never an arbitrary match.
-
-    Case-insensitive, like the live room lookup (`state_service._room_key`):
-    codes are minted and stored upper-case, and PostgreSQL compares strings
-    case-sensitively, so the code from the URL is normalised here rather than
-    trusting the database's collation to fold it.
-    """
-    return db.execute(
-        select(Game)
-        .where(Game.room_code == room_code.strip().upper())
-        .order_by(Game.finished_at.desc())
-        .limit(1)
-    ).scalar_one_or_none()
 
 
 def find_game_by_public_id(db: Session, public_id: str) -> Game | None:
@@ -293,90 +265,18 @@ def build_week_export_rows(db: Session, game: Game) -> list[dict]:
     return rows
 
 
-def _resolve_export_authority(
-    db: Session,
-    room: dict | None,
-    game: Game,
-    host_secret_header: str,
-    authorization_header: str,
-) -> None:
-    """The export authority's evaluation order (spec §9.5), first match wins.
-
-    The room-existence check has already happened (a caller reaches this
-    function only once a finished `games` row was found). This function only
-    decides *who* may have it: the live room's secret, or -- when there is no
-    live room, or the secret is absent or wrong -- the registered host's own
-    bearer token. Neither credential is used to probe the other: a wrong
-    secret and a missing bearer token both fall through to the same 403.
-
-    The registered host is the account on the game's `HOST` participant row,
-    the one record of who hosted: a guest host who later claims their results
-    is attributed there, and may then export with their own token.
-    """
-    if room is not None:
-        stored = room.get("host_secret") or ""
-        supplied = host_secret_header or ""
-        if stored and supplied and hmac.compare_digest(stored, supplied):
-            return
-
-    host_user_id = db.execute(
-        select(Participant.user_id).where(
-            Participant.game_id == game.id,
-            Participant.participant_type == "HOST",
-        )
-    ).scalar_one_or_none()
-    if host_user_id is not None:
-        claims = get_optional_firebase_user(authorization=authorization_header)
-        if claims is not None:
-            uid = claims.get("uid")
-            if uid:
-                user_id = db.execute(
-                    select(User.id).where(User.firebase_uid == uid)
-                ).scalar_one_or_none()
-                if user_id is not None and user_id == host_user_id:
-                    return
-
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN, detail=_EXPORT_FORBIDDEN_DETAIL
-    )
-
-
 # --------------------------------------------------------------------------- #
 # Routes
 # --------------------------------------------------------------------------- #
-
-
-@router.get("/{room_code}/results", response_model=ResultsResponse)
-def get_results(
-    room_code: str, db: Annotated[Session, Depends(get_db)]
-) -> ResultsResponse:
-    """The full results payload for a finished game. No authentication --
-    a results URL is shareable (spec §9.8).
-    """
-    try:
-        game = find_latest_finished_game(db, room_code)
-        if game is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail=_NO_RESULTS_DETAIL
-            )
-        return build_results_response(db, game)
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("Failed to read results for room %s.", room_code)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=_INTERNAL_ERROR_DETAIL,
-        ) from None
 
 
 @router.get("/id/{public_id}/results", response_model=ResultsResponse)
 def get_results_by_public_id(
     public_id: str, db: Annotated[Session, Depends(get_db)]
 ) -> ResultsResponse:
-    """The same payload as `get_results`, addressed by the game's permanent
-    `public_id` rather than its recyclable room code. No authentication, for
-    the same reason: a results URL is shareable.
+    """The full results payload for a finished game, by its permanent
+    `public_id` (spec §9.8, D22). No authentication and no time limit: a
+    results URL is shareable and never expires. 404 for an unknown id.
     """
     try:
         game = find_game_by_public_id(db, public_id)
@@ -393,51 +293,6 @@ def get_results_by_public_id(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=_INTERNAL_ERROR_DETAIL,
         ) from None
-
-
-@router.get("/{room_code}/export")
-async def export_game(
-    room_code: str,
-    db: Annotated[Session, Depends(get_db)],
-    format: Literal["csv", "json"] = "csv",
-    x_host_secret: str = Header(default="", alias="X-Host-Secret"),
-    authorization: str = Header(default=""),
-) -> Response:
-    """CSV (default) or JSON of the complete record, by room code. Host-only
-    (spec §9.5): the live room's secret or the registered host's token.
-
-    Unlike `export_game_by_public_id`, this stays closed: a room code is six
-    characters and reissued once its room expires, so an open export by code
-    would let anyone walk the code space and download every finished game.
-    Once the caller is authorised it shares the export cache, keyed by the
-    game's `public_id`.
-    """
-    try:
-        game = find_latest_finished_game(db, room_code)
-        if game is None:
-            # 403, not 404: a 404 here would tell an unauthorised caller
-            # that the game does not exist rather than that they may not
-            # have it.
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, detail=_EXPORT_FORBIDDEN_DETAIL
-            )
-
-        room = await get_state_service().get_room(room_code)
-        _resolve_export_authority(db, room, game, x_host_secret, authorization)
-
-        cached = export_cache.get((game.public_id, format))
-        if cached is None:
-            cached = _render_export(db, game, format)
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("Failed to export game for room %s.", room_code)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=_INTERNAL_ERROR_DETAIL,
-        ) from None
-
-    return _cached_response(cached)
 
 
 @router.get("/id/{public_id}/export")
@@ -460,8 +315,8 @@ def export_game_by_public_id(
     (`services/export_cache.py`) without touching the database: a finished
     game never changes. The guard against draining compute is `core.abuse`'s
     hourly per-address export budget (429 with `Retry-After`), charged by the
-    middleware before this runs, cached or not. Only the `public_id` route is
-    open: a room code is short and reissued, so `export_game` stays host-only.
+    middleware before this runs, cached or not. There is no export by room
+    code: a code is short and reissued, so it names no particular game.
     """
     try:
         cached = export_cache.get((public_id, format))

@@ -38,7 +38,7 @@ from sqlalchemy.pool import StaticPool
 from app.core import abuse
 from app.core.abuse import RateLimiter
 from app.core.enums import ROLE_ORDER, Role
-from app.models.game import Participant
+from app.models.game import Game, Participant
 from app.models.user import User
 from app.services.db_service import DbService, build_snapshot
 from app.services.export_cache import CachedExport, ExportCache, export_cache
@@ -185,6 +185,7 @@ def _persist(db_factory) -> dict[str, Any]:
         engine,
         room_code=unique_room_code(),
         host_identity=HOST_UID,
+        host_uid=HOST_UID,
         host_display_name=HOST_NAME,
         participants=participants,
         started_at=datetime(2026, 11, 1, 9, 0, tzinfo=timezone.utc),
@@ -192,8 +193,11 @@ def _persist(db_factory) -> dict[str, Any]:
     )
     room["host_secret"] = HOST_SECRET
     snapshot = build_snapshot(room, config, engine)
-    DbService().persist_game(db, snapshot)
+    game_id = DbService().persist_game(db, snapshot)
     db.commit()
+    public_id = db.execute(
+        select(Game.public_id).where(Game.id == game_id)
+    ).scalar_one()
 
     user_ids = [str(uid) for uid in db.execute(select(User.id)).scalars()]
     participant_user_ids = [
@@ -203,14 +207,11 @@ def _persist(db_factory) -> dict[str, Any]:
     ]
     db.close()
     return {
+        "public_id": public_id,
         "room_code": room["room_code"],
         "session_tokens": [p["session_token"] for p in participants.values()],
         "user_ids": user_ids + participant_user_ids,
     }
-
-
-def _public_id(client, room_code: str) -> str:
-    return client.get(f"/api/v1/games/{room_code}/results").json()["public_id"]
 
 
 @pytest.mark.asyncio
@@ -220,7 +221,7 @@ async def test_the_open_export_carries_no_account_or_credential(
     game = _persist(db_factory)
     # A live room under the same code holds a secret too: it must not leak.
     await write_live_redis_room(fake_redis, game["room_code"], host_secret=LIVE_SECRET)
-    url = f"/api/v1/games/id/{_public_id(open_client, game['room_code'])}/export"
+    url = f"/api/v1/games/id/{game['public_id']}/export"
 
     csv_response = open_client.get(url, params={"format": "csv"})
     json_response = open_client.get(url, params={"format": "json"})
@@ -264,7 +265,7 @@ def test_the_open_export_carries_only_what_the_results_screen_shows(
     the same figures as `GET /results`, with each role's name replaced by its
     seat's `P<N>`."""
     game = _persist(db_factory)
-    results = open_client.get(f"/api/v1/games/{game['room_code']}/results").json()
+    results = open_client.get(f"/api/v1/games/id/{game['public_id']}/results").json()
     url = f"/api/v1/games/id/{results['public_id']}/export"
 
     payload = open_client.get(url, params={"format": "json"}).json()
@@ -285,9 +286,7 @@ def test_timestamps_and_money_keep_their_wire_types(
     `Z` (a naive SQLite value is UTC too) and money as JSON numbers, never as
     `Decimal` strings, whichever database the row came from."""
     game = _persist(db_factory)
-    results = open_client.get(
-        f"/api/v1/games/{game['room_code'].lower()}/results"
-    ).json()
+    results = open_client.get(f"/api/v1/games/id/{game['public_id']}/results").json()
     payload = open_client.get(
         f"/api/v1/games/id/{results['public_id']}/export", params={"format": "json"}
     ).json()
@@ -329,7 +328,7 @@ def test_no_part_of_any_chosen_name_is_in_the_export(
     open_client, db_factory, fake_redis, fmt
 ):
     game = _persist(db_factory)
-    results = open_client.get(f"/api/v1/games/{game['room_code']}/results").json()
+    results = open_client.get(f"/api/v1/games/id/{game['public_id']}/results").json()
     # The results screen still shows the names the players chose.
     assert {e["display_name"] for e in results["per_role"]} == set(SEAT_NAMES.values())
 
@@ -352,7 +351,7 @@ def test_every_player_is_their_seats_p_n_in_every_row(
     """Numbered by seat (Retailer P1 .. Factory P4), the same in every row,
     whatever alias the player had in the room; the role column stays."""
     game = _persist(db_factory)
-    url = f"/api/v1/games/id/{_public_id(open_client, game['room_code'])}/export"
+    url = f"/api/v1/games/id/{game['public_id']}/export"
     response = open_client.get(url, params={"format": fmt})
 
     if fmt == "csv":
@@ -369,11 +368,16 @@ def test_every_player_is_their_seats_p_n_in_every_row(
     }
 
 
-def test_anyone_may_export_by_public_id_but_not_by_room_code(
+@pytest.mark.asyncio
+async def test_anyone_may_export_by_public_id_and_nobody_by_room_code(
     open_client, db_factory, fake_redis
 ):
+    """D22: the export and the results are by `public_id` only. The room code
+    is short and reissued, so there is no route by code at all -- not even
+    for the live room's secret."""
     game = _persist(db_factory)
-    public_id = _public_id(open_client, game["room_code"])
+    public_id = game["public_id"]
+    await write_live_redis_room(fake_redis, game["room_code"], host_secret=LIVE_SECRET)
 
     for fmt in ("csv", "json"):
         response = open_client.get(
@@ -381,10 +385,13 @@ def test_anyone_may_export_by_public_id_but_not_by_room_code(
         )
         assert response.status_code == 200, fmt
 
-    # The room code is short and reissued: still host-only.
-    by_code = open_client.get(f"/api/v1/games/{game['room_code']}/export")
-    assert by_code.status_code == 403
-    assert "room_code" not in by_code.text
+    for path in ("export", "results"):
+        for headers in ({}, {"X-Host-Secret": LIVE_SECRET}):
+            by_code = open_client.get(
+                f"/api/v1/games/{game['room_code']}/{path}", headers=headers
+            )
+            assert by_code.status_code in (404, 405), (path, headers)
+            assert "room_code" not in by_code.text
 
 
 def test_an_unknown_public_id_is_a_404_like_its_results(open_client, fake_redis):
@@ -417,7 +424,7 @@ def test_a_repeat_download_reads_nothing_from_the_database(
     open_client, db_factory, fake_redis, statements, fmt
 ):
     game = _persist(db_factory)
-    url = f"/api/v1/games/id/{_public_id(open_client, game['room_code'])}/export"
+    url = f"/api/v1/games/id/{game['public_id']}/export"
 
     statements.clear()
     first = open_client.get(url, params={"format": fmt})
@@ -437,7 +444,7 @@ def test_a_repeat_download_reads_nothing_from_the_database(
 
 def test_the_cache_is_keyed_by_format(open_client, db_factory, fake_redis, statements):
     game = _persist(db_factory)
-    public_id = _public_id(open_client, game["room_code"])
+    public_id = game["public_id"]
     url = f"/api/v1/games/id/{public_id}/export"
 
     open_client.get(url, params={"format": "csv"})
@@ -462,37 +469,11 @@ def test_a_cached_download_still_counts_against_the_hourly_budget(
 ):
     monkeypatch.setattr(abuse, "_game_export", RateLimiter(2, window=3600.0))
     game = _persist(db_factory)
-    url = f"/api/v1/games/id/{_public_id(open_client, game['room_code'])}/export"
+    url = f"/api/v1/games/id/{game['public_id']}/export"
 
     assert open_client.get(url).status_code == 200
     assert open_client.get(url).status_code == 200  # served from the cache
     assert open_client.get(url).status_code == 429
-
-
-@pytest.mark.asyncio
-async def test_the_room_code_export_shares_the_cache_once_authorised(
-    open_client, db_factory, fake_redis, statements
-):
-    game = _persist(db_factory)
-    public_id = _public_id(open_client, game["room_code"])
-    await write_live_redis_room(fake_redis, game["room_code"], host_secret=LIVE_SECRET)
-
-    by_code = open_client.get(
-        f"/api/v1/games/{game['room_code']}/export",
-        headers={"X-Host-Secret": LIVE_SECRET},
-    )
-    assert by_code.status_code == 200
-    assert (public_id, "csv") in export_cache
-
-    statements.clear()
-    by_id = open_client.get(f"/api/v1/games/id/{public_id}/export")
-    assert statements == []
-    assert by_id.content == by_code.content
-
-    # The cache never opens the room-code route: still 403 without the secret.
-    assert (
-        open_client.get(f"/api/v1/games/{game['room_code']}/export").status_code == 403
-    )
 
 
 def test_the_cache_is_a_bounded_lru() -> None:

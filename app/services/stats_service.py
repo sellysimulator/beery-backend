@@ -26,7 +26,9 @@ __all__ = ["StatsService", "get_stats_service"]
 
 
 # One row per game the user occupied a role in, joined against `games` for
-# `weeks_played`. `p.role IS NOT NULL` excludes the host, who never holds one.
+# `weeks_played`. The host has no participant row at all (D23), so hosting
+# never reaches this; `p.role IS NOT NULL` stays because the column is
+# nullable and a seat without a role has no cost to count.
 _GAMES_FOR_USER = text("""
     SELECT p.game_id AS game_id, p.role AS role, p.bullwhip_ratio AS bullwhip_ratio,
            g.weeks_played AS weeks_played
@@ -173,7 +175,11 @@ class StatsService:
         db.commit()
 
     def recompute_for_game(self, db: Session, game_id: int) -> None:
-        """Recompute stats for every registered participant of this game."""
+        """Recompute stats for every registered player of this game.
+
+        Reads seats only: the host has no `participants` row and
+        `games.host_user_id` is never read here, so hosting a game creates no
+        `user_stats` row (D23)."""
         user_ids = (
             db.execute(
                 text(

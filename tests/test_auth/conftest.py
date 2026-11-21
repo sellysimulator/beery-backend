@@ -66,12 +66,13 @@ def _reset_firebase_singleton() -> None:
 
 
 def _clear_socket_maps() -> None:
-    """Empty the three public sid maps on the manager singleton."""
+    """Empty the four public sid maps on the manager singleton."""
     from app.sockets.manager import socket_manager
 
     socket_manager.sid_to_room.clear()
     socket_manager.sid_to_alias.clear()
     socket_manager.sid_to_identity.clear()
+    socket_manager.sid_to_verified_uid.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -95,7 +96,7 @@ def _isolate_auth_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 @pytest.fixture()
 def sock_mgr(_isolate_auth_state: None):
-    """The real ``socket_manager``, with its three maps emptied.
+    """The real ``socket_manager``, with its four maps emptied.
 
     Not a fake: the handshake's whole observable effect is what it writes into
     ``sid_to_identity``, so the tests read it from the real singleton.  (The

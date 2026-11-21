@@ -84,7 +84,7 @@ app/
   main.py            FastAPI app + CORS + lifespan; `application` = socketio.ASGIApp wrapper
   config.py          pydantic-settings `Settings`, `settings` singleton, db_url, db_connect_args
   api/
-    deps.py          THE single Firebase token verifier + get_current/optional_firebase_user
+    deps.py          THE single Firebase token verifier + get_current_firebase_user
     v1/              auto-discovered routers: health, users, user_games, rooms, games
   core/              PURE domain: enums, config_models, limits, presets, preview, demand,
                      pipeline, records, agents, game_engine, bot, stats
@@ -99,7 +99,7 @@ app/
     manager.py       AsyncServer `sio` + `socket_manager` (sid → room/alias/identity)
     errors.py        `@guarded(...)` decorator
     handlers/        auto-discovered: connection.py, lobby.py, play.py
-alembic/             env.py reads the URL from settings; versions/0001_postgres_baseline
+alembic/             env.py reads the URL from settings; versions/0001_postgres_baseline, 0002_games_host_user_id
 db/                  schema.postgres.sql — generated DDL of head (scripts/db/gen_ddl.py)
 tests/               test_skeleton, test_auth, test_core, test_services, test_api,
                      test_sockets, test_models (dbschema), test_deploy
@@ -242,10 +242,10 @@ source change needs a rebuild.
   is a *different* function for stored profile fields and must not be reused for display names.
 - **API/socket contract with the frontend.** REST: `/api/v1/health`, `/health/deep`,
   `/users/upsert`, `/users/me`, `/users/me/stats`, `/users/me/games`,
-  `/users/me/games/{game_id}`, `/rooms/create`, `/rooms/presets`, `/rooms/limits`,
+  `/users/me/games/{public_id}`, `/users/me/hosted-games`, `/rooms/create`, `/rooms/presets`, `/rooms/limits`,
   `POST /rooms/preview`, `POST /rooms/batch-create`, `POST /rooms/summary`,
   `/rooms/{code}/status`,
-  `GET|PUT /rooms/{code}/config`, `/games/{code}/results`, `/games/{code}/export`,
+  `GET|PUT /rooms/{code}/config`,
   `/games/id/{public_id}/results`, `/games/id/{public_id}/export`, `POST /games/claim`.
   Socket in: `connect`, `disconnect`, `join_waiting`, `join`, `leave`, `config_update`,
   `set_role_mode`, `assign_role`, `claim_role`, `release_role`, `start_game`, `submit_order`,
@@ -296,10 +296,21 @@ source change needs a rebuild.
   Never fall back to trusting a raw value, and never add a second verification path.
 - **`identity` is server-only.** It is resolved once at `connect` and read thereafter from
   `socket_manager.sid_to_identity[sid]` — never accepted from a client payload. A broadcast
-  may carry `alias`; it may **never** carry `identity`, `session_token` or `host_secret`.
+  may carry `alias`; it may **never** carry `identity`, `host_uid`, `session_token` or `host_secret`.
   Redact server-side before sending: build payloads key by key, never spread a room document.
 - **Authority is a capability**: `host_secret`, compared with `hmac.compare_digest`
   (D3). D18 also accepts a connection whose verified identity equals `host_identity`.
+- **The host record (D23) is a list entry, never a credential.** `start_game`, past the
+  secret check and `can_start`, writes `room["host_uid"]` from
+  `socket_manager.sid_to_verified_uid[sid]` — set by the handshake only for an ID token that
+  verified, never inferred from a missing `guest_` prefix — so a guest host is never recorded
+  and the dashboard's "Start all" (no `join_waiting`) is. `host_uid` is server-only (in no
+  payload; `test_redaction.py`, `test_host_record.py`). `persist_game` resolves it to
+  `games.host_user_id` by lookup only (no `users` row → NULL, none created); the host has no
+  `participants` row, and `host_identity` (D18's live key, possibly a guest id) is never
+  persisted. Its one reader is `GET /users/me/hosted-games`. Nothing else may read it: no
+  export, claim, results or authority path. History, stats and `/users/me/games/{id}` stay
+  played-only.
   `room_service.check_host_identity` must return `False` when the stored `host_identity` is
   null, and only a secret claim may write `host_identity` — otherwise the D18 recovery path
   hands a fresh room to the first stranger.
@@ -371,12 +382,13 @@ source change needs a rebuild.
   `{message, room_code}` (`_reject_start`, and `@guarded("join_error", echo_room_code=True)`
   for its rate-limit and server-error replies), so the dashboard puts it on that game's card.
   Additive: listeners reading `message` are unaffected.
-- **The export is open by `public_id`, host-only by room code** (D22).
-  Anyone who can open a finished game's results may download it: a guest host has no account
-  to fall back on. `GET /games/id/{public_id}/export` takes no credential (404 for an unknown
-  id, like its results) and the results screen uses it for everyone. `GET /games/{code}/export`
-  keeps `_resolve_export_authority` (secret or the host's token, 403 otherwise) because a
-  six-character, reissued code could be enumerated. The export may carry only what the results
+- **Results and export are by `public_id` only** (D22), the same in every Novus game.
+  `GET /games/id/{public_id}/results` and `/export` take no credential, never expire and
+  answer 404 for an unknown id; anyone who can open the results may download them (a guest
+  host has no account to fall back on). **There is no route by room code** — a six-character,
+  reissued code names no game and could be enumerated — so never add one back, and no route
+  takes or returns an internal `games.id` either (`MatchSummary.public_id`,
+  `UserStatsResponse.best_game_public_id`, `/users/me/games/{public_id}`). The export may carry only what the results
   screen shows: never add a uid, email, `user_id`, guest identity, session token or secret to
   `build_week_export_rows` or `ResultsResponse` (`tests/test_api/test_export_open.py` checks
   both formats without Docker). The frontend's once-per-session download button is UX only;
@@ -386,8 +398,7 @@ source change needs a rebuild.
   finished export is cached** in `services/export_cache.py`: an in-process LRU of 64 files
   keyed by `(public_id, format)`, final bytes, no expiry (a stored game never changes), 200s
   only. No Redis or DB, so it is per instance and empty after a restart. The rate limit is
-  charged by the middleware before the route, so a cached download still counts. The
-  room-code route uses the cache only after `_resolve_export_authority` has passed.
+  charged by the middleware before the route, so a cached download still counts.
 - **No screen shows a single "week cost".** `WeekRecord.total_week_cost` (and the
   `weeks.total_week_cost` column, the export's `total_week_cost`) is holding + backlog + order
   cost; `player_view` sends `week_holding_backlog_cost` and `week_order_cost` (`null` until the

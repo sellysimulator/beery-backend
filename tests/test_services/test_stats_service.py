@@ -18,7 +18,8 @@ import pytest
 from sqlalchemy import text
 
 from app.core.enums import Role
-from app.models.game import UserStats
+from app.models.game import Game, UserStats
+from app.models.user import User
 from app.services.db_service import DbService, build_snapshot
 from app.services.stats_service import StatsService
 
@@ -264,3 +265,38 @@ def test_recompute_for_a_deleted_user_is_a_noop(db):
     db.commit()
 
     assert db.get(UserStats, user_id) is None
+
+
+# ---------------------------------------------------------------------------
+# Hosting is not playing (D23)
+# ---------------------------------------------------------------------------
+
+
+def test_recompute_for_game_creates_no_stats_for_the_host(db):
+    """A signed-in host's game recomputes its players' stats and never the
+    host's: the host has no participant row, and `host_user_id` is not
+    read."""
+    host_user_id = insert_user(db.connection(), firebase_uid="uid-stats-host")
+    db.commit()
+
+    config = make_config(duration_weeks=10)
+    engine = run_full_game(config, seed=7)
+    room = make_room_document(
+        config,
+        engine,
+        host_uid="uid-stats-host",
+        participants={
+            "P1": make_participant(
+                "P1", identity="uid-stats-player", role=Role.RETAILER
+            )
+        },
+    )
+    game_id = DbService().persist_game(db, build_snapshot(room, config, engine))
+    db.commit()
+    assert db.get(Game, game_id).host_user_id == host_user_id
+
+    StatsService().recompute_for_game(db, game_id)
+
+    assert db.get(UserStats, host_user_id) is None
+    player = db.query(User).filter_by(firebase_uid="uid-stats-player").one()
+    assert db.get(UserStats, player.id).games_played == 1

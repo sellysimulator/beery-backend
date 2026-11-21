@@ -44,6 +44,11 @@ class SocketManager:
         # Verified identity (Firebase uid or guest_<uuid4>), established once at
         # the handshake and never afterwards accepted from the client.
         self.sid_to_identity: dict[str, str] = {}
+        # The Firebase uid of a sid whose handshake presented an ID token that
+        # verified -- and only those. Never inferred from `sid_to_identity`
+        # (a missing `guest_` prefix proves nothing): `start_game` records the
+        # host's account from here (spec D23), so a guest has no entry.
+        self.sid_to_verified_uid: dict[str, str] = {}
 
     async def connect(self, sid: str, environ: dict) -> None:
         logger.info("Client connected: %s", sid)
@@ -52,6 +57,7 @@ class SocketManager:
         self.sid_to_room.pop(sid, None)
         self.sid_to_alias.pop(sid, None)
         self.sid_to_identity.pop(sid, None)
+        self.sid_to_verified_uid.pop(sid, None)
         logger.info("Client disconnected: %s", sid)
 
     async def join_room(self, sid: str, room_id: str, alias: str) -> None:

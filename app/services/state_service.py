@@ -29,7 +29,8 @@ from .state_backend import StateBackend, build_state_backend
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION: int = 1
+# 2: the server-only `host_uid` key (spec D23).
+SCHEMA_VERSION: int = 2
 ROOM_CODE_ALPHABET: str = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no 0/O/1/I/L
 ROOM_CODE_LENGTH: int = 6
 ROOM_TTL_SECONDS: int = 86_400  # 24 hours; every save_room refreshes it
@@ -78,6 +79,12 @@ def new_room_document(
         "host_secret": secrets.token_urlsafe(32),
         "host_sid": None,
         "host_identity": None,
+        # The verified Firebase uid of the connection whose `start_game`
+        # started the game, or None (a guest, or not started yet). Server-only,
+        # never in any payload; persistence resolves it to
+        # `games.host_user_id` (D23). Not `host_identity`: that one is D18's
+        # live recovery key and may be a guest id.
+        "host_uid": None,
         "host_display_name": host_display_name,
         # --- people ---
         "participants": {},

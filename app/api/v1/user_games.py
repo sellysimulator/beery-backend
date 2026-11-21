@@ -1,4 +1,4 @@
-"""The caller's own profile aggregate and match history
+"""The caller's own profile aggregate, match history and hosted games
 (spec §9.9).
 
 This is a second router under ``/users``: ``app/api/v1/users.py`` holds the
@@ -24,6 +24,8 @@ from ...core.enums import Role
 from ...db.session import get_db
 from ...models.game import Game, GameConfigRow, Participant, UserStats, Week
 from ...schemas.results import (
+    HostedGamesResponse,
+    HostedGameSummary,
     MatchHistoryResponse,
     MatchSummary,
     ResultsResponse,
@@ -31,7 +33,7 @@ from ...schemas.results import (
 )
 from ...services.user_service import UserService
 from ..deps import get_current_firebase_user
-from .games import build_results_response
+from .games import build_results_response, find_game_by_public_id
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +53,7 @@ _ZERO_STATS = UserStatsResponse(
     total_cost=0.0,
     avg_cost_per_week=0.0,
     bullwhip_avg=None,
-    best_game_id=None,
+    best_game_public_id=None,
     games_as_retailer=0,
     games_as_wholesaler=0,
     games_as_distributor=0,
@@ -99,12 +101,13 @@ def _last_week_cost_subquery():  # type: ignore[no-untyped-def]
 def _match_history_base(user_id: int):  # type: ignore[no-untyped-def]
     """The caller's played rows, one per `(game, role)`, unordered and
     unpaginated -- shared by the count and the data query so both agree on
-    exactly which rows qualify.
+    exactly which rows qualify. Seats only: the host has no participant row
+    (D23), so hosting never puts a game here.
     """
     last_week_cost = _last_week_cost_subquery()
     return (
         select(
-            Game.id.label("game_id"),
+            Game.public_id,
             Game.room_code,
             Game.finished_at,
             Participant.role,
@@ -138,6 +141,15 @@ def get_my_stats(
     try:
         user_id = _resolve_user_id(db, claims["uid"])
         stats_row = db.get(UserStats, user_id) if user_id is not None else None
+        # The best game goes out by `public_id`: no internal id is on the
+        # wire (D22), and the profile opens it as `/profile/games/{public_id}`.
+        best_game_public_id = (
+            db.execute(
+                select(Game.public_id).where(Game.id == stats_row.best_game_id)
+            ).scalar_one_or_none()
+            if stats_row is not None and stats_row.best_game_id is not None
+            else None
+        )
     except Exception:
         logger.exception("Failed to read stats for the caller.")
         raise HTTPException(
@@ -158,7 +170,7 @@ def get_my_stats(
             if stats_row.bullwhip_avg is not None
             else None
         ),
-        best_game_id=stats_row.best_game_id,
+        best_game_public_id=best_game_public_id,
         games_as_retailer=stats_row.games_as_retailer,
         games_as_wholesaler=stats_row.games_as_wholesaler,
         games_as_distributor=stats_row.games_as_distributor,
@@ -208,7 +220,7 @@ def get_my_games(
 
     matches = [
         MatchSummary(
-            game_id=row.game_id,
+            public_id=row.public_id,
             room_code=row.room_code,
             finished_at=row.finished_at,
             role=Role(row.role),
@@ -227,34 +239,110 @@ def get_my_games(
     )
 
 
-@router.get("/me/games/{game_id}", response_model=ResultsResponse)
+@router.get("/me/hosted-games", response_model=HostedGamesResponse)
+def get_my_hosted_games(
+    db: Annotated[Session, Depends(get_db)],
+    claims: Annotated[dict, Depends(get_current_firebase_user)],
+    page: int = 1,
+    page_size: int = 20,
+) -> HostedGamesResponse:
+    """The games the caller hosted while signed in, newest first, paginated
+    exactly as `/me/games` is (D23).
+
+    The only reader of `games.host_user_id`. It lists; it grants nothing:
+    each entry opens on the open results page by `public_id`, and no export,
+    claim or authority follows from being on it. Three statements whatever
+    the count: the caller's `users.id`, one `COUNT` and one data query whose
+    seat count is a correlated subquery, never a query per game.
+    """
+    page = max(page, 1)
+    page_size = min(max(page_size, _MIN_PAGE_SIZE), _MAX_PAGE_SIZE)
+
+    try:
+        user_id = _resolve_user_id(db, claims["uid"])
+        if user_id is None:
+            return HostedGamesResponse(
+                games=[], total=0, page=page, page_size=page_size
+            )
+
+        total = db.execute(
+            select(func.count()).select_from(Game).where(Game.host_user_id == user_id)
+        ).scalar_one()
+        # Correlated, so it counts only the page's games, through
+        # `ix_participants_game_id_role`.
+        seats = (
+            select(func.count())
+            .where(Participant.game_id == Game.id)
+            .correlate(Game)
+            .scalar_subquery()
+        )
+        rows = db.execute(
+            select(
+                Game.public_id,
+                Game.room_code,
+                Game.finished_at,
+                Game.ended_early,
+                seats.label("player_count"),
+            )
+            .where(Game.host_user_id == user_id)
+            .order_by(Game.finished_at.desc(), Game.id.desc())
+            .limit(page_size)
+            .offset((page - 1) * page_size)
+        ).all()
+    except Exception:
+        logger.exception("Failed to read hosted games for the caller.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=_INTERNAL_ERROR_DETAIL,
+        ) from None
+
+    games = [
+        HostedGameSummary(
+            public_id=row.public_id,
+            room_code=row.room_code,
+            finished_at=row.finished_at,
+            player_count=int(row.player_count),
+            ended_early=row.ended_early,
+        )
+        for row in rows
+    ]
+    return HostedGamesResponse(games=games, total=total, page=page, page_size=page_size)
+
+
+@router.get("/me/games/{public_id}", response_model=ResultsResponse)
 def get_my_game(
-    game_id: int,
+    public_id: str,
     db: Annotated[Session, Depends(get_db)],
     claims: Annotated[dict, Depends(get_current_firebase_user)],
 ) -> ResultsResponse:
-    """One of the caller's own games, in full.
+    """One of the caller's own games, in full, by its `public_id`: a game they
+    played a seat in. Never by an internal id (D22).
 
-    404 -- never 403 -- when the caller did not participate, identical to a
-    non-existent id, so this route is never a game-existence oracle.
+    404 -- never 403 -- when the caller did not play it, identical to a
+    non-existent id, so this route is never a game-existence oracle. Hosting
+    a game does not open it here (D23): a hosted game is on the open results
+    page by `public_id`.
+
+    One account may hold two seats of one game (a guest seat in one tab, a
+    signed-in one in another, then a claim), so the check is an existence
+    test, never a single-row read.
     """
     try:
         user_id = _resolve_user_id(db, claims["uid"])
-        participated = user_id is not None and (
+        game = find_game_by_public_id(db, public_id) if user_id is not None else None
+        played = game is not None and (
             db.execute(
-                select(Participant.id).where(
-                    Participant.game_id == game_id, Participant.user_id == user_id
+                select(Participant.id)
+                .where(
+                    Participant.game_id == game.id,
+                    Participant.user_id == user_id,
+                    Participant.role.is_not(None),
                 )
-            ).scalar_one_or_none()
+                .limit(1)
+            ).first()
             is not None
         )
-        if not participated:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail=_GAME_NOT_FOUND_DETAIL
-            )
-
-        game = db.get(Game, game_id)
-        if game is None:
+        if game is None or not played:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail=_GAME_NOT_FOUND_DETAIL
             )
@@ -262,7 +350,7 @@ def get_my_game(
     except HTTPException:
         raise
     except Exception:
-        logger.exception("Failed to read game %s for the caller.", game_id)
+        logger.exception("Failed to read game %s for the caller.", public_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=_INTERNAL_ERROR_DETAIL,

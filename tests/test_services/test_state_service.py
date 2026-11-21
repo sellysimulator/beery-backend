@@ -49,6 +49,7 @@ EXPECTED_TOP_LEVEL_KEYS = {
     "host_secret",
     "host_sid",
     "host_identity",
+    "host_uid",
     "host_display_name",
     "participants",
     "sid_to_alias",

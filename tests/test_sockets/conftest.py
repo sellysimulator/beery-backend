@@ -125,11 +125,18 @@ def connect_identity(register_sid, fake_socket_manager):
     runs: a sid the real ``sio`` recognises, and a verified identity
     recorded on ``socket_manager`` (faked here, exactly as
     ``app/sockets/handlers/connection.py`` would record it for real).
+
+    ``verified=True`` also records ``identity`` as the sid's verified uid,
+    as the handshake does only for an ID token that verified. It is never
+    inferred from the identity's shape, so a uid-looking identity without
+    it is a connection that did not prove a token.
     """
 
-    async def _connect(sid: str, identity: str) -> None:
+    async def _connect(sid: str, identity: str, *, verified: bool = False) -> None:
         await register_sid(sid)
         fake_socket_manager.sid_to_identity[sid] = identity
+        if verified:
+            fake_socket_manager.sid_to_verified_uid[sid] = identity
 
     return _connect
 

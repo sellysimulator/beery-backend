@@ -22,10 +22,18 @@ import pytest
 from app.api.deps import verify_firebase_id_token
 from app.sockets.handlers.connection import (
     GUEST_ID_RE,
+    Handshake,
     connect,
     disconnect,
-    resolve_identity,
+    resolve_handshake,
 )
+
+
+def resolve_identity(auth):
+    """The identity half of ``resolve_handshake``, or None for a rejection."""
+    handshake = resolve_handshake(auth)
+    return handshake.identity if handshake is not None else None
+
 
 # The shape spec §3.1 specifies, written out independently of the implementation's
 # own constant so that a loosened regex is caught rather than followed.
@@ -236,6 +244,45 @@ def test_resolve_identity_matches_the_truth_table(firebase_tokens):
         == "firebase-uid-123"
     )
     assert resolve_identity({"idToken": "forged", "guestId": guest_id}) is None
+
+
+def test_only_a_verified_token_yields_a_verified_uid(firebase_tokens):
+    """``verified_uid`` comes from the verification itself (spec D23): a
+    token that verified, and nothing else. A guest id -- whatever it looks
+    like -- never has one."""
+    firebase_tokens.configure()
+    firebase_tokens.add("good-token", uid="firebase-uid-123")
+    guest_id = f"guest_{uuid.uuid4()}"
+
+    assert resolve_handshake({"idToken": "good-token"}) == Handshake(
+        "firebase-uid-123", "firebase-uid-123"
+    )
+    assert resolve_handshake({"guestId": guest_id}) == Handshake(guest_id, None)
+    for auth in ({"guestId": FIREBASE_UID_SHAPED}, {"guestId": "nope"}, {}, None):
+        handshake = resolve_handshake(auth)
+        assert handshake is not None
+        assert handshake.verified_uid is None
+
+
+@pytest.mark.asyncio
+async def test_connect_records_a_verified_uid_only_for_a_verified_token(
+    sock_mgr, firebase_tokens
+):
+    """The socket map a host record is taken from (D23): set for a verified
+    token, absent for a guest and for a uid-shaped guest id, and dropped on
+    disconnect."""
+    firebase_tokens.configure()
+    firebase_tokens.add("good-token", uid="firebase-uid-123")
+
+    await connect("sid-1", {}, {"idToken": "good-token"})
+    await connect("sid-2", {}, {"guestId": f"guest_{uuid.uuid4()}"})
+    await connect("sid-3", {}, {"guestId": FIREBASE_UID_SHAPED})
+
+    assert sock_mgr.sid_to_verified_uid == {"sid-1": "firebase-uid-123"}
+    assert FIREBASE_UID_SHAPED not in sock_mgr.sid_to_identity.values()
+
+    await disconnect("sid-1")
+    assert sock_mgr.sid_to_verified_uid == {}
 
 
 def test_the_guest_id_pattern_cannot_match_a_firebase_uid():
@@ -549,9 +596,9 @@ async def test_identity_is_resolved_on_a_worker_thread(sock_mgr, monkeypatch):
 
     def _resolve(auth):
         seen.append(threading.get_ident())
-        return "guest_" + str(uuid.uuid4())
+        return Handshake("guest_" + str(uuid.uuid4()), None)
 
-    monkeypatch.setattr(connection, "resolve_identity", _resolve)
+    monkeypatch.setattr(connection, "resolve_handshake", _resolve)
 
     assert await connect("sid-thread", {}, None) is not False
     assert seen and seen[0] != loop_thread

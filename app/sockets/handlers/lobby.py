@@ -822,6 +822,14 @@ async def start_game(sid: str, data: dict | None = None) -> None:
 
         assert config is not None  # can_start already parsed it successfully
 
+        # Who hosted, for the signed-in host's "Games you hosted" list (D23):
+        # the starting connection's verified uid, and nothing for a guest.
+        # Read from the handshake's verification, never from the shape of
+        # `sid_to_identity`. Past `can_start`, so only the start that actually
+        # starts the game records it (a second start is refused above); the
+        # dashboard's "Start all" lands here too, without a `join_waiting`.
+        room["host_uid"] = socket_manager.sid_to_verified_uid.get(sid)
+
         empty_roles = [
             role for role in ROLE_ORDER if room["role_to_alias"].get(role.value) is None
         ]

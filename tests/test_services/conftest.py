@@ -48,7 +48,11 @@ from app.core.config_models import (
 )
 from app.core.enums import ROLE_ORDER, Role
 from app.core.game_engine import GameEngine, GamePhase
-from app.services.state_service import ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH
+from app.services.state_service import (
+    ROOM_CODE_ALPHABET,
+    ROOM_CODE_LENGTH,
+    SCHEMA_VERSION,
+)
 
 # Reused wholesale from the ``tests/test_models`` suite: the container, the
 # migration, the engine, and a couple of its raw-insert helpers. Importing
@@ -359,6 +363,7 @@ def make_room_document(
     *,
     room_code: str | None = None,
     host_identity: str | None = None,
+    host_uid: str | None = None,
     host_display_name: str = "Host",
     participants: dict[str, dict[str, Any]] | None = None,
     started_at: datetime | None = None,
@@ -374,7 +379,7 @@ def make_room_document(
         if participant.get("role"):
             role_to_alias[participant["role"]] = alias
     return {
-        "schema_version": 1,
+        "schema_version": SCHEMA_VERSION,
         "room_code": room_code or unique_room_code(),
         "state": "FINISHED",
         "created_at": started.isoformat(),
@@ -383,6 +388,7 @@ def make_room_document(
         "host_secret": "test-host-secret",
         "host_sid": None,
         "host_identity": host_identity,
+        "host_uid": host_uid,
         "host_display_name": host_display_name,
         "participants": participants,
         "sid_to_alias": {},

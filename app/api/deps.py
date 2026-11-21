@@ -105,14 +105,3 @@ def get_current_firebase_user(authorization: str = Header(default="")) -> dict:
             status_code=status.HTTP_401_UNAUTHORIZED, detail=_INVALID_TOKEN_DETAIL
         )
     return claims
-
-
-def get_optional_firebase_user(
-    authorization: str = Header(default=""),
-) -> dict | None:
-    """As `get_current_firebase_user`, but returns None instead of raising.
-
-    For routes that are open to guests. The caller still gets None for an invalid
-    token, so an unverifiable token never becomes an identity.
-    """
-    return _verified_claims(authorization)

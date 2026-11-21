@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.api.deps import get_optional_firebase_user, verify_firebase_id_token
+from app.api.deps import verify_firebase_id_token
 
 # --- the configured, working path -------------------------------------------
 
@@ -80,26 +80,6 @@ def test_unconfigured_firebase_rejects_every_input(firebase_tokens):
     assert verify_firebase_id_token("would-verify") is None
     assert verify_firebase_id_token("anything-else") is None
     assert verify_firebase_id_token("") is None
-
-
-# --- the guest-tolerant dependency -------------------------------------------
-
-
-def test_optional_user_is_none_for_a_bad_token_and_claims_for_a_good_one(
-    firebase_tokens,
-):
-    """``get_optional_firebase_user`` "returns None instead of raising, for
-    routes open to guests" -- a guest reaching such a route must not be turned
-    away by a 401."""
-    firebase_tokens.configure()
-    firebase_tokens.add("good-token", uid="firebase-uid-123")
-
-    assert get_optional_firebase_user("") is None
-    assert get_optional_firebase_user("Bearer forged-token") is None
-
-    claims = get_optional_firebase_user("Bearer good-token")
-    assert claims is not None
-    assert claims["uid"] == "firebase-uid-123"
 
 
 # --- abuse limits: oversized or non-string tokens ----------------------------

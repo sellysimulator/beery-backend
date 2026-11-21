@@ -1,5 +1,6 @@
-"""Black-box tests for ``GET /api/v1/games/{room_code}/export`` (host-only)
-and ``GET /api/v1/games/id/{public_id}/export`` (open), against spec §9.5.
+"""Black-box tests for ``GET /api/v1/games/id/{public_id}/export``, the
+only export route (open, D22), against spec §9.5; and for the absence of
+any export by room code (D22, D23).
 
 Reuses ``persist_full_game``, ``register_user``, ``bearer_for``,
 ``write_live_redis_room`` and the ``api_client``/``session_factory``
@@ -18,6 +19,7 @@ import pytest
 from app.core.enums import ROLE_ORDER, Role
 from app.core.game_engine import WeekRecord
 from app.core.stats import compute_stats
+from app.models.game import Game
 from app.services.db_service import DbService, GameSnapshot, ParticipantSnapshot
 
 from .conftest import (
@@ -37,6 +39,13 @@ def EXPORT_URL(room_code: str, fmt: str | None = None) -> str:
     if fmt is None:
         return f"/api/v1/games/{room_code}/export"
     return f"/api/v1/games/{room_code}/export?format={fmt}"
+
+
+def _open_export(api_client, game: dict, fmt: str):
+    """The game's export through the one export route, by its `public_id`."""
+    return api_client.get(
+        f"/api/v1/games/id/{game['public_id']}/export", params={"format": fmt}
+    )
 
 
 # The export file's columns, in order (spec §9.5). ``was_bot`` sits between
@@ -131,6 +140,7 @@ def _persist_export_game(
         duration_weeks=duration_weeks,
         seed=seed,
         host_identity=host_uid,
+        host_uid=host_uid,
         participants=participants,
         started_at=datetime(2026, 5, 17, 8, 0, tzinfo=timezone.utc),
         finished_at=finished_at,
@@ -151,9 +161,7 @@ def test_csv_row_count_header_and_customer_demand(
 ):
     game = _persist_export_game(session_factory, firebase_tokens, seed=31)
 
-    response = api_client.get(
-        EXPORT_URL(game["room_code"], "csv"), headers=game["headers"]
-    )
+    response = _open_export(api_client, game, "csv")
 
     assert response.status_code == 200
     rows = list(csv.reader(io.StringIO(response.text)))
@@ -188,9 +196,7 @@ def test_csv_row_count_header_and_customer_demand(
     assert actual_order == expected_order
 
     # Byte-identical across two fetches of the same game.
-    second_response = api_client.get(
-        EXPORT_URL(game["room_code"], "csv"), headers=game["headers"]
-    )
+    second_response = _open_export(api_client, game, "csv")
     assert second_response.text == response.text
 
 
@@ -268,22 +274,11 @@ def _persist_manual_game_with_substitution(
     config = make_config(duration_weeks=duration_weeks)
     stats = compute_stats(history, demand_series, duration_weeks)
 
-    # The host's row, as `build_snapshot` always writes it: export finds the
-    # registered host there.
-    host = ParticipantSnapshot(
-        alias="HOST",
-        display_name="Host",
-        role=None,
-        participant_type="HOST",
-        is_bot=False,
-        identity=host_uid,
-    )
-    participants = [host] + [
+    participants = [
         ParticipantSnapshot(
             alias=f"P{index + 1}",
             display_name=f"{role.value.title()}Seat",
             role=role,
-            participant_type="PLAYER",
             is_bot=(role is substituted_role),
             identity=(
                 None
@@ -297,8 +292,7 @@ def _persist_manual_game_with_substitution(
     finished_at = datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc)
     snapshot = GameSnapshot(
         room_code=unique_room_code(),
-        host_identity=host_uid,
-        host_display_name="Host",
+        host_uid=host_uid,
         seed=seed,
         started_at=datetime(2026, 6, 1, 8, 0, tzinfo=timezone.utc),
         finished_at=finished_at,
@@ -311,9 +305,12 @@ def _persist_manual_game_with_substitution(
         stats=stats,
     )
     db = session_factory()
-    DbService().persist_game(db, snapshot)
+    game_id = DbService().persist_game(db, snapshot)
     db.commit()
+    public_id = db.get(Game, game_id).public_id
+    db.close()
     return {
+        "public_id": public_id,
         "room_code": snapshot.room_code,
         "headers": headers,
         "duration_weeks": duration_weeks,
@@ -341,9 +338,7 @@ def test_was_bot_differs_from_is_bot_around_a_mid_game_substitution(
         seed=91,
     )
 
-    response = api_client.get(
-        EXPORT_URL(game["room_code"], "csv"), headers=game["headers"]
-    )
+    response = _open_export(api_client, game, "csv")
     assert response.status_code == 200
 
     rows = list(csv.reader(io.StringIO(response.text)))
@@ -387,12 +382,8 @@ def test_json_export_has_the_same_number_of_week_rows_as_the_csv(
 ):
     game = _persist_export_game(session_factory, firebase_tokens, seed=33)
 
-    csv_response = api_client.get(
-        EXPORT_URL(game["room_code"], "csv"), headers=game["headers"]
-    )
-    json_response = api_client.get(
-        EXPORT_URL(game["room_code"], "json"), headers=game["headers"]
-    )
+    csv_response = _open_export(api_client, game, "csv")
+    json_response = _open_export(api_client, game, "json")
 
     assert json_response.status_code == 200
     assert json_response.headers["content-type"].startswith("application/json")
@@ -406,124 +397,38 @@ def test_json_export_has_the_same_number_of_week_rows_as_the_csv(
 
 
 # ---------------------------------------------------------------------------
-# No credentials
-# ---------------------------------------------------------------------------
-
-
-def test_no_credentials_is_403_with_no_partial_body(
-    api_client, session_factory, fake_redis
-):
-    game = persist_full_game(session_factory, duration_weeks=8, seed=34)
-
-    response = api_client.get(EXPORT_URL(game["room_code"], "csv"))
-
-    assert response.status_code == 403
-    detail = response.json()["detail"]
-    assert isinstance(detail, str)
-    assert "room_code" not in response.text  # no CSV header row leaked
-    assert not response.headers.get("content-type", "").startswith("text/csv")
-
-
-def test_export_for_a_room_with_no_finished_game_is_403(api_client, fake_redis):
-    """The route's evaluation order: "no finished games row for the code" -> 403,
-    never 404 -- an unauthorised caller must not learn the code is unused."""
-    response = api_client.get(EXPORT_URL("NOSUCH02", "csv"))
-
-    assert response.status_code == 403
-
-
-# ---------------------------------------------------------------------------
-# Host secret on a live room
+# No export by room code (D22)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_wrong_host_secret_on_a_live_room_is_403(
-    api_client, session_factory, fake_redis
-):
-    game = persist_full_game(session_factory, duration_weeks=8, seed=35)
-    await write_live_redis_room(
-        fake_redis, game["room_code"], host_secret="the-real-secret"
-    )
-
-    response = api_client.get(
-        EXPORT_URL(game["room_code"], "csv"), headers={"X-Host-Secret": "wrong-one"}
-    )
-
-    assert response.status_code == 403
-
-
-@pytest.mark.asyncio
-async def test_export_with_matching_host_secret_on_a_live_room_succeeds(
-    api_client, session_factory, fake_redis
-):
-    game = persist_full_game(session_factory, duration_weeks=8, seed=40)
-    await write_live_redis_room(
-        fake_redis, game["room_code"], host_secret="matching-secret-xyz"
-    )
-
-    response = api_client.get(
-        EXPORT_URL(game["room_code"], "csv"),
-        headers={"X-Host-Secret": "matching-secret-xyz"},
-    )
-
-    assert response.status_code == 200
-
-
-# ---------------------------------------------------------------------------
-# Expired room: the host's bearer token
-# ---------------------------------------------------------------------------
-
-
-def test_after_room_expired_bearer_host_succeeds_others_get_403(
+async def test_there_is_no_export_by_room_code(
     api_client, session_factory, firebase_tokens, fake_redis
 ):
+    """The export is addressed by `public_id` only. By room code there is no
+    route at all: no secret, no bearer (not even the recorded host's, D23)
+    and no live room opens one, and nothing of the file leaks."""
     game = _persist_export_game(session_factory, firebase_tokens, seed=36)
-    # No live Redis room is written for this room_code: "expired".
-
-    own_response = api_client.get(
-        EXPORT_URL(game["room_code"], "csv"), headers=game["headers"]
+    await write_live_redis_room(fake_redis, game["room_code"], host_secret="s-36")
+    credentials = (
+        {},
+        {"X-Host-Secret": "s-36"},
+        game["headers"],
+        {**game["headers"], "X-Host-Secret": "s-36"},
     )
-    assert own_response.status_code == 200
 
-    other_headers = bearer_for(
-        firebase_tokens, firebase_uid="uid-not-the-host", token="tok-other-991"
-    )
-    other_response = api_client.get(
-        EXPORT_URL(game["room_code"], "csv"), headers=other_headers
-    )
-    assert other_response.status_code == 403
+    for headers in credentials:
+        for fmt in ("csv", "json"):
+            response = api_client.get(
+                EXPORT_URL(game["room_code"], fmt), headers=headers
+            )
+            assert response.status_code in (404, 405), (headers, fmt)
+            assert "room_code" not in response.text
+            assert not response.headers.get("content-type", "").startswith("text/csv")
 
-
-def test_a_guest_host_who_claims_their_results_may_export_with_their_token(
-    api_client, session_factory, firebase_tokens, fake_redis
-):
-    """The host is recorded once, on the `HOST` participant row, so the guest
-    claim that attributes that row also makes its account the host: before
-    the claim the token is refused, after it the export succeeds."""
-    guest = "guest_export-host-0000-0000-0000-000000000037"
-    game = persist_full_game(
-        session_factory,
-        seed=37,
-        host_identity=guest,
-        started_at=datetime(2026, 5, 18, 8, 0, tzinfo=timezone.utc),
-        finished_at=datetime(2026, 5, 18, 10, 0, tzinfo=timezone.utc),
-    )
-    # No live Redis room is written for this room_code: "expired".
-    headers = bearer_for(
-        firebase_tokens, firebase_uid="uid-former-guest-host", token="tok-claim-37"
-    )
-    url = EXPORT_URL(game["room_code"], "csv")
-
-    assert api_client.get(url, headers=headers).status_code == 403
-
-    claim = api_client.post(
-        "/api/v1/games/claim", json={"guest_identity": guest}, headers=headers
-    )
-    assert claim.status_code == 200
-    assert claim.json()["claimed"] == 1
-
-    assert api_client.get(url, headers=headers).status_code == 200
+    # The recorded host is still on file; it simply grants nothing.
+    hosted = api_client.get("/api/v1/users/me/hosted-games", headers=game["headers"])
+    assert [g["room_code"] for g in hosted.json()["games"]] == [game["room_code"]]
 
 
 def test_export_by_public_id_is_open_to_anyone_who_has_the_id(
@@ -531,23 +436,13 @@ def test_export_by_public_id_is_open_to_anyone_who_has_the_id(
 ):
     """`GET /games/id/{public_id}/export` names the game exactly, so a
     recycled room code cannot hand over a different game, and it is open like
-    the results by `public_id` (D22): no token, another account's token and
-    the host's own all get the same file. An unknown id is a 404, as its
-    results are. The export by room code stays host-only (the tests above)."""
+    the results (D22): no token, another account's token and the host's own
+    all get the same file. An unknown id is a 404, as its results are."""
     game = _persist_export_game(session_factory, firebase_tokens, seed=38)
-    public_id = api_client.get(f"/api/v1/games/{game['room_code']}/results").json()[
-        "public_id"
-    ]
-    url = f"/api/v1/games/id/{public_id}/export"
+    url = f"/api/v1/games/id/{game['public_id']}/export"
 
     own = api_client.get(url, params={"format": "csv"}, headers=game["headers"])
     assert own.status_code == 200
-    assert (
-        own.text
-        == api_client.get(
-            EXPORT_URL(game["room_code"], "csv"), headers=game["headers"]
-        ).text
-    )
 
     other_headers = bearer_for(
         firebase_tokens, firebase_uid="uid-not-the-host", token="tok-other-992"
@@ -558,8 +453,38 @@ def test_export_by_public_id_is_open_to_anyone_who_has_the_id(
     assert other.text == anonymous.text == own.text
     assert api_client.get(url, params={"format": "json"}).status_code == 200
 
-    assert api_client.get(EXPORT_URL(game["room_code"], "csv")).status_code == 403
     assert api_client.get("/api/v1/games/id/" + "0" * 32 + "/export").status_code == 404
+
+
+def test_a_claim_changes_nothing_about_who_may_export(
+    api_client, session_factory, firebase_tokens, fake_redis
+):
+    """A guest host has no record to claim (D23): claiming their guest id
+    attributes nothing, and the open export answers the same before and
+    after."""
+    guest = "guest_export-host-0000-0000-0000-000000000037"
+    game = persist_full_game(
+        session_factory,
+        seed=37,
+        host_identity=guest,
+        started_at=datetime(2026, 5, 18, 8, 0, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 5, 18, 10, 0, tzinfo=timezone.utc),
+    )
+    headers = bearer_for(
+        firebase_tokens, firebase_uid="uid-former-guest-host", token="tok-claim-37"
+    )
+    url = f"/api/v1/games/id/{game['public_id']}/export"
+    before = api_client.get(url)
+
+    claim = api_client.post(
+        "/api/v1/games/claim", json={"guest_identity": guest}, headers=headers
+    )
+    assert claim.status_code == 200
+    assert claim.json()["claimed"] == 0
+
+    after = api_client.get(url, headers=headers)
+    assert before.status_code == after.status_code == 200
+    assert before.content == after.content
 
 
 # ---------------------------------------------------------------------------
@@ -572,9 +497,7 @@ def test_content_disposition_names_a_csv_file_with_the_room_code(
 ):
     game = _persist_export_game(session_factory, firebase_tokens, seed=37)
 
-    response = api_client.get(
-        EXPORT_URL(game["room_code"], "csv"), headers=game["headers"]
-    )
+    response = _open_export(api_client, game, "csv")
 
     disposition = response.headers.get("content-disposition", "")
     expected_name = f"beery-{game['room_code']}-{game['finished_at']:%Y%m%d}.csv"
@@ -613,21 +536,11 @@ def test_no_identity_leak_in_csv_or_json_export(
         session_factory, firebase_tokens, seed=38, participants=participants
     )
 
-    csv_response = api_client.get(
-        EXPORT_URL(game["room_code"], "csv"), headers=game["headers"]
-    )
-    json_response = api_client.get(
-        EXPORT_URL(game["room_code"], "json"), headers=game["headers"]
-    )
+    csv_response = _open_export(api_client, game, "csv")
+    json_response = _open_export(api_client, game, "json")
+    results = api_client.get(f"/api/v1/games/id/{game['public_id']}/results")
 
-    public_id = api_client.get(f"/api/v1/games/{game['room_code']}/results").json()[
-        "public_id"
-    ]
-    open_url = f"/api/v1/games/id/{public_id}/export"
-    open_csv = api_client.get(open_url, params={"format": "csv"})
-    open_json = api_client.get(open_url, params={"format": "json"})
-
-    for response in (csv_response, json_response, open_csv, open_json):
+    for response in (csv_response, json_response, results):
         assert response.status_code == 200
         assert registered_uid not in response.text
         assert game["host_uid"] not in response.text
@@ -649,9 +562,7 @@ def test_a_formula_like_display_name_never_reaches_the_csv(
     its `P<N>`."""
     game = _persist_export_game(session_factory, firebase_tokens, seed=32)
 
-    response = api_client.get(
-        EXPORT_URL(game["room_code"], "csv"), headers=game["headers"]
-    )
+    response = _open_export(api_client, game, "csv")
 
     rows = list(csv.reader(io.StringIO(response.text)))
     header = rows[0]
@@ -677,9 +588,7 @@ def test_a_unicode_display_name_never_reaches_the_csv(
     `P1` and the file still parses one row per `(week, role)`."""
     game = _persist_export_game(session_factory, firebase_tokens, seed=39)
 
-    response = api_client.get(
-        EXPORT_URL(game["room_code"], "csv"), headers=game["headers"]
-    )
+    response = _open_export(api_client, game, "csv")
 
     rows = list(csv.reader(io.StringIO(response.text)))
     header = rows[0]
