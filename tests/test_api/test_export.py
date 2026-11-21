@@ -73,10 +73,9 @@ EXPECTED_HEADER = [
 ]
 
 # A formula-shaped display name. The export writes each seat's `P<N>`
-# (`export_service.seat_alias`) instead of a name, so neither this string nor
-# its `'`-prefixed form (what a CSV-injection guard would write) is in the file.
+# (`export_service.seat_alias`) instead of a name, so no part of it is in the
+# file; the export escapes no cell, so this test is what keeps it out.
 INJECTION_NAME = "=cmd|'/c calc'!A1"
-SANITISED_INJECTION_NAME = "'" + INJECTION_NAME
 
 # Comma, quote, a real embedded newline, and a non-ASCII character, all in
 # one field -- and, at 6 characters, comfortably under the 24-character cap
@@ -663,7 +662,6 @@ def test_a_formula_like_display_name_never_reaches_the_csv(
     }
     assert wholesaler_names == {"P2"}
     assert "cmd|" not in response.text
-    assert SANITISED_INJECTION_NAME not in response.text
 
 
 # ---------------------------------------------------------------------------

@@ -9,9 +9,11 @@ Factory ``P4``, ``ROLE_ORDER``), the same in every row and in the JSON's
 ``ExportService`` does no database access and takes no ``Session``. The route
 (``app/api/v1/games.py``) assembles ``weeks`` -- one already-joined,
 denormalised dict per ``(week, role)`` -- in a single query, and this module
-only turns that data into CSV text or a JSON-ready dict. Keeping the
-formatting free of I/O is what makes the CSV-injection and Unicode failure
-modes testable without a database.
+only turns that data into CSV text or a JSON-ready dict, so the formatting
+is testable without a database. No cell holds text a player typed (names are
+``P<N>``, ``room_code`` is server-made, ``role`` is an enum, the rest are
+numbers and flags), which is why no cell is escaped against spreadsheet
+formulas: adding a free-text column means adding that escaping back.
 """
 
 from __future__ import annotations
@@ -96,24 +98,6 @@ _MONEY_COLUMNS = frozenset(
     }
 )
 
-# A leading one of these turns a spreadsheet cell into a formula. Prefixing it
-# with a single quote defuses it while leaving the value visibly intact.
-_FORMULA_PREFIXES = ("=", "+", "-", "@")
-
-
-def _sanitise_display_name(value: str) -> str:
-    """Defuse a CSV-injection payload in a display name.
-
-    Only the leading character matters: a name starting with `=`, `+`, `-` or
-    `@` is prefixed with `'`, which every common spreadsheet treats as "this
-    cell is text" and does not render. Anything else is left untouched, so a
-    name that merely *contains* a comma, quote, newline or non-ASCII
-    character round-trips unchanged (`csv.writer` handles the quoting).
-    """
-    if value and value[0] in _FORMULA_PREFIXES:
-        return "'" + value
-    return value
-
 
 def _csv_cell(column: str, value: Any) -> Any:
     """One cell's value, formatted the way the export requires.
@@ -124,8 +108,6 @@ def _csv_cell(column: str, value: Any) -> Any:
     """
     if value is None:
         return ""
-    if column == "display_name" and isinstance(value, str):
-        return _sanitise_display_name(value)
     if column in _MONEY_COLUMNS:
         return f"{float(value):.2f}"
     return value
@@ -136,8 +118,8 @@ class ExportService:
 
     def to_json(self, results: ResultsResponse, weeks: list[dict]) -> dict:
         """The results payload plus a `weeks` array of the same rows as the
-        CSV, as plain JSON objects -- unsanitised, since JSON has no formula
-        cells to defuse.
+        CSV, as plain JSON objects. `display_name` is the seat's `P<N>`
+        (`seat_alias`) in both `weeks` and `per_role`, never the chosen name.
         """
         payload = results.model_dump(mode="json")
         for entry in payload["per_role"]:
@@ -150,9 +132,10 @@ class ExportService:
     def to_csv(self, weeks: list[dict]) -> str:
         """One row per `(week, role)`, plus a header, in the export's column order.
 
-        Always goes through `csv.writer` -- never manual `",".join(...)` --
-        so a display name carrying a comma, a quote, a newline or a
-        non-ASCII character round-trips through `csv.reader` as one field.
+        Every `display_name` is the seat's `P<N>` (`seat_alias`), never the
+        chosen name. Always goes through `csv.writer` -- never manual
+        `",".join(...)` -- so any cell with a comma, quote or newline still
+        round-trips through `csv.reader` as one field.
         """
         buffer = io.StringIO()
         writer = csv.writer(buffer)

@@ -749,7 +749,9 @@ def test_decide_does_not_clamp_to_max_order_quantity() -> None:
     assert bot.target_stock == pytest.approx(30.0)
 
     order = bot.decide(inventory=0, backlog=0, supply_line=0)
-    assert order == 30  # NOT clamped to 5; that is GameEngine.submit_order's job
+    # NOT capped to 5: the play loop caps a bot's figure at
+    # GameEngine.order_bounds() before submit_order, which refuses, not clamps.
+    assert order == 30
 
 
 # --------------------------------------------------------------------------
