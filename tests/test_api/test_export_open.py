@@ -69,6 +69,9 @@ SEAT_NAMES = {
     Role.FACTORY: "Robotnikov",
 }
 HOST_NAME = "Mrs Teacherly"
+# The accounts' own (Google) names, which no export reads either.
+REGISTERED_ACCOUNT_NAME = "Anacleta Cuentagoogle"
+HOST_ACCOUNT_NAME = "Profesora Perfilgoogle"
 LIVE_SECRET = "live-room-secret-that-must-not-leak-77aa"
 
 # Keys an export must not carry at any depth, whatever their value.
@@ -143,9 +146,13 @@ def _persist(db_factory) -> dict[str, Any]:
             User(
                 firebase_uid=REGISTERED_UID,
                 email=REGISTERED_EMAIL,
-                display_name="Ana",
+                display_name=REGISTERED_ACCOUNT_NAME,
             ),
-            User(firebase_uid=HOST_UID, email=HOST_EMAIL, display_name="Teacher"),
+            User(
+                firebase_uid=HOST_UID,
+                email=HOST_EMAIL,
+                display_name=HOST_ACCOUNT_NAME,
+            ),
         ]
     )
     db.commit()
@@ -303,9 +310,11 @@ def test_timestamps_and_money_keep_their_wire_types(
 
 
 def _name_parts() -> list[str]:
-    """Every chosen name, whole and word by word, raw and as JSON escapes it."""
+    """Every chosen name and account name, whole and word by word, raw and as
+    JSON escapes it."""
     parts: list[str] = []
-    for name in [*SEAT_NAMES.values(), HOST_NAME]:
+    account_names = [REGISTERED_ACCOUNT_NAME, HOST_ACCOUNT_NAME]
+    for name in [*SEAT_NAMES.values(), HOST_NAME, *account_names]:
         for piece in [name, *name.split()]:
             parts.append(piece)
             parts.append(json.dumps(piece)[1:-1])  # \u-escaped non-ASCII
