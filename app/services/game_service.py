@@ -19,6 +19,7 @@ recursing.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import time
@@ -233,6 +234,11 @@ async def persist_finished_game(
     same data, deliberately not threaded through here to avoid a second copy
     to keep in sync.
 
+    The work is synchronous SQLAlchemy, so it runs in a worker thread
+    (`asyncio.to_thread`), never on the event loop: a Neon compute waking from
+    suspend, or a slow write, would otherwise freeze every room in the
+    process for as long as it takes.
+
     Called and read as a bare module-level name, exactly as
     `state_service.redis_client` is, so a test can
     monkeypatch `app.services.game_service.persist_finished_game` without
@@ -242,6 +248,13 @@ async def persist_finished_game(
     `from ... import SessionLocal`, so a test that monkeypatches
     `app.db.session.SessionLocal` reaches this call too.
     """
+    return await asyncio.to_thread(_persist_finished_game_sync, room_code, room, engine)
+
+
+def _persist_finished_game_sync(
+    room_code: str, room: dict, engine: GameEngine
+) -> str | None:
+    """`persist_finished_game`'s body, run in a worker thread. Never raises."""
     try:
         snapshot = build_snapshot(room, engine.config, engine)
     except Exception:
