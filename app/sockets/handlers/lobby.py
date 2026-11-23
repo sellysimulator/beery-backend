@@ -148,6 +148,10 @@ async def join_waiting(sid: str, data: dict | None = None) -> None:
         # requires an alias. The host holds no alias and must never appear
         # in either sid-to-alias map.
         await sio.enter_room(sid, room_code)
+        # The room this sid's disconnect is charged to. A tab that was seated
+        # in another room keeps no alias from it: the host holds none.
+        socket_manager.sid_to_room[sid] = room_code
+        socket_manager.sid_to_alias.pop(sid, None)
 
         host_secret_value = room["host_secret"]
         lobby_event = _room_service.lobby_payload(room, state_svc.next_seq(room))

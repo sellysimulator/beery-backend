@@ -549,13 +549,24 @@ async def leave_other_rooms(sid: str, room_code: str) -> None:
     finally drops, the disconnect below (which finds one room for a sid)
     could mark the wrong room. Called by ``join_waiting`` and ``join`` after
     their own lock is released; each old room takes its own lock here.
+
+    The socket leaves the Socket.IO room BEFORE the old room is told: the
+    tab has already started its store over for the new room, and the old
+    room's ``participant_disconnected`` / ``game_paused`` carry that room's
+    much higher ``seq``. Heard by this socket, it would raise the tab's
+    ``lastSeq`` above every event of the new room, which would all be
+    dropped. The per-process maps that still point at the old room go too,
+    so the eventual disconnect is charged to the new one.
     """
     for other in [name for name in sio.rooms(sid) if name not in (sid, room_code)]:
+        await sio.leave_room(sid, other)
+        if socket_manager.sid_to_room.get(sid) == other:
+            socket_manager.sid_to_room.pop(sid, None)
+            socket_manager.sid_to_alias.pop(sid, None)
         try:
             await _leave_room_document(sid, other)
         except Exception:
             logger.exception("Leaving room %s failed for sid %s.", other, sid)
-        await sio.leave_room(sid, other)
 
 
 async def _disconnect_from_room(sid: str) -> None:

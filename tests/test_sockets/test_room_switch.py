@@ -105,3 +105,74 @@ async def test_rejoining_the_same_room_leaves_nothing(
 
     assert room["room_code"] in sio.rooms("sid-host")
     assert (await state_svc.get_room(room["room_code"]))["host_sid"] == "sid-host"
+
+
+def _hearers(fake_socket_manager, sid: str) -> list[tuple[str, str, int]]:
+    """Records, for every room broadcast from now on, whether ``sid`` was in
+    that Socket.IO room when it went out: ``[(room, event, seq), ...]`` of the
+    ones it heard. The fake records the target room only; the real manager
+    delivers to whoever is in the room at that moment."""
+    heard: list[tuple[str, str, int]] = []
+    record = fake_socket_manager.emit_to_room
+
+    async def emit_to_room(room_id: str, event: str, data) -> None:
+        if room_id in sio.rooms(sid):
+            heard.append((room_id, event, data.get("seq", -1)))
+        await record(room_id, event, data)
+
+    fake_socket_manager.emit_to_room = emit_to_room
+    return heard
+
+
+async def test_a_player_switching_rooms_hears_nothing_more_from_the_old_one(
+    make_room, start_running_game, state_svc, fake_socket_manager
+):
+    """The tab has already started its store over for the new room. One
+    late ``participant_disconnected`` or ``game_paused`` from the old room
+    carries that room's high ``seq``: heard, it would make the tab drop every
+    event of the new room."""
+    game = await start_running_game(
+        await make_room(role_assignment_mode="PLAYER_CHOOSES")
+    )
+    sid = game["sids_by_role"]["RETAILER"]
+    await sio.enter_room(sid, game["room_code"])
+    new = await make_room()
+    heard = _hearers(fake_socket_manager, sid)
+    # The fake records the join without entering the Socket.IO room; the
+    # real `socket_manager.join_room` enters it before `leave_other_rooms`.
+    await sio.enter_room(sid, new["room_code"])
+
+    await join(sid, {"room_id": new["room_code"]})
+
+    assert [h for h in heard if h[0] == game["room_code"]] == []
+    # The old room itself was still told, and paused (D7).
+    told = fake_socket_manager.events_for(game["room_code"])
+    assert "participant_disconnected" in told and "game_paused" in told
+    assert (await state_svc.get_room(game["room_code"]))["state"] == "PAUSED"
+    # The new room's events do reach the socket.
+    assert [event for _room, event, _seq in heard] == ["lobby_update"]
+
+
+async def test_a_player_who_becomes_a_host_elsewhere_is_charged_to_the_new_room(
+    make_room, start_running_game, connect_identity, state_svc, fake_socket_manager
+):
+    """Seated in one room, then host of another: the per-process map still
+    named the old room, so the drop was looked up there, found nothing, and
+    the new room kept a host who was gone and never heard
+    ``host_disconnected``."""
+    old = await make_room()
+    await connect_identity("sid-tab", new_guest())
+    await join("sid-tab", {"room_id": old["room_code"]})
+    await sio.enter_room("sid-tab", old["room_code"])
+    game = await start_running_game(
+        await make_room(role_assignment_mode="PLAYER_CHOOSES")
+    )
+
+    await join_waiting("sid-tab", _claim(game))
+    assert (await state_svc.get_room(game["room_code"]))["host_sid"] == "sid-tab"
+    fake_socket_manager.clear()
+
+    await disconnect("sid-tab")
+
+    assert (await state_svc.get_room(game["room_code"]))["host_sid"] is None
+    assert "host_disconnected" in fake_socket_manager.events_for(game["room_code"])
