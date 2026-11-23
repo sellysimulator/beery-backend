@@ -302,7 +302,10 @@ source change needs a rebuild.
 
 - **Auth fails closed and is deliberately ambiguous.** `verify_firebase_id_token` returns
   `None` both for "unconfigured server" and "bad token", and `None` always means reject.
-  Never fall back to trusting a raw value, and never add a second verification path.
+  Never fall back to trusting a raw value, and never add a second verification path. A
+  handshake with neither an `idToken` nor a `guestId` is refused too (`resolve_handshake`
+  returns `None`): a signed-in browser that could not fetch its token sends exactly that and
+  retries, and a fresh guest would seat it under a throwaway identity.
 - **`identity` is server-only.** It is resolved once at `connect` and read thereafter from
   `socket_manager.sid_to_identity[sid]` — never accepted from a client payload. A broadcast
   may carry `alias`; it may **never** carry `identity`, `host_uid`, `session_token` or `host_secret`.

@@ -127,8 +127,10 @@ code that `generate_room_code` could not have minted is refused before any lock 
 ### The socket surface
 
 `/socket.io/`, handled by the auto-discovered modules in `app/sockets/handlers/`. Identity is
-resolved once, at `connect`, from an optional Firebase token in the handshake `auth`, and is
-**server-side only** thereafter — no payload may carry it.
+resolved once, at `connect`, from the handshake `auth` — a Firebase ID token, else the browser's
+guest id — and is **server-side only** thereafter: no payload may carry it. A handshake that
+presents neither (what a signed-in browser sends when it cannot fetch its token) is refused,
+never given a fresh guest identity; a malformed guest id still gets a fresh one.
 
 - **Connection** — `connect`, `disconnect`.
 - **Lobby** (`lobby.py`) — in: `join_waiting`, `join`, `leave`, `config_update`,
