@@ -45,7 +45,7 @@ _UNKNOWN_ROLE = "Unknown role."
 _ROLE_UNFILLED = "That role is unfilled."
 _GAME_NOT_STARTED = "The game has not started."
 
-__all__ = ["on_participant_disconnected"]
+__all__ = ["leave_other_rooms", "on_participant_disconnected"]
 
 
 def _payload(data: Any) -> dict:
@@ -539,6 +539,25 @@ async def on_participant_disconnected(sid: str) -> None:
         logger.exception("on_participant_disconnected failed for sid %s.", sid)
 
 
+async def leave_other_rooms(sid: str, room_code: str) -> None:
+    """``sid`` has just claimed or joined ``room_code``: leave every other
+    game room it is still in, as a disconnect from that room would.
+
+    A tab that goes from one game to another keeps its socket. Left in the
+    old room it would still hear that room's broadcasts, and the old room
+    would still name it as its host or a seated player -- so when the socket
+    finally drops, the disconnect below (which finds one room for a sid)
+    could mark the wrong room. Called by ``join_waiting`` and ``join`` after
+    their own lock is released; each old room takes its own lock here.
+    """
+    for other in [name for name in sio.rooms(sid) if name not in (sid, room_code)]:
+        try:
+            await _leave_room_document(sid, other)
+        except Exception:
+            logger.exception("Leaving room %s failed for sid %s.", other, sid)
+        await sio.leave_room(sid, other)
+
+
 async def _disconnect_from_room(sid: str) -> None:
     """The real disconnect behaviour, split out so `on_participant_disconnected`
     can wrap it in one broad, logged try/except."""
@@ -548,7 +567,12 @@ async def _disconnect_from_room(sid: str) -> None:
         room_code = candidates[0] if candidates else None
     if room_code is None:
         return
+    await _leave_room_document(sid, room_code)
 
+
+async def _leave_room_document(sid: str, room_code: str) -> None:
+    """``sid`` is gone from ``room_code``: its seat is marked disconnected
+    (pausing a running game, D7) or, for the host, ``host_sid`` is cleared."""
     state_svc = get_state_service()
     room_code_out = room_code
     disconnected_payload: dict | None = None

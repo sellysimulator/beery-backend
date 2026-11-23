@@ -36,6 +36,7 @@ from ...services.room_service import RoomService, merge_config_patch
 from ...services.state_service import get_state_service, next_free_alias
 from ..errors import guarded, requested_room_code
 from ..manager import sio, socket_manager
+from .play import leave_other_rooms
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +175,7 @@ async def join_waiting(sid: str, data: dict | None = None) -> None:
 
         await state_svc.save_room(room_code, room)
 
+    await leave_other_rooms(sid, room_code)
     await socket_manager.emit_to_sid(
         sid, "host_claimed", {"room_id": room_code, "host_secret": host_secret_value}
     )
@@ -335,6 +337,7 @@ async def join(sid: str, data: dict | None = None) -> None:
 
             await state_svc.save_room(room_code, room)
 
+    await leave_other_rooms(sid, room_code)
     await socket_manager.emit_to_room(room_code, "lobby_update", lobby_event)
     await socket_manager.emit_to_sid(sid, "joined", joined_event)
     if reconnected_event is not None:

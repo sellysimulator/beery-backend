@@ -330,6 +330,11 @@ source change needs a rebuild.
   `socket_manager.sid_to_alias` is per-process bookkeeping. Read the room's, inside the
   lock. A reconnect moves the mapping (the stale sid is dropped), and the host is never in
   either map (`join_waiting` uses `sio.enter_room`, not `socket_manager.join_room`).
+  A socket is in one game room at a time: `join_waiting` and `join` end with
+  `play.leave_other_rooms`, which leaves every other room the sid is in as a disconnect from
+  it would (seat marked disconnected, a running game paused per D7, or `host_sid` cleared and
+  `host_disconnected` sent). Without it a tab that moved to a new game kept hearing the old
+  one, and its eventual disconnect could be charged to the old room.
 - **`connection.py`'s `disconnect` calls `play.on_participant_disconnected(sid)` before
   `socket_manager.disconnect(sid)`**, which pops the sid maps; reversed, the game silently
   never pauses.
