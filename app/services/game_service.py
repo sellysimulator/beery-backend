@@ -901,15 +901,21 @@ class GameService:
     ) -> None:
         """One attempt now; after a failure, the retries in the background.
 
-        The caller has put `room_code` in `_persisting`; it leaves when the
-        write succeeds or the last retry is spent."""
+        The caller has put `room_code` in `_persisting` before this first
+        attempt; `_persist_once` takes it out when the write succeeds or the
+        last attempt fails, before either outcome is announced."""
         try:
-            saved = await self._persist_once(room_code, snapshot, engine, stats)
+            saved = await self._persist_once(
+                room_code,
+                snapshot,
+                engine,
+                stats,
+                last=not PERSIST_RETRY_DELAYS_SECONDS,
+            )
         except BaseException:
             _persisting.discard(room_code)
             raise
         if saved or not PERSIST_RETRY_DELAYS_SECONDS:
-            _persisting.discard(room_code)
             return
         task = asyncio.create_task(self._retry_persist(room_code))
         _retry_tasks.add(task)
@@ -917,28 +923,47 @@ class GameService:
 
     async def _retry_persist(self, room_code: str) -> None:
         """The background retries: sleep, re-read the room, write. Stops early
-        once the game is saved or the room is gone."""
+        once the game is saved or the room is gone.
+
+        The room stays in `_persisting` through every sleep; the last attempt
+        takes it out before its outcome is announced (`_persist_once`), so a
+        rejoin arriving meanwhile can start a new attempt. Nothing here
+        removes it after that: by then it may be that new attempt's."""
         try:
-            for delay in PERSIST_RETRY_DELAYS_SECONDS:
+            for attempt, delay in enumerate(PERSIST_RETRY_DELAYS_SECONDS, start=1):
                 await asyncio.sleep(delay)
                 found = await self._unsaved_finished_game(room_code)
                 if found is None:
+                    _persisting.discard(room_code)
                     return
-                if await self._persist_once(room_code, *found):
+                last = attempt == len(PERSIST_RETRY_DELAYS_SECONDS)
+                if await self._persist_once(room_code, *found, last=last):
                     return
-            logger.error(
-                "Gave up persisting the finished game of room %s after %d retries.",
-                room_code,
-                len(PERSIST_RETRY_DELAYS_SECONDS),
-            )
-        finally:
+        except BaseException:
             _persisting.discard(room_code)
+            raise
+        logger.error(
+            "Gave up persisting the finished game of room %s after %d retries.",
+            room_code,
+            len(PERSIST_RETRY_DELAYS_SECONDS),
+        )
 
     async def _persist_once(
-        self, room_code: str, snapshot: dict, engine: GameEngine, stats: GameStats
+        self,
+        room_code: str,
+        snapshot: dict,
+        engine: GameEngine,
+        stats: GameStats,
+        *,
+        last: bool,
     ) -> bool:
         """One write, with no lock held, then one short lock to record the
         outcome and, on success, `game_persisted`. True when saved.
+
+        When the write succeeded or this was the `last` attempt, the room
+        leaves `_persisting` BEFORE the outcome is announced, so a rejoin
+        arriving while it goes out is not mistaken for one beside a write in
+        flight.
 
         The write is idempotent on (`room_code`, `started_at`), so a retry of
         a write that did land returns the same game's `public_id`."""
@@ -970,6 +995,8 @@ class GameService:
                     }
                 await state_svc.save_room(room_code, current)
 
+        if persisted or last:
+            _persisting.discard(room_code)
         # Only now does the permanent results URL exist. Clients already hold
         # the debrief from `game_finished`; this just lets them link to it.
         if persisted_payload is not None:

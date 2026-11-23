@@ -224,7 +224,9 @@ source change needs a rebuild.
   while the database write runs survives. A failed write is retried in the background
   (`PERSIST_RETRY_DELAYS_SECONDS` = 2, 10, 30 s; no lock held while writing or sleeping),
   and a `join_waiting`, `join` or `request_state` in a FINISHED room still `persisted:
-  false` with no write in flight (`_persisting`) starts it again
+  false` with no write in flight (`_persisting`: from before the first attempt until the
+  last one ends, left BEFORE `game_persisted` or the give-up log, so a rejoin during either
+  can start anew) starts it again
   (`GameService.persist_if_unsaved`); the write is idempotent on (`room_code`,
   `started_at`). Its callers (`_drive`, `close_week_if_ready`,
   `end_game_early`) call it only after their own lock block. The all-bot cascade is a loop of short acquisitions

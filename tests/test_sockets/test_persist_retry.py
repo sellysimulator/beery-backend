@@ -249,3 +249,85 @@ async def test_a_rejoin_of_a_saved_room_writes_nothing(
     await join(game["sids_by_role"]["RETAILER"], {"room_id": game["room_code"]})
 
     assert database.calls == 1
+
+
+# --- the in-flight guard's two edges -------------------------------------------
+
+
+async def test_the_game_is_in_flight_from_before_its_first_write(
+    make_room, start_running_game, monkeypatch
+):
+    """A rejoin while the first write is still running starts no second one."""
+    room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
+    game = await start_running_game(room)
+    database = FlakyDatabase(failures=0)
+    writing = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_persist(room_code, room_doc, engine, stats):
+        writing.set()
+        await release.wait()
+        return await database.persist(room_code, room_doc, engine, stats)
+
+    monkeypatch.setattr(game_service_module, "persist_finished_game", slow_persist)
+    ending = asyncio.create_task(
+        end_game_early(
+            game["host_sid"],
+            {"room_id": game["room_code"], "host_secret": game["host_secret"]},
+        )
+    )
+    await asyncio.wait_for(writing.wait(), timeout=5)
+    assert game["room_code"] in game_service_module._persisting
+
+    await join(game["sids_by_role"]["RETAILER"], {"room_id": game["room_code"]})
+    release.set()
+    await asyncio.wait_for(ending, timeout=5)
+
+    assert database.calls == 1
+
+
+async def test_the_game_leaves_the_in_flight_set_before_it_is_announced_saved(
+    make_room, start_running_game, fake_socket_manager, monkeypatch
+):
+    room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
+    game = await start_running_game(room)
+    in_flight_at_announcement: list[bool] = []
+    record = fake_socket_manager.emit_to_room
+
+    async def emit_to_room(room_id, event, data):
+        if event == "game_persisted":
+            in_flight_at_announcement.append(room_id in game_service_module._persisting)
+        await record(room_id, event, data)
+
+    fake_socket_manager.emit_to_room = emit_to_room
+
+    await _finish_with(game, FlakyDatabase(failures=0), monkeypatch)
+
+    assert in_flight_at_announcement == [False]
+
+
+async def test_the_game_leaves_the_in_flight_set_before_giving_up_is_announced(
+    make_room, start_running_game, monkeypatch
+):
+    """After the last failed retry a rejoin must be able to start a new
+    attempt at once, not be turned away as a duplicate while the failure is
+    still being reported."""
+    monkeypatch.setattr(game_service_module, "PERSIST_RETRY_DELAYS_SECONDS", (0.0,))
+    room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
+    game = await start_running_game(room)
+    in_flight_at_give_up: list[bool] = []
+    log_error = game_service_module.logger.error
+
+    def spy_error(message, *args, **kwargs):
+        if message.startswith("Gave up"):
+            in_flight_at_give_up.append(
+                game["room_code"] in game_service_module._persisting
+            )
+        log_error(message, *args, **kwargs)
+
+    monkeypatch.setattr(game_service_module.logger, "error", spy_error)
+
+    await _finish_with(game, FlakyDatabase(failures=99), monkeypatch)
+    await _drain_retries()
+
+    assert in_flight_at_give_up == [False]
