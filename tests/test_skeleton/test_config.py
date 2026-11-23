@@ -363,15 +363,14 @@ def test_transport_and_service_defaults(monkeypatch):
     assert s.FIREBASE_SERVICE_ACCOUNT_JSON == ""
 
 
-def test_pool_defaults_fit_the_aiven_free_plan(monkeypatch):
-    """2 + 1 per instance on the Aiven Free service the four Novus games share:
-    Selly, Pulky and Beery 3 each, Lemony 4, plus one game's second instance
-    during its deploy (at most 4), the startup migration (1) and one psql
-    session (1) stay within 20."""
+def test_pool_defaults_fit_beerys_connection_budget(monkeypatch):
+    """7 + 2 per instance within Beery's budget of 20 on its Neon project,
+    deploys included: Render's old and new instance overlap (2 x 9), the new
+    one's startup migration takes 1 and one operator psql session 1."""
     s = _isolated(monkeypatch)
-    assert (s.DB_POOL_SIZE, s.DB_MAX_OVERFLOW) == (2, 1)
-    beery = s.DB_POOL_SIZE + s.DB_MAX_OVERFLOW
-    assert 3 + 3 + beery + 4 + 4 + 2 <= 20
+    assert (s.DB_POOL_SIZE, s.DB_MAX_OVERFLOW) == (7, 2)
+    per_instance = s.DB_POOL_SIZE + s.DB_MAX_OVERFLOW
+    assert 2 * per_instance + 1 + 1 <= 20
 
 
 def test_pool_size_is_overridable_from_the_environment(monkeypatch):

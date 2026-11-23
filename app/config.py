@@ -58,20 +58,22 @@ class Settings(BaseSettings):
     DB_PASSWORD: str = ""
     DB_DATABASE: str = "beerydb"
     # TLS to PostgreSQL is required unless switched off (local Postgres without
-    # TLS). DB_SSL_CA is the CA certificate of the shared Novus Aiven
-    # PostgreSQL service (the same file for all four games) -- the PEM text
-    # itself, or a path to a PEM file -- and adds
+    # TLS). DB_SSL_CA is the CA bundle Beery's Neon project's certificates
+    # chain to (the Let's Encrypt roots ISRG Root X1 + X2; the same public
+    # file for all four games) -- the PEM text itself, or a path to a PEM
+    # file -- and adds
     # certificate and hostname verification (sslmode=verify-full); without it
     # the link is encrypted (sslmode=require) but the server is not
     # authenticated.
     DB_REQUIRE_SSL: bool = True
     DB_SSL_CA: str = ""
     # Connection pool per process: at most DB_POOL_SIZE + DB_MAX_OVERFLOW
-    # (2 + 1) connections. The four Novus games share one Aiven Free service
-    # (20 connections); the budget is in DEPLOY.md, "Managed PostgreSQL
-    # version". Raise both on a bigger plan.
-    DB_POOL_SIZE: int = 2
-    DB_MAX_OVERFLOW: int = 1
+    # (7 + 2 = 9) connections. Beery's budget is 20, deploys included:
+    # 2 x 9 while Render overlaps the old and new instance, + 1 for the
+    # startup migration, + 1 operator psql (DEPLOY.md, "Managed PostgreSQL
+    # version").
+    DB_POOL_SIZE: int = 7
+    DB_MAX_OVERFLOW: int = 2
 
     # Room state lives in this process unless this is switched on. See
     # `app/services/state_backend.py` for what the switch changes and the

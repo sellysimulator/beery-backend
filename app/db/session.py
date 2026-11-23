@@ -11,9 +11,10 @@ engine = create_engine(
     settings.db_url,
     pool_pre_ping=True,
     pool_recycle=3600,
-    # At most DB_POOL_SIZE + DB_MAX_OVERFLOW (2 + 1) connections per process,
-    # this game's share of the Aiven service all four Novus games use (budget
-    # in DEPLOY.md, "Managed PostgreSQL version"). Database
+    # At most DB_POOL_SIZE + DB_MAX_OVERFLOW (7 + 2) connections per process,
+    # within Beery's budget of 20 on its Neon project, deploys included
+    # (DEPLOY.md, "Managed PostgreSQL version"). pool_pre_ping replaces a
+    # connection Neon dropped when the compute scaled to zero. Database
     # work is short (one write per finished game, a few reads per results
     # page); a request that cannot get a connection within 10 s fails rather
     # than queueing forever.
