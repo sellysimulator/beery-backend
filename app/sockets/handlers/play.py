@@ -482,6 +482,11 @@ async def request_state(sid: str, data: dict | None = None) -> None:
         room = await state_svc.get_room(room_id)
         if room is None:
             return
+        room_code = room["room_code"]
+        # A finished game nobody has saved yet is written again (spec §10.2).
+        unsaved = room["state"] == RoomState.FINISHED.value and not room.get(
+            "persisted"
+        )
 
         engine = state_svc.load_engine(room)
         if engine is None:
@@ -503,10 +508,12 @@ async def request_state(sid: str, data: dict | None = None) -> None:
                 {"seq": state_svc.next_seq(room), **engine.player_view(role)},
             )
 
-        await state_svc.save_room(room["room_code"], room)
+        await state_svc.save_room(room_code, room)
 
     event, payload = reply
     await socket_manager.emit_to_sid(sid, event, payload)
+    if unsaved:
+        await get_game_service().persist_if_unsaved(room_code)
 
 
 # --- disconnection -------------------------------------------------------------- #

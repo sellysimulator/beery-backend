@@ -195,8 +195,9 @@ source change needs a rebuild.
 - **Async/sync split.** Socket handlers, services over the state store, and the routes are
   `async def`; everything touching SQLAlchemy is sync and runs on the threadpool FastAPI
   gives a sync dependency. The deep-health DB ping explicitly uses
-  `anyio.to_thread.run_sync`. Do not call a sync `Session` from inside an `async def` without
-  that.
+  `anyio.to_thread.run_sync`, and the end-of-game write (`persist_finished_game`) runs in
+  `asyncio.to_thread`. Do not call a sync `Session` from inside an `async def` without
+  that: a Neon cold start would freeze every room in the process.
 - **D4 — the state store is authoritative for a live game; PostgreSQL is written only when a
   game finishes.** The room is a JSON document at `room:{CODE}` with a 24 h TTL. The
   `GameEngine` is rehydrated per operation (`to_payload`/`from_payload`), never held in
@@ -218,7 +219,12 @@ source change needs a rebuild.
   own lock. `finish_game` takes two short ones around a lock-free persistence call: one to
   re-read, mint `game_finished`'s `seq` and save, one to re-read, set `persisted`, mint
   `game_persisted`'s `seq` and save — never saving the caller's copy, so a mutation made
-  while the database write runs survives. Its callers (`_drive`, `close_week_if_ready`,
+  while the database write runs survives. A failed write is retried in the background
+  (`PERSIST_RETRY_DELAYS_SECONDS` = 2, 10, 30 s; no lock held while writing or sleeping),
+  and a `join_waiting`, `join` or `request_state` in a FINISHED room still `persisted:
+  false` with no write in flight (`_persisting`) starts it again
+  (`GameService.persist_if_unsaved`); the write is idempotent on (`room_code`,
+  `started_at`). Its callers (`_drive`, `close_week_if_ready`,
   `end_game_early`) call it only after their own lock block. The all-bot cascade is a loop of short acquisitions
   (`GameService._drive`), not recursion, and a double close is prevented by re-reading the
   room inside `close_week_if_ready`'s own lock. `start_game`'s `run_bot_decisions` call sits

@@ -197,21 +197,27 @@ def lifespan_client():
 
 
 @pytest.fixture(autouse=True)
-def _reset_process_caches():
+def _reset_process_caches(monkeypatch):
     """Start every test with empty per-process caches.
 
     Only modules already imported are touched, so a test that checks what a
     fresh import does is not handed an import it did not make.
+
+    A failed end-of-game write is not retried unless a test asks for it (by
+    setting ``PERSIST_RETRY_DELAYS_SECONDS`` itself): a background retry
+    sleeping for seconds would outlive the test and its event loop.
     """
+    game_service = sys.modules.get("app.services.game_service")
+    if game_service is not None:
+        monkeypatch.setattr(game_service, "PERSIST_RETRY_DELAYS_SECONDS", ())
+        game_service._persisting.clear()
+        game_service._submission_counts.clear()
     health = sys.modules.get("app.api.v1.health")
     if health is not None:
         health.reset_deep_health_cache()
     abuse = sys.modules.get("app.core.abuse")
     if abuse is not None:
         abuse.reset()
-    game_service = sys.modules.get("app.services.game_service")
-    if game_service is not None:
-        game_service._submission_counts.clear()
     export_cache = sys.modules.get("app.services.export_cache")
     if export_cache is not None:
         export_cache.export_cache.clear()

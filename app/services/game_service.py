@@ -48,6 +48,7 @@ from .stats_service import get_stats_service
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "PERSIST_RETRY_DELAYS_SECONDS",
     "GameService",
     "get_game_service",
     "persist_finished_game",
@@ -66,6 +67,19 @@ _BOT_SEATED_MSG = "A bot is playing your role. Take it back to order again."
 _STALE_WEEK_MSG = "That week is no longer open."
 _INVALID_ORDER_MSG = "Order must be a whole number."
 _TOO_MANY_MSG = "Too many submissions for this week."
+
+#: Seconds before each retry of a failed end-of-game write: three more
+#: attempts after the first, in the background, each off the event loop and
+#: with no room lock held while it writes or sleeps.
+PERSIST_RETRY_DELAYS_SECONDS: tuple[float, ...] = (2.0, 10.0, 30.0)
+
+# Rooms whose end-of-game write is running or waiting for a retry, in this
+# process -- the "already in flight" test that keeps a rejoin from starting a
+# second write beside the first. Process-local, like the counters below.
+_persisting: set[str] = set()
+# The event loop keeps only a weak reference to a task; these are the strong
+# ones that keep a pending retry alive until it ends.
+_retry_tasks: set[asyncio.Task[None]] = set()
 
 # Resubmission counters, per (room_code, week, role): the count and the
 # `time.monotonic()` of that week's first counted submission. Deliberately
@@ -791,8 +805,9 @@ class GameService:
         overwritten, and no two events share a `seq`.
 
         A persistence failure must not break the results screen: it is
-        logged, `persisted` is `False`, and the clients keep the
-        `game_finished` payload they already received."""
+        logged, `persisted` is `False`, the clients keep the `game_finished`
+        payload they already received, and the write is retried in the
+        background (`PERSIST_RETRY_DELAYS_SECONDS`)."""
         state_svc = get_state_service()
         engine = state_svc.load_engine(room)
         if engine is None:
@@ -840,25 +855,111 @@ class GameService:
             room_code_out, "game_finished", finished_payload
         )
 
+        if room_code_out in _persisting:
+            return
+        _persisting.add(room_code_out)
+        await self._persist(room_code_out, snapshot, engine, stats)
+
+    async def persist_if_unsaved(self, room_code: str) -> None:
+        """Write a finished game nobody has saved yet (spec §10.2).
+
+        Called after the host or a player (re)joins, or asks for state in, a
+        FINISHED room: when the room is still `persisted: false` and no write
+        for it is running or waiting to retry in this process, the write is
+        started again -- one attempt now, then the background retries. A no-op
+        otherwise. `room_code` is the room's canonical (upper-case) code.
+        """
+        if room_code in _persisting:
+            return
+        found = await self._unsaved_finished_game(room_code)
+        if found is None or room_code in _persisting:
+            return
+        _persisting.add(room_code)
+        await self._persist(room_code, *found)
+
+    async def _unsaved_finished_game(
+        self, room_code: str
+    ) -> tuple[dict, GameEngine, GameStats] | None:
+        """The room, engine and stats of a FINISHED game still unsaved, or
+        None. A plain read: nothing is written, so no lock."""
+        state_svc = get_state_service()
+        room = await state_svc.get_room(room_code)
+        if (
+            room is None
+            or room["state"] != RoomState.FINISHED.value
+            or room.get("persisted")
+        ):
+            return None
+        engine = state_svc.load_engine(room)
+        if engine is None:
+            return None
+        stats = compute_stats(engine.history, engine.demand_series, engine.weeks_played)
+        return room, engine, stats
+
+    async def _persist(
+        self, room_code: str, snapshot: dict, engine: GameEngine, stats: GameStats
+    ) -> None:
+        """One attempt now; after a failure, the retries in the background.
+
+        The caller has put `room_code` in `_persisting`; it leaves when the
+        write succeeds or the last retry is spent."""
+        try:
+            saved = await self._persist_once(room_code, snapshot, engine, stats)
+        except BaseException:
+            _persisting.discard(room_code)
+            raise
+        if saved or not PERSIST_RETRY_DELAYS_SECONDS:
+            _persisting.discard(room_code)
+            return
+        task = asyncio.create_task(self._retry_persist(room_code))
+        _retry_tasks.add(task)
+        task.add_done_callback(_retry_tasks.discard)
+
+    async def _retry_persist(self, room_code: str) -> None:
+        """The background retries: sleep, re-read the room, write. Stops early
+        once the game is saved or the room is gone."""
+        try:
+            for delay in PERSIST_RETRY_DELAYS_SECONDS:
+                await asyncio.sleep(delay)
+                found = await self._unsaved_finished_game(room_code)
+                if found is None:
+                    return
+                if await self._persist_once(room_code, *found):
+                    return
+            logger.error(
+                "Gave up persisting the finished game of room %s after %d retries.",
+                room_code,
+                len(PERSIST_RETRY_DELAYS_SECONDS),
+            )
+        finally:
+            _persisting.discard(room_code)
+
+    async def _persist_once(
+        self, room_code: str, snapshot: dict, engine: GameEngine, stats: GameStats
+    ) -> bool:
+        """One write, with no lock held, then one short lock to record the
+        outcome and, on success, `game_persisted`. True when saved.
+
+        The write is idempotent on (`room_code`, `started_at`), so a retry of
+        a write that did land returns the same game's `public_id`."""
+        state_svc = get_state_service()
         public_id: str | None = None
         try:
-            public_id = await persist_finished_game(
-                room_code_out, snapshot, engine, stats
-            )
+            public_id = await persist_finished_game(room_code, snapshot, engine, stats)
         except Exception:
-            logger.exception("Persisting finished game %s failed.", room_code_out)
+            logger.exception("Persisting finished game %s failed.", room_code)
             public_id = None
 
         persisted = isinstance(public_id, str)
         persisted_payload: dict | None = None
-        async with state_svc.lock(room_code_out):
-            current = await state_svc.get_room(room_code_out)
+        async with state_svc.lock(room_code):
+            current = await state_svc.get_room(room_code)
             if current is None:
                 # Expired or deleted while the write ran: nothing to flag,
                 # and saving the stale snapshot would resurrect the room.
                 logger.warning(
                     "finish_game: room %s vanished before persisted was saved.",
-                    room_code_out,
+                    room_code,
                 )
             else:
                 current["persisted"] = persisted
@@ -867,14 +968,15 @@ class GameService:
                         "seq": state_svc.next_seq(current),
                         "game_id": public_id,
                     }
-                await state_svc.save_room(room_code_out, current)
+                await state_svc.save_room(room_code, current)
 
         # Only now does the permanent results URL exist. Clients already hold
         # the debrief from `game_finished`; this just lets them link to it.
         if persisted_payload is not None:
             await socket_manager.emit_to_room(
-                room_code_out, "game_persisted", persisted_payload
+                room_code, "game_persisted", persisted_payload
             )
+        return persisted
 
 
 _game_service: GameService | None = None

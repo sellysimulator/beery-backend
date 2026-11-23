@@ -139,6 +139,9 @@ resolved once, at `connect`, from an optional Firebase token in the handshake `a
   `participant_disconnected`, `participant_reconnected`, `host_disconnected`,
   `host_reconnected`, `bot_substituted`, `seat_reclaimed`, `game_finished`,
   `game_persisted` (after a successful database write; carries the `public_id`), `error`.
+  A failed end-of-game write is retried in the background three times (after 2, 10 and
+  30 s), and the host or a player rejoining, or asking for state in, a finished room whose
+  game is still unsaved starts it again; `game_persisted` follows whichever write lands.
   Recipients and payloads are in the spec's §11.2.
 
 `your_state` carries the role's whole `own_history` only where a client may have missed a
