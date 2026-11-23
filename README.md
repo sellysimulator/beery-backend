@@ -1,6 +1,6 @@
 # Beery — Backend
 
-FastAPI + Socket.IO server for the Beer Distribution Game. Python 3.11, PostgreSQL 17 (psycopg 3)
+FastAPI + Socket.IO server for the Beer Distribution Game. Python 3.11, PostgreSQL 18 (psycopg 3)
 for the durable record, and an optional Redis for live room state.
 
 The game's rules, data model and API are specified in
@@ -16,11 +16,13 @@ comments cite.
   different interpreter than `python:3.11-slim` runs.
 - **Docker**, for the `dbschema` schema and migration suite (Testcontainers) and the image
   build test. Not needed to run the app.
-- **PostgreSQL 17** is needed for anything that finishes a game or reads a profile: the
+- **PostgreSQL 18** is needed for anything that finishes a game or reads a profile: the
   durable record is written when a game ends, and `/api/v1/users/*` and `/api/v1/games/*` read
   it. Lobbies, configuration and play itself run without it. Locally,
-  `docker run --rm -e POSTGRES_PASSWORD=… -p 127.0.0.1:5432:5432 postgres:17` is enough
-  (`DB_REQUIRE_SSL=false`). `alembic upgrade head` builds the schema; there is no
+  `docker run --rm -e POSTGRES_PASSWORD=… -e POSTGRES_DB=beerydb -p 127.0.0.1:5432:5432 postgres:18`
+  is enough (`DB_HOST=localhost`, `DB_USER=postgres`, `DB_REQUIRE_SSL=false`, empty
+  `DB_SSL_CA`). Develop against this, not Beery's Neon database: a local backend on Neon is one
+  more instance and breaks the connection budget during a deploy (`DEPLOY.md`). `alembic upgrade head` builds the schema; there is no
   `create_all()`.
 - **Redis is optional and off by default** (`REDIS_ENABLED=false`) — live room state then
   lives in this process. See *Room state and Redis* below before changing that.
@@ -170,7 +172,7 @@ yet list them; check there before "adding" one.
 
 `-m "not dbschema"` is the everyday run. The deselected tests are the schema and migration
 suite (the migrations, `db/schema.postgres.sql`, the models-match check and the persistence
-round trips), which needs a Docker daemon because it starts a real `postgres:17` with
+round trips), which needs a Docker daemon because it starts a real `postgres:18` with
 Testcontainers:
 
 ```bash
@@ -179,7 +181,7 @@ Testcontainers:
 
 The schema suite cannot use SQLite: it would pass every constraint, reserved word and
 `server_default` check vacuously. `tests/test_models/conftest.py` starts one session-scoped
-`postgres:17` container, migrates it once and runs each test in a transaction it rolls back. It
+`postgres:18` container, migrates it once and runs each test in a transaction it rolls back. It
 needs no `DB_*` credentials and refuses any target but its own container, so it can never be
 aimed at a real database. Without Docker it skips loudly (a skip reason plus a warning), and CI
 fails a run in which nothing passed.
@@ -215,8 +217,8 @@ reads is there, and nothing that is not read is declared.
 | Variable | Notes |
 |---|---|
 | `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_DATABASE` | PostgreSQL (default port 5432, user `postgres`); built into `postgresql+psycopg://…` with the credentials percent-encoded. Every session runs in UTC (`options=-c timezone=UTC`). |
-| `DB_REQUIRE_SSL`, `DB_SSL_CA` | TLS. `DB_REQUIRE_SSL=true` alone is `sslmode=require` (encrypted, server not verified); `DB_SSL_CA` — the CA of the shared Novus Aiven PostgreSQL service (the same for all four games), as PEM text or a path — is `sslmode=verify-full`. The boot log states which. |
-| `DB_POOL_SIZE`, `DB_MAX_OVERFLOW` | Connection pool per process, default 2 + 1 = 3: Beery's share of the Aiven Free service (20 connections) the four Novus games share (budget in `DEPLOY.md`). Raise both only on a bigger plan. |
+| `DB_REQUIRE_SSL`, `DB_SSL_CA` | TLS. `DB_REQUIRE_SSL=true` alone is `sslmode=require` (encrypted, server not verified); `DB_SSL_CA` — the Let's Encrypt roots ISRG Root X1 + X2 that Neon's certificates chain to (one public PEM bundle, the same for all four games), as PEM text or a path — is `sslmode=verify-full`. The boot log states which. |
+| `DB_POOL_SIZE`, `DB_MAX_OVERFLOW` | Connection pool per process, default 7 + 2 = 9: Beery's budget is 20 connections, deploys included (two overlapping instances, the startup migration and one psql session; `DEPLOY.md`). |
 | `REDIS_ENABLED` | **`false` by default.** When false, live room state is held in this process and there is no Redis dependency at all. See *Room state and Redis* below. |
 | `REDIS_URL` | Only read when `REDIS_ENABLED` is true. Live room state, and the Socket.IO client manager. |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | The **entire** service account JSON on one line. |

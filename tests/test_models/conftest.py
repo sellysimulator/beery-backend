@@ -8,7 +8,7 @@ SQLite would pass every one of them vacuously.
 So the suite runs against an ephemeral PostgreSQL started by Testcontainers
 and thrown away afterwards:
 
-1. the image tag is pinned to the production engine, ``postgres:17``;
+1. the image tag is pinned to the production engine, ``postgres:18``;
 2. the container is **session** scoped and migrated once, while each test
    gets its own data and cleans up after itself (the ``db`` fixture runs
    every test inside a transaction it rolls back);
@@ -44,10 +44,10 @@ from sqlalchemy.engine import make_url
 
 # --- the pinned container --------------------------------------------------
 
-#: Rule 1 -- the managed instance runs PostgreSQL 17.  Proving the schema
+#: Rule 1 -- the managed instance runs PostgreSQL 18.  Proving the schema
 #: against a different major version proves the wrong thing.  DEPLOY.md and
 #: render.yaml document the same version (`test_config_surface.py`).
-POSTGRES_IMAGE = "postgres:17"
+POSTGRES_IMAGE = "postgres:18"
 
 POSTGRES_USER = "beery"
 POSTGRES_PASSWORD = "beery-throwaway"

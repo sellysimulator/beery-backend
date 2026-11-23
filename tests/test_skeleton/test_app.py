@@ -228,7 +228,7 @@ def live_postgres_env() -> dict:
     _require_docker()
     PostgresContainer = _container_class("postgres", "PostgresContainer")
 
-    with PostgresContainer("postgres:17", driver="psycopg") as container:
+    with PostgresContainer("postgres:18", driver="psycopg") as container:
         yield {
             "DB_HOST": container.get_container_host_ip(),
             "DB_PORT": str(container.get_exposed_port(5432)),

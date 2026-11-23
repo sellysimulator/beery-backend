@@ -167,7 +167,7 @@ def test_alembic_upgrade_head_creates_exactly_the_declared_tables():
 
     PostgresContainer = _container_class("postgres", "PostgresContainer")
 
-    with PostgresContainer("postgres:17", driver="psycopg") as pg:
+    with PostgresContainer("postgres:18", driver="psycopg") as pg:
         env = dict(os.environ)
         env.update(
             {

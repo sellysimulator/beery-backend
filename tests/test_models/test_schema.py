@@ -1,4 +1,4 @@
-"""The live schema, asserted against a real PostgreSQL 17.
+"""The live schema, asserted against a real PostgreSQL 18.
 
 Upgrade, downgrade, autogenerate drift, the DDL snapshot and the
 models-match check are ``test_migration.py``'s.
