@@ -199,7 +199,9 @@ source change needs a rebuild.
   `asyncio.to_thread`. Do not call a sync `Session` from inside an `async def` without
   that: a Neon cold start would freeze every room in the process.
 - **D4 — the state store is authoritative for a live game; PostgreSQL is written only when a
-  game finishes.** The room is a JSON document at `room:{CODE}` with a 24 h TTL. The
+  game finishes.** The room is a JSON document at `room:{CODE}` whose TTL every save
+  refreshes: 24 h once the game has started (`started_at` set), 2 h before that
+  (`UNSTARTED_ROOM_TTL_SECONDS`: rooms come from an unauthenticated route). The
   `GameEngine` is rehydrated per operation (`to_payload`/`from_payload`), never held in
   process memory between handlers.
 - **`REDIS_ENABLED` (default `false`)** switches `app/services/state_backend.py` between
@@ -378,7 +380,7 @@ source change needs a rebuild.
   (`merge_config_patch` + `GameConfig.from_host_input`), **before** it charges the limiter or
   makes a room; a `StoreFullError` part-way is rolled back with `state_svc.delete_room` for
   every room already made, then answered 503. `POST /rooms/summary` must stay read-only (no
-  `lock`, no `save_room`: polling must not refresh the 24 h TTL) and must answer a missing
+  `lock`, no `save_room`: polling must not refresh the room's TTL) and must answer a missing
   room and a wrong secret identically; its `can_start` is `RoomService.can_start`, never a
   copy. The batch bounds are `Limits.min_batch_rooms` / `max_batch_rooms`, served by
   `/rooms/limits`. The dashboard's "Start all" is the ordinary `start_game` emit:
@@ -413,7 +415,7 @@ source change needs a rebuild.
   them, `MAX_DISPLAY_NAME_LENGTH` (consumed by `display_name.py` and `user_service.py`).
   The game ceilings live on `core.limits.Limits` / `DEFAULT_LIMITS` (re-exported by
   `core.config_models`) and are
-  injected, because `app/core` may not import `app.config`; `ROOM_TTL_SECONDS` and
+  injected, because `app/core` may not import `app.config`; `ROOM_TTL_SECONDS`, `UNSTARTED_ROOM_TTL_SECONDS` and
   `LOCK_TIMEOUT_SECONDS` are module constants in `services/state_service.py`, `MAX_ROOMS` is
   one in `services/state_backend.py`, and every abuse limit is one in `core/abuse.py`
   (README "Abuse limits"). No other limit is a `Settings` field: a variable the app ignores

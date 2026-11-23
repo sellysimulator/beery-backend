@@ -61,7 +61,7 @@ REST_LIMIT_PER_IP = 1200
 #: Rooms created per address per ``ROOM_CREATE_WINDOW_SECONDS``, shared by
 #: ``POST /api/v1/rooms/create`` (one each) and ``POST /api/v1/rooms/batch-create``
 #: (one per room, at most ``max_batch_rooms`` = 10 a request). Unauthenticated,
-#: and each one is a room held in memory for 24 h. The standard across every
+#: and each one is a room held in memory for 2 h (24 h once started). The standard across every
 #: Novus game: 30 an hour, so three full batches.
 ROOM_CREATE_LIMIT_PER_IP = 30
 #: The room-create budget's window: an hour, not ``WINDOW_SECONDS``.

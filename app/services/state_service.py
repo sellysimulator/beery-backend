@@ -34,6 +34,10 @@ SCHEMA_VERSION: int = 2
 ROOM_CODE_ALPHABET: str = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no 0/O/1/I/L
 ROOM_CODE_LENGTH: int = 6
 ROOM_TTL_SECONDS: int = 86_400  # 24 hours; every save_room refreshes it
+# A room that has not started (no `started_at`) lives 2 hours after its last
+# save: rooms come from an unauthenticated route, so one nobody plays must not
+# hold the store for a day. `start_game`'s save moves it to ROOM_TTL_SECONDS.
+UNSTARTED_ROOM_TTL_SECONDS: int = 7_200
 LOCK_TIMEOUT_SECONDS: int = 10  # deadlock escape hatch, never a normal path
 
 _ROOM_KEY_PREFIX = "room:"
@@ -197,10 +201,11 @@ class StateService:
         return document
 
     async def save_room(self, room_code: str, room: dict) -> None:
-        """setex with ROOM_TTL_SECONDS. Refreshes the TTL on every write."""
-        await redis_client.setex(
-            _room_key(room_code), ROOM_TTL_SECONDS, json.dumps(room)
-        )
+        """setex, refreshing the TTL on every write: ROOM_TTL_SECONDS for a
+        room that has started, UNSTARTED_ROOM_TTL_SECONDS for one that has
+        not."""
+        ttl = ROOM_TTL_SECONDS if room.get("started_at") else UNSTARTED_ROOM_TTL_SECONDS
+        await redis_client.setex(_room_key(room_code), ttl, json.dumps(room))
 
     async def room_exists(self, room_code: str) -> bool:
         """Routed through get_room, so a stale room reports as absent."""

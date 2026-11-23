@@ -271,6 +271,11 @@ process can detect from the inside:
 The app says which backend is active every time it starts, at WARNING for the in-memory one.
 `GET /api/v1/health/deep` reports it as `state_backend: "memory" | "redis"`.
 
+A room document expires 2 hours after its last save while its game has not started
+(`UNSTARTED_ROOM_TTL_SECONDS`; rooms come from an unauthenticated route) and 24 hours after
+it once it has (`ROOM_TTL_SECONDS`); every save refreshes it, and `POST /rooms/summary`
+never does.
+
 The in-memory store refuses a new room past `MAX_ROOMS` (500) live ones -- `POST /rooms/create`
 answers 503 -- and sweeps expired rooms from the write path at most once a minute. Rewriting
 a room it already holds is never refused. With Redis on there is no such ceiling here; bound

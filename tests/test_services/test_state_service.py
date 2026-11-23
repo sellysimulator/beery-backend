@@ -35,6 +35,7 @@ from app.core.game_engine import GameEngine, GamePhase
 from app.core.presets import get_preset
 from app.services.state_service import (
     ROOM_TTL_SECONDS,
+    UNSTARTED_ROOM_TTL_SECONDS,
     get_state_service,
     new_room_document,
 )
@@ -257,6 +258,7 @@ async def test_save_room_calls_setex_with_room_ttl_on_every_write(fake_redis):
     svc = get_state_service()
     room = await svc.create_room(make_config(), "Host")
     code = room["room_code"]
+    room["started_at"] = "2026-11-23T10:00:00+00:00"
     calls = install_setex_spy(fake_redis)
 
     await svc.save_room(code, room)
@@ -265,6 +267,21 @@ async def test_save_room_calls_setex_with_room_ttl_on_every_write(fake_redis):
     assert len(calls) == 2
     for call in calls:
         assert call["ttl"] == ROOM_TTL_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_a_room_that_never_started_lives_two_hours(fake_redis):
+    """Rooms come from an unauthenticated route, so one nobody starts holds
+    the store for 2 h after its last save, not a day; the save in
+    `start_game` (which sets `started_at`) moves it to the 24 h TTL."""
+    calls = install_setex_spy(fake_redis)
+    svc = get_state_service()
+    room = await svc.create_room(make_config(), "Host")
+    await svc.save_room(room["room_code"], room)
+
+    assert UNSTARTED_ROOM_TTL_SECONDS == 2 * 60 * 60
+    assert ROOM_TTL_SECONDS == 24 * 60 * 60
+    assert [call["ttl"] for call in calls] == [UNSTARTED_ROOM_TTL_SECONDS] * 2
 
 
 @pytest.mark.asyncio
@@ -282,7 +299,7 @@ async def test_save_room_uses_setex_not_a_bare_set(fake_redis):
     await svc.save_room(code, room)
 
     assert len(calls) == 1
-    assert calls[0]["ttl"] == ROOM_TTL_SECONDS
+    assert calls[0]["ttl"] == UNSTARTED_ROOM_TTL_SECONDS
 
 
 # ---------------------------------------------------------------------------
@@ -530,6 +547,7 @@ def test_no_undocumented_secret_leaking_helper_exists():
         "ROOM_CODE_ALPHABET",
         "ROOM_CODE_LENGTH",
         "ROOM_TTL_SECONDS",
+        "UNSTARTED_ROOM_TTL_SECONDS",
         "LOCK_TIMEOUT_SECONDS",
         "redis_client",
         "new_room_document",
