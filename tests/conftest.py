@@ -209,6 +209,9 @@ def _reset_process_caches():
     abuse = sys.modules.get("app.core.abuse")
     if abuse is not None:
         abuse.reset()
+    game_service = sys.modules.get("app.services.game_service")
+    if game_service is not None:
+        game_service._submission_counts.clear()
     export_cache = sys.modules.get("app.services.export_cache")
     if export_cache is not None:
         export_cache.export_cache.clear()

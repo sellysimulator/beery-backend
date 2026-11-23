@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any
@@ -40,7 +41,7 @@ from ..db import session as db_session
 from ..models.game import Game
 from ..sockets.manager import socket_manager
 from .db_service import build_snapshot, get_db_service
-from .state_service import StateService, get_state_service
+from .state_service import ROOM_TTL_SECONDS, StateService, get_state_service
 from .stats_service import get_stats_service
 
 logger = logging.getLogger(__name__)
@@ -65,23 +66,60 @@ _STALE_WEEK_MSG = "That week is no longer open."
 _INVALID_ORDER_MSG = "Order must be a whole number."
 _TOO_MANY_MSG = "Too many submissions for this week."
 
-# Resubmission counters, per (room_code, week, role). Deliberately
+# Resubmission counters, per (room_code, week, role): the count and the
+# `time.monotonic()` of that week's first counted submission. Deliberately
 # process-local, not part of the frozen room document (no new top-level key
 # may be added without a schema bump). Socket.IO connections are sticky
 # for their lifetime, so every `submit_order` for one sid is handled by the
 # same worker process that would have to enforce this cap anyway; the guard
 # this exists for is a single client looping submissions, not a
-# cross-process invariant (spec §12.1). Entries are dropped for
-# a week as soon as it closes, so this cannot grow without bound.
-_submission_counts: dict[tuple[str, int, str], int] = {}
+# cross-process invariant (spec §12.1). Entries are dropped for a week as
+# soon as it closes and for a whole room when its game finishes (ended early
+# included). A room that expires or is deleted mid-week closes nothing, so
+# entries older than a room can live without a save are swept as well
+# (`_sweep_submission_counts`): this cannot grow without bound.
+_submission_counts: dict[tuple[str, int, str], tuple[int, float]] = {}
+_SUBMISSION_SWEEP_EVERY_SECONDS = 600.0
+_submissions_swept_at = float("-inf")
 
 
-def _forget_submission_counts(room_code: str, week: int) -> None:
+def _forget_submission_counts(room_code: str, week: int | None = None) -> None:
+    """Drop the counters of one week of a room, or of every week when
+    `week` is None."""
     stale = [
-        key for key in _submission_counts if key[0] == room_code and key[1] == week
+        key
+        for key in _submission_counts
+        if key[0] == room_code and (week is None or key[1] == week)
     ]
     for key in stale:
         _submission_counts.pop(key, None)
+
+
+def _sweep_submission_counts(now: float) -> None:
+    """At most once per `_SUBMISSION_SWEEP_EVERY_SECONDS`, drop every counter
+    whose first submission is older than `ROOM_TTL_SECONDS`.
+
+    Such a week belongs to a room that expired or was deleted while the week
+    was open; if the room is somehow still alive, forgetting its counter only
+    restarts its cap."""
+    global _submissions_swept_at
+    if now - _submissions_swept_at < _SUBMISSION_SWEEP_EVERY_SECONDS:
+        return
+    _submissions_swept_at = now
+    stale = [
+        key
+        for key, (_count, first) in _submission_counts.items()
+        if now - first > ROOM_TTL_SECONDS
+    ]
+    for key in stale:
+        _submission_counts.pop(key, None)
+
+
+def _record_submission(key: tuple[str, int, str], count: int) -> None:
+    now = time.monotonic()
+    _sweep_submission_counts(now)
+    first = _submission_counts.get(key, (0, now))[1]
+    _submission_counts[key] = (count, first)
 
 
 def _coerce_order(value: Any) -> tuple[bool, int]:
@@ -353,7 +391,7 @@ class GameService:
                 return
 
             count_key = (room_code_out, engine.week, role.value)
-            count = _submission_counts.get(count_key, 0) + 1
+            count = _submission_counts.get(count_key, (0, 0.0))[0] + 1
             if count > MAX_RESUBMISSIONS_PER_ROLE_PER_WEEK:
                 await socket_manager.emit_to_sid(
                     sid,
@@ -361,7 +399,7 @@ class GameService:
                     {"message": _TOO_MANY_MSG, "code": "TOO_MANY_SUBMISSIONS"},
                 )
                 return
-            _submission_counts[count_key] = count
+            _record_submission(count_key, count)
 
             engine.submit_order(role, coerced)
             state_svc.store_engine(room, engine)
@@ -778,6 +816,9 @@ class GameService:
             }
             await state_svc.save_room(room_code_out, current)
             snapshot = current
+        # No week of this game will close again, so none of its counters will
+        # be dropped at a close (an ended-early game abandons its open week).
+        _forget_submission_counts(room_code_out)
 
         # The debrief goes out BEFORE persistence, not after (spec §10.2).
         # Persistence is a database round trip that may be slow and may fail;
