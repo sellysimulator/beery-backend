@@ -171,6 +171,8 @@ docker run --rm -p 8080:8080 --env-file .env beery-backend
 ("After CI checks pass" in the dashboard), which builds the Dockerfile; the container runs
 `alembic upgrade head` at startup, before uvicorn. There is no bind mount in the image, so a
 source change needs a rebuild.
+The handoff-hardening release deploys **backend first**, then the frontend in the same window
+(`DEPLOY.md`, "ship together").
 
 ## Architecture that matters
 

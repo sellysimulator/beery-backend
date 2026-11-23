@@ -193,6 +193,13 @@ play.
 `src/api/socketHandlers.ts`, deploy `Beery_Backend` and `Beery_Frontend` in
 the same window, backend first.**
 
+**The handoff-hardening release (branch `fix/handoff-hardening`) ships backend
+first, then the frontend in the same window.** The new backend accepts the old
+frontend's signed-in and guest handshakes, but refuses one with no identity at
+all, which the old frontend still sends on a first visit (no sign-in, no guest
+id yet) and then shows a "Sign-in could not be verified" alert until the new
+frontend is live; the new frontend never connects without an identity.
+
 **The exception: a backend change that drops a field the live frontend reads
 ships frontend first.** Backend first would leave the old frontend reading a
 field that no longer arrives, so the new frontend has to tolerate the field's
