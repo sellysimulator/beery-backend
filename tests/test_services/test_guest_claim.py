@@ -19,7 +19,7 @@ from __future__ import annotations
 import pytest
 
 from app.core.enums import Role
-from app.models.game import Participant, UserStats
+from app.models.game import Game, Participant, UserStats
 from app.models.user import User
 from app.services.claim_service import ClaimService
 from app.services.db_service import DbService, build_snapshot
@@ -191,3 +191,54 @@ def test_a_row_with_a_non_null_user_id_is_not_re_attributed(db):
     row = db.query(Participant).filter_by(game_id=game_id).one()
     assert row.user_id == original_owner_id
     assert row.guest_identity == guest_identity  # untouched, not just re-set
+
+
+# ---------------------------------------------------------------------------
+# A claim never touches the host record (D23)
+# ---------------------------------------------------------------------------
+
+
+def test_a_claim_never_touches_the_host_record(db):
+    """A claim moves player rows only. A guest who hosted a game has nothing
+    to claim for it (no HOST row exists), and claiming a guest who played in
+    a signed-in host's game leaves that game's `host_user_id` alone."""
+    host_uid = "uid-signed-in-host"
+    host_user_id = insert_user(db.connection(), firebase_uid=host_uid)
+    db.commit()
+
+    guest_host = "guest_99999999-0000-0000-0000-000000000001"
+    guest_player = "guest_99999999-0000-0000-0000-000000000002"
+    config = make_config(duration_weeks=8)
+    engine = run_full_game(config, seed=41)
+
+    # A guest-hosted game the guest host did not play in.
+    guest_hosted = DbService().persist_game(
+        db,
+        build_snapshot(
+            make_room_document(config, engine, host_identity=guest_host),
+            config,
+            engine,
+        ),
+    )
+    # A signed-in host's game with a guest player.
+    room = make_room_document(
+        config,
+        engine,
+        host_uid=host_uid,
+        participants={
+            "P1": make_participant("P1", identity=guest_player, role=Role.RETAILER)
+        },
+    )
+    hosted = DbService().persist_game(db, build_snapshot(room, config, engine))
+    db.commit()
+
+    service = ClaimService()
+    assert service.claim_guest_results(db, "uid-former-guest-host", guest_host) == 0
+    assert db.query(User).filter_by(firebase_uid="uid-former-guest-host").count() == 0
+
+    assert service.claim_guest_results(db, "uid-former-guest", guest_player) == 1
+    claimer = db.query(User).filter_by(firebase_uid="uid-former-guest").one()
+
+    assert db.get(Game, guest_hosted).host_user_id is None
+    assert db.get(Game, hosted).host_user_id == host_user_id
+    assert db.query(Game).filter_by(host_user_id=claimer.id).count() == 0

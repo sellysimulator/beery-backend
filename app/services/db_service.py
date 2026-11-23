@@ -85,7 +85,8 @@ def _decimal(value: float | Decimal | None) -> Decimal | None:
 
 @dataclass(frozen=True)
 class ParticipantSnapshot:
-    """One row of `participants`. `identity` is copied straight out of the
+    """One row of `participants`: a seat, never the host (D23). `identity` is
+    copied straight out of the
     room document: `None` for a role that was always a bot (bot fill), and the
     original human's identity for a role the host later swapped to a bot --
     `substitute_bot` sets `is_bot` and leaves `identity` alone. That identity
@@ -96,7 +97,6 @@ class ParticipantSnapshot:
     alias: str
     display_name: str
     role: Role | None
-    participant_type: str  # "HOST" | "PLAYER"
     is_bot: bool
     identity: str | None  # firebase uid, or guest_<uuid4>, or None for a bot
 
@@ -107,8 +107,8 @@ class GameSnapshot:
     Redis lock can be released before the database is touched."""
 
     room_code: str
-    host_identity: str | None
-    host_display_name: str
+    # The verified Firebase uid `start_game` recorded, or None (D23).
+    host_uid: str | None
     seed: int
     started_at: datetime
     finished_at: datetime
@@ -152,25 +152,16 @@ def build_snapshot(room: dict, config: GameConfig, engine: GameEngine) -> GameSn
     `order_qty` rename are decided. Everything here is a pure read of
     `room` and `engine`; nothing is mutated.
 
-    The host is not a key of `room["participants"]` -- the lobby never gives
-    it an alias, so it may not appear in either sid-to-alias map. It is still
-    one of a game's "up to five" `participants` rows (spec §10.1), so it is
-    synthesised here with the fixed alias ``"HOST"`` and `role=None`.
+    One participant row per seat. The host holds no seat and gets no row: who
+    hosted is `room["host_uid"]`, the verified uid `start_game` recorded, and
+    only when the host was signed in (D23). `host_identity` (D18's live
+    recovery key, possibly a guest id) is deliberately not read.
     """
     weeks_played = engine.weeks_played
     ended_early = weeks_played < config.duration_weeks
     stats = compute_stats(engine.history, engine.demand_series, weeks_played)
 
-    participants: list[ParticipantSnapshot] = [
-        ParticipantSnapshot(
-            alias="HOST",
-            display_name=room.get("host_display_name") or "Host",
-            role=None,
-            participant_type="HOST",
-            is_bot=False,
-            identity=room.get("host_identity"),
-        )
-    ]
+    participants: list[ParticipantSnapshot] = []
     for alias, participant in room["participants"].items():
         role_raw = participant.get("role")
         participants.append(
@@ -178,16 +169,15 @@ def build_snapshot(room: dict, config: GameConfig, engine: GameEngine) -> GameSn
                 alias=alias,
                 display_name=participant.get("display_name") or alias,
                 role=Role(role_raw) if role_raw else None,
-                participant_type="PLAYER",
                 is_bot=bool(participant.get("is_bot")),
                 identity=participant.get("identity"),
             )
         )
 
+    host_uid = room.get("host_uid")
     return GameSnapshot(
         room_code=room["room_code"],
-        host_identity=room.get("host_identity"),
-        host_display_name=room.get("host_display_name") or "Host",
+        host_uid=host_uid if isinstance(host_uid, str) and host_uid else None,
         seed=int(room["seed"]),
         started_at=_parse_timestamp(room.get("started_at")),
         finished_at=_parse_timestamp(room.get("finished_at")),
@@ -349,12 +339,9 @@ class DbService:
     # --- one row each ---------------------------------------------------- #
 
     def _insert_game(self, db: Session, snapshot: GameSnapshot) -> int:
-        # Who hosted is recorded once, on the host's `participants` row
-        # (`_insert_participants`), so a guest claim that attributes that row
-        # attributes the hosting with it.
         game = Game(
             room_code=snapshot.room_code,
-            host_display_name=snapshot.host_display_name,
+            host_user_id=self._host_user_id(db, snapshot.host_uid),
             rng_seed=snapshot.seed,
             duration_weeks=snapshot.config.duration_weeks,
             weeks_played=snapshot.weeks_played,
@@ -367,6 +354,18 @@ class DbService:
         db.flush()
         assert game.id is not None
         return int(game.id)
+
+    def _host_user_id(self, db: Session, host_uid: str | None) -> int | None:
+        """The signed-in host's `users.id`, by lookup only (D23).
+
+        Unlike a player's seat (`_resolve_attribution`), a host with no
+        `users` row is stored as NULL and no row is created for them: the
+        record exists only to list the game under an account the host already
+        has, and inventing an account for a host is not its job."""
+        if host_uid is None:
+            return None
+        user = self._user_service.get_by_firebase_uid(db, host_uid)
+        return int(user.id) if user is not None else None
 
     def _insert_game_config(
         self, db: Session, game_id: int, config: GameConfig
@@ -480,6 +479,10 @@ class DbService:
     def _insert_participants(
         self, db: Session, game_id: int, snapshot: GameSnapshot
     ) -> None:
+        # Empty only for a room with no seats, which no started game is; an
+        # executemany with no parameter sets is an error, not a no-op.
+        if not snapshot.participants:
+            return
         rows = []
         for participant in snapshot.participants:
             user_id, guest_identity = self._resolve_attribution(db, participant)
@@ -489,7 +492,8 @@ class DbService:
                     "alias": participant.alias,
                     "role": participant.role.value if participant.role else None,
                     "display_name": participant.display_name,
-                    "participant_type": participant.participant_type,
+                    # Every row is a seat; the host has none (D23).
+                    "participant_type": "PLAYER",
                     "is_bot": participant.is_bot,
                     "user_id": user_id,
                     "guest_identity": guest_identity,
@@ -529,7 +533,7 @@ class DbService:
         participant: ParticipantSnapshot, stats: GameStats
     ) -> Decimal | None:
         """The stored bullwhip ratio: NULL for a seat that was a bot from the start (no
-        identity), for the host (no role), and for any role whose ratio is
+        identity), for a seat with no role, and for any role whose ratio is
         `None` (a `CONSTANT`-demand game). A swapped seat keeps its player's
         identity and therefore its ratio, bot weeks included, like its cost."""
         if participant.identity is None or participant.role is None:

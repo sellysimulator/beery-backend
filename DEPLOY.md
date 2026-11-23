@@ -184,6 +184,17 @@ absence and be live before the backend stops sending it. Leaving
 `own_history` out of the per-round `your_state` is one such change: the old frontend stores `your_state` as it arrives, and its
 `OwnHistoryChart` throws on the missing list.
 
+**A REST route the live frontend still calls is removed frontend first**, for the
+same reason: the new frontend must stop calling it before the backend drops it.
+The public_id-only results change (spec D22) is one: the previous frontend fetched
+`GET /games/{room_code}/results`, which the backend no longer serves, while the new
+frontend calls only routes the previous backend already had for its results flow
+(`GET /games/id/{public_id}/results`, `/export`, `game_persisted`). The new profile
+needs the new backend (`/users/me/hosted-games`, `/users/me/games/{public_id}`,
+`public_id` on history rows, `best_game_public_id`), so deploy the backend right
+after the frontend, in the same window: in between, only the profile's links and
+its hosted list are degraded.
+
 ## Deploy checklist
 
 Run this before a class, every time.
@@ -213,8 +224,9 @@ Run this before a class, every time.
 - [ ] Smoke test as a guest: create a room as a guest and finish a game -- a
       separate identity path, and, since guests may host (D3), a separate hosting
       path too.
-- [ ] Results load at `/results/:roomCode` after the room's 24-hour state TTL
-      would have expired -- i.e. from PostgreSQL, not from the live state store.
+- [ ] Results load at `/results/:publicId` (the link the end screen shows once
+      the game is saved) after the room's 24-hour state TTL would have expired --
+      i.e. from PostgreSQL, not from the live state store.
 - [ ] CSV export downloads and opens in a spreadsheet.
 - [ ] Secrets: `.env` not committed; service account not printed anywhere.
 

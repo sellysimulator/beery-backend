@@ -379,6 +379,7 @@ class FakeSocketManager:
         self.sid_to_room: dict[str, str] = {}
         self.sid_to_alias: dict[str, str] = {}
         self.sid_to_identity: dict[str, str] = {}
+        self.sid_to_verified_uid: dict[str, str] = {}
         self.emits: list[tuple[str, str, Any]] = []
         self.room_emits: list[tuple[str, str, Any]] = []
         self.sid_emits: list[tuple[str, str, Any]] = []
@@ -390,6 +391,7 @@ class FakeSocketManager:
         self.sid_to_room.pop(sid, None)
         self.sid_to_alias.pop(sid, None)
         self.sid_to_identity.pop(sid, None)
+        self.sid_to_verified_uid.pop(sid, None)
 
     async def join_room(self, sid: str, room_id: str, alias: str) -> None:
         self.sid_to_room[sid] = room_id

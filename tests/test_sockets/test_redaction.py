@@ -132,6 +132,7 @@ async def test_no_private_key_anywhere_in_a_room_broadcast(
         "total_week_cost",
         "record",
         "identity",
+        "host_uid",
         "session_token",
         "host_secret",
         "order",

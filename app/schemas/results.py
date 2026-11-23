@@ -19,6 +19,8 @@ from .types import UtcDateTime
 __all__ = [
     "ClaimRequest",
     "ClaimResponse",
+    "HostedGameSummary",
+    "HostedGamesResponse",
     "MatchHistoryResponse",
     "MatchSummary",
     "ResultsResponse",
@@ -77,7 +79,8 @@ class UserStatsResponse(BaseModel):
     total_cost: float
     avg_cost_per_week: float
     bullwhip_avg: float | None
-    best_game_id: int | None
+    # The best game's `public_id` (never an internal id, D22), or None.
+    best_game_public_id: str | None
     games_as_retailer: int
     games_as_wholesaler: int
     games_as_distributor: int
@@ -85,7 +88,8 @@ class UserStatsResponse(BaseModel):
 
 
 class MatchSummary(BaseModel):
-    game_id: int
+    # The game's permanent id: the profile opens `/profile/games/{public_id}`.
+    public_id: str
     room_code: str
     finished_at: UtcDateTime
     role: Role
@@ -98,6 +102,26 @@ class MatchSummary(BaseModel):
 
 class MatchHistoryResponse(BaseModel):
     matches: list[MatchSummary]
+    total: int
+    page: int
+    page_size: int
+
+
+class HostedGameSummary(BaseModel):
+    """One game the caller hosted while signed in (D23). Opened by
+    `public_id` on the open results page; nothing here is the caller's own
+    figure, because the host played no seat."""
+
+    public_id: str
+    room_code: str
+    finished_at: UtcDateTime
+    # Seats in the game (one `participants` row each, bots included).
+    player_count: int
+    ended_early: bool
+
+
+class HostedGamesResponse(BaseModel):
+    games: list[HostedGameSummary]
     total: int
     page: int
     page_size: int

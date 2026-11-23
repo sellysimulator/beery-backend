@@ -75,16 +75,15 @@ Every router under `app/api/v1/` is auto-discovered, so this table is the whole 
 | `GET` | `/api/v1/rooms/{code}/status` | none | Is this room joinable? Always HTTP 200 — a 404 would be a room-code oracle. `host_display_name` is always `null` |
 | `PUT` | `/api/v1/rooms/{code}/config` | host secret | Applies a config patch while the room is still configurable |
 | `GET` | `/api/v1/rooms/{code}/config` | host secret | The current config |
-| `GET` | `/api/v1/games/{code}/results` | none | The full results payload for the latest finished game in that room — a results URL is shareable |
-| `GET` | `/api/v1/games/{code}/export` | host secret *or* the host's Firebase identity | The complete week-by-week record, `?format=csv` (default) or `json`, with every player as their seat's `P<N>`. Stays host-only: room codes are short and reissued, so an open export by code could be enumerated. Once authorised it shares the export cache below |
-| `GET` | `/api/v1/games/id/{public_id}/results` | none | The same results payload, by the game's permanent id |
-| `GET` | `/api/v1/games/id/{public_id}/export` | none | The same export by permanent id, open to anyone who can see the results (D22): a guest host has no account to fall back on. It carries the results screen's figures and no uid, email, user id, guest id, session token, secret **or chosen name**: every player is their seat's `P<N>` (Retailer `P1` … Factory `P4`), in CSV and JSON alike. 404 for an unknown id. Limited to 100 an hour per address (below). A finished export is kept in an in-process LRU (64 files, keyed by `(public_id, format)`, no expiry, 200s only), so a repeat download reads nothing from the database; the cache is per instance and empty after a restart |
-| `POST` | `/api/v1/games/claim` | Firebase | Attributes a guest's finished games to the signed-in caller |
+| `GET` | `/api/v1/games/id/{public_id}/results` | none | The full results payload of a finished game, by its permanent `public_id` (D22): shareable, no time limit, 404 for an unknown id. There is no results or export route by room code (a code is short and reissued, so it names no game) |
+| `GET` | `/api/v1/games/id/{public_id}/export` | none | The complete week-by-week record, `?format=csv` (default) or `json`, by permanent id, open to anyone who can see the results (D22): a guest host has no account to fall back on. It carries the results screen's figures and no uid, email, user id, guest id, session token, secret **or chosen name**: every player is their seat's `P<N>` (Retailer `P1` … Factory `P4`), in CSV and JSON alike. 404 for an unknown id. Limited to 100 an hour per address (below). A finished export is kept in an in-process LRU (64 files, keyed by `(public_id, format)`, no expiry, 200s only), so a repeat download reads nothing from the database; the cache is per instance and empty after a restart |
+| `POST` | `/api/v1/games/claim` | Firebase | Attributes a guest's finished games (the seats that guest id played, never a hosting) to the signed-in caller |
 | `POST` | `/api/v1/users/upsert` | Firebase | Creates or refreshes the caller's profile. The uid comes from the token, never the body |
 | `GET` | `/api/v1/users/me` | Firebase | The caller's profile, or 404 if it was never upserted |
-| `GET` | `/api/v1/users/me/stats` | Firebase | Aggregate statistics; a caller with no history gets a zero-filled 200, not a 404 |
-| `GET` | `/api/v1/users/me/games` | Firebase | Match history, newest first, `?page` / `?page_size` (clamped to 1–100) |
-| `GET` | `/api/v1/users/me/games/{game_id}` | Firebase | One of the caller's own games in full; 404 — never 403 — if they did not play in it |
+| `GET` | `/api/v1/users/me/stats` | Firebase | Aggregate statistics (the best game as `best_game_public_id`); a caller with no history gets a zero-filled 200, not a 404 |
+| `GET` | `/api/v1/users/me/games` | Firebase | Match history (played seats only), newest first, `?page` / `?page_size` (clamped to 1–100); each row names its game by `public_id` |
+| `GET` | `/api/v1/users/me/games/{public_id}` | Firebase | One of the caller's own games in full, by `public_id` (no route takes an internal id); 404 — never 403 — if they did not play a seat in it (hosting it does not count) |
+| `GET` | `/api/v1/users/me/hosted-games` | Firebase | The games the caller hosted while signed in (D23), newest first, `?page` / `?page_size` (clamped to 1–100): `{games: [{public_id, room_code, finished_at, player_count, ended_early}], total, page, page_size}`. Read from `games.host_user_id`; it lists and grants nothing |
 
 In `/health/deep`, `status` is `"ok"` only when every backing service in use is reachable;
 otherwise `"degraded"`. With `REDIS_ENABLED=false` the unused Redis is not probed and is not
@@ -109,7 +108,7 @@ peer. Every window is 60 s except room creation's and the export's, which are an
 | `POST /api/v1/rooms/batch-create` | `count` (at most 10) against the same 30 rooms per address per hour, all or nothing (`room_create_allowed`, charged by the route after validation; the middleware leaves it on the general limit): three full batches, then the next batch or single create is refused | the same 429; a refused batch, or one refused for its preset or config, is charged nothing |
 | `GET /api/v1/rooms/{code}/status` | 120 per address | the same 429 |
 | `POST /api/v1/rooms/preview` | 300 per address | the same 429 |
-| `GET /api/v1/games/…/export` (by `public_id` and by room code, CSV and JSON together) | 100 per address per **hour** (`GAME_EXPORT_LIMIT_PER_IP`, `GAME_EXPORT_WINDOW_SECONDS`). The export by `public_id` is open, so this is its compute guard; a classroom shares one address, so never lower it | the same 429, `Retry-After` = seconds left in that hour |
+| `GET /api/v1/games/id/{public_id}/export` (CSV and JSON together) | 100 per address per **hour** (`GAME_EXPORT_LIMIT_PER_IP`, `GAME_EXPORT_WINDOW_SECONDS`). The export by `public_id` is open, so this is its compute guard; a classroom shares one address, so never lower it | the same 429, `Retry-After` = seconds left in that hour |
 | Open sockets | 200 per address | the handshake is refused (`connect_error`, message `Too many connections from your network. Try again in a minute.`; a failed ID token gets the generic refusal) |
 | `submit_order` resubmissions | 20 per role per week (`MAX_RESUBMISSIONS_PER_ROLE_PER_WEEK`). The counter is process-local, keyed by (room code, week, role), pruned at the week's close and deliberately not in the room document: a socket is pinned to one worker, and a document field would add a store write per increment | `error {message, code: "TOO_MANY_SUBMISSIONS"}`; the last accepted order stands |
 | Socket events | 120 per connection | `error {message, code: "RATE_LIMITED"}` (play) or `join_error {message}` (lobby); the handler does not run |
@@ -337,9 +336,9 @@ app/
 │       ├── __init__.py         all_routers(): every module's `router`, in module-name order
 │       ├── health.py           /health, /health/deep
 │       ├── users.py            /users/upsert, /users/me
-│       ├── user_games.py       /users/me/stats, /users/me/games[/{id}]
+│       ├── user_games.py       /users/me/stats, /users/me/games[/{id}], /users/me/hosted-games
 │       ├── rooms.py            /rooms/create, /rooms/batch-create, /rooms/summary, /rooms/presets, /rooms/limits, /rooms/preview, /rooms/{code}/status|config
-│       └── games.py            /games/{code}|id/{public_id} results and export, /games/claim
+│       └── games.py            /games/id/{public_id} results and export, /games/claim
 ├── core/                       pure domain logic — no I/O, no clock, no global RNG
 │   ├── enums.py                Role, RoomState, DemandKind, Distribution, …
 │   ├── config_models.py        GameConfig; validation (out of range is refused, never clamped)
@@ -390,7 +389,7 @@ app/
         ├── lobby.py            joining, seating, config, start_game
         └── play.py             orders, pause/resume, bots, ending a game
 
-alembic/                        env.py reads settings.db_url; versions/0001_postgres_baseline (head)
+alembic/                        env.py reads settings.db_url; versions/0001_postgres_baseline, 0002_games_host_user_id (head)
 db/schema.postgres.sql          the generated DDL of head (`Novus/scripts/db/gen_ddl.py`)
 tests/
 ├── conftest.py                 FakeRedis, firebase_tokens, FakeSocketManager, the env pinning

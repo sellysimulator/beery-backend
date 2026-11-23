@@ -102,13 +102,14 @@ def test_persist_writes_full_36_week_game(db):
     game_id = DbService().persist_game(db, snapshot)
 
     assert db.query(Game).filter_by(id=game_id).count() == 1
+    assert db.get(Game, game_id).host_user_id is None
     assert db.query(GameConfigRow).filter_by(game_id=game_id).count() == 1
     assert db.query(DemandConfigRow).filter_by(game_id=game_id).count() == 1
     assert db.query(RoleConfigRow).filter_by(game_id=game_id).count() == 4
     assert db.query(DemandSeries).filter_by(game_id=game_id).count() == 36
     assert db.query(Week).filter_by(game_id=game_id).count() == 144
-    # 4 role players + the host = up to 5.
-    assert db.query(Participant).filter_by(game_id=game_id).count() == 5
+    # One row per seat; the host has none (D23).
+    assert db.query(Participant).filter_by(game_id=game_id).count() == 4
 
 
 # ---------------------------------------------------------------------------
@@ -291,23 +292,20 @@ def test_bullwhip_null_for_bot_and_host_even_with_a_defined_ratio(db):
         "P4": make_participant("P4", identity="guest_def", role=Role.FACTORY),
     }
     room = make_room_document(
-        config, engine, host_identity="uid-host", participants=participants
+        config, engine, host_uid="uid-host", participants=participants
     )
     snapshot = build_snapshot(room, config, engine)
     assert snapshot.stats.per_role[Role.WHOLESALER].bullwhip_ratio is not None
 
     game_id = DbService().persist_game(db, snapshot)
     rows = db.query(Participant).filter_by(game_id=game_id).all()
-    by_alias = {r.alias: r for r in rows if r.participant_type == "PLAYER"}
-    host_rows = [r for r in rows if r.participant_type == "HOST"]
-    assert len(host_rows) == 1
+    by_alias = {r.alias: r for r in rows}
+    assert {r.participant_type for r in rows} == {"PLAYER"}
 
     assert by_alias["P1"].bullwhip_ratio is not None
     assert by_alias["P3"].bullwhip_ratio is not None
     assert by_alias["P4"].bullwhip_ratio is not None
     assert by_alias["P2"].bullwhip_ratio is None  # bot-played WHOLESALER
-    assert host_rows[0].bullwhip_ratio is None  # the host has no role
-    assert host_rows[0].role is None
 
 
 def test_a_seat_swapped_to_a_bot_keeps_its_player(db):
@@ -716,7 +714,7 @@ def test_child_tables_are_inserted_with_one_executemany_each(db, schema_engine):
         ("into weeks", 4 * engine.weeks_played),
         ("into demand_series", engine.weeks_played),
         ("into role_configs", 4),
-        ("into participants", 5),
+        ("into participants", 4),  # one per seat; the host has none
     )
     for needle, expected_count in expectations:
         matches = log.matching(needle)
@@ -771,15 +769,13 @@ def test_money_rounds_half_up_to_two_decimals_at_the_boundary(db):
             alias="P1",
             display_name="Ana",
             role=Role.RETAILER,
-            participant_type="PLAYER",
             is_bot=False,
             identity="uid-money",
         ),
     ]
     snapshot = GameSnapshot(
         room_code=unique_room_code(),
-        host_identity=None,
-        host_display_name="Host",
+        host_uid=None,
         seed=1,
         started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         finished_at=datetime(2026, 1, 1, 1, tzinfo=timezone.utc),
@@ -928,13 +924,16 @@ def test_demand_configs_step_only_columns(db):
         assert getattr(row, column) is None, column
 
 
-def _host_row(db, game_id: int) -> Participant:
+def _host_rows(db, game_id: int) -> list[Participant]:
     return (
-        db.query(Participant).filter_by(game_id=game_id, participant_type="HOST").one()
+        db.query(Participant).filter_by(game_id=game_id, participant_type="HOST").all()
     )
 
 
-def test_guest_hosted_game_persists_with_a_guest_host_row(db):
+def test_a_guest_hosted_game_records_no_host(db):
+    """A guest host is never recorded (D23): no `host_user_id`, and no
+    participant row of any kind for the host. `host_identity` (D18's live
+    recovery key) is not read by persistence."""
     guest = "guest_00000000-0000-0000-0000-000000000061"
     config = make_config(duration_weeks=8)
     engine = run_full_game(config, seed=61)
@@ -947,17 +946,15 @@ def test_guest_hosted_game_persists_with_a_guest_host_row(db):
     snapshot = build_snapshot(room, config, engine)
     game_id = DbService().persist_game(db, snapshot)
 
-    game = db.get(Game, game_id)
-    assert game.host_display_name == "Guest Host"
-    host = _host_row(db, game_id)
-    assert host.user_id is None
-    assert host.guest_identity == guest
+    assert db.get(Game, game_id).host_user_id is None
+    assert _host_rows(db, game_id) == []
+    assert db.query(Participant).filter_by(guest_identity=guest).count() == 0
 
 
-def test_registered_host_resolves_to_the_matching_users_row(db):
+def test_a_signed_in_host_is_recorded_as_host_user_id(db):
     """The positive case the guest-hosted test needs a contrast against: a bug
-    that always nulls the host row's `user_id` would pass that test alone but
-    fails here."""
+    that always nulls `host_user_id` would pass that test alone but fails
+    here. Still no HOST participant row, and no stats row for hosting."""
     firebase_uid = "uid-registered-host"
     user_id = insert_user(
         db.connection(), firebase_uid=firebase_uid, display_name="Prof"
@@ -970,14 +967,49 @@ def test_registered_host_resolves_to_the_matching_users_row(db):
         config,
         engine,
         host_identity=firebase_uid,
+        host_uid=firebase_uid,
         host_display_name="Prof",
     )
     snapshot = build_snapshot(room, config, engine)
     game_id = DbService().persist_game(db, snapshot)
 
-    host = _host_row(db, game_id)
-    assert host.user_id == user_id
-    assert host.guest_identity is None
+    assert db.get(Game, game_id).host_user_id == user_id
+    assert _host_rows(db, game_id) == []
+    assert db.query(Participant).filter_by(user_id=user_id).count() == 0
+
+
+def test_a_host_uid_with_no_users_row_is_null_and_creates_none(db):
+    """A signed-in host who never hit `/users/upsert` is stored as NULL, and
+    persistence does not invent an account for them -- unlike a player's
+    seat, which gets a bare row (`test_unregistered_firebase_uid_...`)."""
+    config = make_config(duration_weeks=8)
+    engine = run_full_game(config, seed=68)
+    room = make_room_document(config, engine, host_uid="uid-host-without-a-row")
+    snapshot = build_snapshot(room, config, engine)
+
+    game_id = DbService().persist_game(db, snapshot)
+
+    assert db.get(Game, game_id).host_user_id is None
+    assert db.query(User).filter_by(firebase_uid="uid-host-without-a-row").count() == 0
+
+
+def test_host_identity_alone_is_never_recorded(db):
+    """`host_identity` may hold a uid (the D18 claim of a signed-in host), but
+    the record comes only from `host_uid`, the verified uid `start_game`
+    took. A room that never set it records no host."""
+    firebase_uid = "uid-claimed-but-not-started"
+    insert_user(db.connection(), firebase_uid=firebase_uid, display_name="Prof")
+    db.commit()
+
+    config = make_config(duration_weeks=8)
+    engine = run_full_game(config, seed=69)
+    room = make_room_document(config, engine, host_identity=firebase_uid)
+    snapshot = build_snapshot(room, config, engine)
+
+    game_id = DbService().persist_game(db, snapshot)
+
+    assert snapshot.host_uid is None
+    assert db.get(Game, game_id).host_user_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -1000,7 +1032,6 @@ def test_unregistered_firebase_uid_gets_a_users_row(db):
     room = make_room_document(
         config,
         engine,
-        host_identity="uid-never-registered-host",
         participants=participants,
     )
     snapshot = build_snapshot(room, config, engine)
@@ -1008,8 +1039,6 @@ def test_unregistered_firebase_uid_gets_a_users_row(db):
     game_id = DbService().persist_game(db, snapshot)  # must not raise
 
     users = {u.firebase_uid: u for u in db.query(User).all()}
-    host = _host_row(db, game_id)
-    assert host.user_id == users["uid-never-registered-host"].id
     player_row = db.query(Participant).filter_by(game_id=game_id, alias="P1").one()
     assert player_row.user_id == users["uid-never-registered"].id
     assert player_row.guest_identity is None

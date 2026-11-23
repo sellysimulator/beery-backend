@@ -44,6 +44,7 @@ EXPECTED_TOP_LEVEL_KEYS = {
     "host_secret",
     "host_sid",
     "host_identity",
+    "host_uid",
     "host_display_name",
     "participants",
     "sid_to_alias",
@@ -91,7 +92,7 @@ def _role_to_alias_value(role_to_alias: dict, role: Role):
 
 
 def test_module_constants_match_00_decisions_section_5():
-    assert SCHEMA_VERSION == 1
+    assert SCHEMA_VERSION == 2
     assert ROOM_CODE_LENGTH == 6
     assert ROOM_TTL_SECONDS == 86_400
     assert LOCK_TIMEOUT_SECONDS == 10
@@ -134,6 +135,8 @@ def test_new_room_document_fresh_lobby_defaults():
 
     assert room["room_code"] == "ABC234"
     assert room["host_display_name"] == "Host"
+    # No host is recorded until a start does it (D23).
+    assert room["host_uid"] is None
 
 
 def test_new_room_document_mints_a_fresh_secret_each_call():

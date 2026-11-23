@@ -46,7 +46,10 @@ class ClaimService:
         self, db: Session, firebase_uid: str, guest_identity: str
     ) -> int:
         """Attribute every participant row holding `guest_identity` to this
-        user. Returns the number of rows claimed. Recomputes that user's
+        user: seats the guest played, and only those. The host has no
+        participant row and `games.host_user_id` is never written here, so a
+        claim never makes anyone a game's host (D23). Returns the number of
+        rows claimed. Recomputes that user's
         stats. Returns 0 and writes nothing when the guest identity is
         unknown -- "nothing" includes not creating a `users` row for
         `firebase_uid` either, so checking for a match comes before

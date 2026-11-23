@@ -81,7 +81,6 @@ CREATE TABLE public.games (
     id integer NOT NULL,
     public_id character varying(32) NOT NULL,
     room_code character varying(8) NOT NULL,
-    host_display_name character varying(24) NOT NULL,
     rng_seed bigint NOT NULL,
     duration_weeks integer NOT NULL,
     weeks_played integer NOT NULL,
@@ -90,7 +89,8 @@ CREATE TABLE public.games (
     finished_at timestamp with time zone NOT NULL,
     chain_total_cost numeric(12,2) NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    host_user_id integer
 );
 CREATE SEQUENCE public.games_id_seq
     AS integer
@@ -260,6 +260,7 @@ ALTER TABLE ONLY public.role_configs
     ADD CONSTRAINT uq_role_configs_game_id_role UNIQUE (game_id, role);
 ALTER TABLE ONLY public.weeks
     ADD CONSTRAINT uq_weeks_game_id_week_role UNIQUE (game_id, week, role);
+CREATE INDEX ix_games_host_user_id ON public.games USING btree (host_user_id);
 CREATE INDEX ix_games_room_code ON public.games USING btree (room_code);
 CREATE INDEX ix_participants_game_id_role ON public.participants USING btree (game_id, role);
 CREATE INDEX ix_participants_user_id ON public.participants USING btree (user_id);
@@ -272,6 +273,8 @@ ALTER TABLE ONLY public.demand_series
     ADD CONSTRAINT fk_demand_series_game_id FOREIGN KEY (game_id) REFERENCES public.games(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.game_configs
     ADD CONSTRAINT fk_game_configs_game_id FOREIGN KEY (game_id) REFERENCES public.games(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.games
+    ADD CONSTRAINT fk_games_host_user_id FOREIGN KEY (host_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.participants
     ADD CONSTRAINT fk_participants_game_id FOREIGN KEY (game_id) REFERENCES public.games(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.participants

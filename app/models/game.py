@@ -10,7 +10,7 @@ six generators' parameters; it is still normalised so that a query can filter on
 `kind` together with a specific generator parameter.
 
 `users` is modelled in `app/models/user.py`; it is imported here so the
-two foreign keys that reference it resolve and so the whole schema is registered
+three foreign keys that reference it resolve and so the whole schema is registered
 on `Base.metadata` by importing this one module. The `users` **migration** lives
 in the same baseline revision.
 
@@ -83,9 +83,19 @@ class Game(Base, TimestampMixin):
     )
     # Indexed but NOT unique: room codes are recycled once a room expires.
     room_code: Mapped[str] = mapped_column(String(8), nullable=False, index=True)
-    # Who hosted is the `HOST` participant row's `user_id` / `guest_identity`,
-    # not a column here: one record, so a guest claim attributes it too.
-    host_display_name: Mapped[str] = mapped_column(String(24), nullable=False)
+    # The host's account, recorded only when the host was signed in: the
+    # verified Firebase uid of the connection that started the game
+    # (`room["host_uid"]`), resolved to an existing `users` row at persist and
+    # never creating one. NULL for a guest host, for a host with no `users`
+    # row, and once that account is deleted. Its one reader is the signed-in
+    # user's "Games you hosted" list (`GET /users/me/hosted-games`, D23): it
+    # grants no export, claim, results access or authority. The host holds no
+    # `participants` row.
+    host_user_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL", name="fk_games_host_user_id"),
+        nullable=True,
+    )
     rng_seed: Mapped[int] = mapped_column(BigInteger, nullable=False)
     duration_weeks: Mapped[int] = mapped_column(Integer, nullable=False)
     # May be fewer than `duration_weeks`, after `end_game_early`.
@@ -112,6 +122,9 @@ class Game(Base, TimestampMixin):
             "room_code", "started_at", name="uq_games_room_code_started_at"
         ),
         UniqueConstraint("public_id", name="uq_games_public_id"),
+        # PostgreSQL never indexes a foreign key itself; the hosted-games
+        # list filters on it.
+        Index("ix_games_host_user_id", "host_user_id"),
     )
 
 
@@ -241,7 +254,13 @@ class DemandConfigRow(Base, TimestampMixin):
 
 
 class Participant(Base, TimestampMixin):
-    """A host, player or bot that took part in a game.
+    """A seat of the game: a player, or a bot.
+
+    The host is not a participant row: who hosted is `games.host_user_id`,
+    and only for a signed-in host (D23). `participant_type` is therefore
+    always `PLAYER` in new rows; it stays a string column (spec §16's
+    spectator seam), and `role` stays nullable at the column level although
+    every row written today carries one.
 
     Exactly one of `user_id` and `guest_identity` is set for a human, and for a
     seat the host swapped to a bot (it keeps its player); both are NULL for a
@@ -253,7 +272,7 @@ class Participant(Base, TimestampMixin):
     because `user_stats.bullwhip_avg` needs it in a single grouped SQL query
     and recomputing `Var(orders)/Var(demand)` in SQL would be a second
     implementation of `population_variance`. NULL for a seat that was a bot
-    from the start, for the host, and for a `CONSTANT`-demand game; a swapped
+    from the start and for a `CONSTANT`-demand game; a swapped
     seat keeps its ratio, bot weeks included.
     """
 
@@ -277,7 +296,7 @@ class Participant(Base, TimestampMixin):
     )
     guest_identity: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # A ratio, so precision matters more than range (**D12**); NULL for a seat
-    # that was a bot from the start, the host, or a CONSTANT-demand game.
+    # that was a bot from the start or a CONSTANT-demand game.
     bullwhip_ratio: Mapped[Decimal | None] = mapped_column(
         Numeric(10, 4), nullable=True
     )

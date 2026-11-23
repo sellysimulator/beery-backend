@@ -73,7 +73,7 @@ ROOM_STATUS_LIMIT_PER_IP = 120
 #: each one builds a config and draws a demand series. The host form debounces
 #: edits at 300 ms, so one teacher typing flat out stays under 200 a minute.
 ROOM_PREVIEW_LIMIT_PER_IP = 300
-#: ``GET /api/v1/games/.../export`` (both routes, CSV and JSON alike) per
+#: ``GET /api/v1/games/id/{public_id}/export`` (CSV and JSON alike) per
 #: address per ``GAME_EXPORT_WINDOW_SECONDS``. The export by ``public_id`` is
 #: open to anyone who can see the game's results, and each one rebuilds the
 #: whole record from PostgreSQL, so this is the compute guard; the results screen's

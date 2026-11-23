@@ -1,6 +1,7 @@
-"""Black-box tests for ``GET /api/v1/games/{room_code}/results``.
+"""Black-box tests for ``GET /api/v1/games/id/{public_id}/results``, the
+only results route (D22): there is none by room code.
 
-Covers the payload's shape and figures, unknown and reused room codes, open
+Covers the payload's shape and figures, unknown ids, reused room codes, open
 access, and what the payload must never carry (identities, secrets, config
 keys). Money-as-a-number and the driver-error text are tested against this
 route too, since neither is tied to a specific one of the results, export and
@@ -47,7 +48,7 @@ from .conftest import (
 pytestmark = pytest.mark.dbschema
 
 
-def RESULTS_URL(room_code: str) -> str:
+def REMOVED_RESULTS_BY_CODE_URL(room_code: str) -> str:
     return f"/api/v1/games/{room_code}/results"
 
 
@@ -108,7 +109,7 @@ def test_all_four_roles_in_order_with_length_matching_weeks_played(
 ):
     game = persist_full_game(session_factory, duration_weeks=10, seed=1)
 
-    response = api_client.get(RESULTS_URL(game["room_code"]))
+    response = api_client.get(RESULTS_BY_ID_URL(game["public_id"]))
 
     assert response.status_code == 200
     payload = response.json()
@@ -136,7 +137,7 @@ def test_total_cost_equals_the_final_cumulative_cost(
 ):
     game = persist_full_game(session_factory, duration_weeks=8, seed=2)
 
-    payload = api_client.get(RESULTS_URL(game["room_code"])).json()
+    payload = api_client.get(RESULTS_BY_ID_URL(game["public_id"])).json()
 
     for role_result in payload["per_role"]:
         assert role_result["total_cost"] == pytest.approx(
@@ -154,7 +155,7 @@ def test_chain_total_cost_is_the_sum_of_the_four_total_costs(
 ):
     game = persist_full_game(session_factory, duration_weeks=8, seed=3)
 
-    payload = api_client.get(RESULTS_URL(game["room_code"])).json()
+    payload = api_client.get(RESULTS_BY_ID_URL(game["public_id"])).json()
 
     expected = sum(role_result["total_cost"] for role_result in payload["per_role"])
     assert round(payload["chain_total_cost"], 2) == round(expected, 2)
@@ -171,72 +172,30 @@ def test_bullwhip_ratio_is_null_for_constant_demand(
     # make_config's default demand is ConstantDemand -- D12's undefined case.
     game = persist_full_game(session_factory, duration_weeks=8, seed=4)
 
-    payload = api_client.get(RESULTS_URL(game["room_code"])).json()
+    payload = api_client.get(RESULTS_BY_ID_URL(game["public_id"])).json()
 
     assert all(r["bullwhip_ratio"] is None for r in payload["per_role"])
 
 
 # ---------------------------------------------------------------------------
-# Unknown room code
+# No route by room code
 # ---------------------------------------------------------------------------
 
 
-def test_unknown_room_code_is_404_with_string_detail(api_client, fake_redis):
-    response = api_client.get(RESULTS_URL("NOSUCH01"))
-
-    assert response.status_code == 404
-    detail = response.json()["detail"]
-    assert isinstance(detail, str)
-    assert detail == "No finished game found for that code."
-
-
-# ---------------------------------------------------------------------------
-# Reused room code
-# ---------------------------------------------------------------------------
-
-
-def test_reused_room_code_returns_the_more_recent_game(
+def test_there_is_no_results_route_by_room_code(
     api_client, session_factory, fake_redis
 ):
-    room_code = unique_room_code()
-    persist_full_game(
-        session_factory,
-        room_code=room_code,
-        duration_weeks=8,
-        seed=5,
-        started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        finished_at=datetime(2026, 1, 1, 2, tzinfo=timezone.utc),
-    )
-    persist_full_game(
-        session_factory,
-        room_code=room_code,
-        duration_weeks=9,
-        seed=6,
-        started_at=datetime(2026, 3, 1, tzinfo=timezone.utc),
-        finished_at=datetime(2026, 3, 1, 2, tzinfo=timezone.utc),
-    )
-
-    payload = api_client.get(RESULTS_URL(room_code)).json()
-
-    assert payload["weeks_played"] == 9
-    assert len(payload["demand_series"]) == 9
-
-
-def test_room_code_lookup_is_case_insensitive(api_client, session_factory, fake_redis):
-    """Codes are stored upper-case and PostgreSQL compares strings
-    case-sensitively, so the route normalises the code from the URL: a
-    lower-case (or padded) link still finds the game, like the live room
-    lookup does."""
+    """Results are addressed by `public_id` only (D22). The room-code route is
+    gone: a finished game's code, in either case, is a 404 like any unknown
+    path, and the payload is still there by its id."""
     game = persist_full_game(session_factory, duration_weeks=8, seed=8)
-    code = game["room_code"]
-    assert code == code.upper()
 
-    upper = api_client.get(RESULTS_URL(code))
-    lower = api_client.get(RESULTS_URL(code.lower()))
+    for code in (game["room_code"], game["room_code"].lower(), "NOSUCH01"):
+        response = api_client.get(REMOVED_RESULTS_BY_CODE_URL(code))
+        assert response.status_code in (404, 405), code
+        assert "public_id" not in response.text
 
-    assert upper.status_code == 200
-    assert lower.status_code == 200
-    assert lower.json()["public_id"] == upper.json()["public_id"]
+    assert api_client.get(RESULTS_BY_ID_URL(game["public_id"])).status_code == 200
 
 
 def test_timestamps_are_utc_with_a_z_suffix(api_client, session_factory, fake_redis):
@@ -251,7 +210,7 @@ def test_timestamps_are_utc_with_a_z_suffix(api_client, session_factory, fake_re
         finished_at=datetime(2026, 1, 1, 10, 30, tzinfo=timezone.utc),
     )
 
-    payload = api_client.get(RESULTS_URL(game["room_code"])).json()
+    payload = api_client.get(RESULTS_BY_ID_URL(game["public_id"])).json()
 
     # Truncated to whole seconds on the way in: the idempotency key.
     assert payload["started_at"] == "2026-01-01T08:00:00Z"
@@ -266,7 +225,7 @@ def test_timestamps_are_utc_with_a_z_suffix(api_client, session_factory, fake_re
 def test_results_require_no_authentication(api_client, session_factory, fake_redis):
     game = persist_full_game(session_factory, duration_weeks=8, seed=7)
 
-    response = api_client.get(RESULTS_URL(game["room_code"]))
+    response = api_client.get(RESULTS_BY_ID_URL(game["public_id"]))
 
     assert response.status_code == 200
 
@@ -286,7 +245,7 @@ def test_payload_carries_no_identity_secret_or_config_keys(
     depth (recursive assertions only)."""
     game = persist_full_game(session_factory, duration_weeks=8, seed=8)
 
-    payload = api_client.get(RESULTS_URL(game["room_code"])).json()
+    payload = api_client.get(RESULTS_BY_ID_URL(game["public_id"])).json()
 
     keys = keys_recursive(payload)
     leaked_identity_keys = keys & FORBIDDEN_IDENTITY_KEYS
@@ -331,10 +290,11 @@ def test_no_registered_uid_or_guest_string_anywhere_in_results(
         duration_weeks=8,
         seed=9,
         host_identity=registered_uid,
+        host_uid=registered_uid,
         participants=participants,
     )
 
-    response = api_client.get(RESULTS_URL(game["room_code"]))
+    response = api_client.get(RESULTS_BY_ID_URL(game["public_id"]))
     payload = response.json()
 
     assert registered_uid not in response.text
@@ -372,7 +332,7 @@ def test_orders_index_zero_is_week_one_per_role(
         session_factory, duration_weeks=8, seed=10, order_fn=_distinct_week1_orders
     )
 
-    payload = api_client.get(RESULTS_URL(game["room_code"])).json()
+    payload = api_client.get(RESULTS_BY_ID_URL(game["public_id"])).json()
 
     by_role = {r["role"]: r for r in payload["per_role"]}
     for role, expected in _WEEK1_ORDERS.items():
@@ -389,7 +349,7 @@ def test_total_cost_is_a_json_number(api_client, session_factory, fake_redis):
     coerce a ``Decimal``-as-string back into a float and hide the bug."""
     game = persist_full_game(session_factory, duration_weeks=8, seed=11)
 
-    response = api_client.get(RESULTS_URL(game["room_code"]))
+    response = api_client.get(RESULTS_BY_ID_URL(game["public_id"]))
     raw = json.loads(response.text)
 
     assert isinstance(raw["chain_total_cost"], (int, float))
@@ -450,7 +410,7 @@ def broken_db_client():
 
 
 def test_driver_error_leaks_no_host_port_or_user(broken_db_client):
-    response = broken_db_client.get(RESULTS_URL("ANYCODE1"))
+    response = broken_db_client.get(RESULTS_BY_ID_URL("0" * 32))
 
     assert _LEAK_HOST not in response.text
     assert _LEAK_PORT not in response.text
@@ -466,17 +426,15 @@ def test_driver_error_leaks_no_host_port_or_user(broken_db_client):
 async def test_unfinished_game_in_redis_is_404_not_a_partial_payload(
     api_client, fake_redis
 ):
-    """A room that is ``RUNNING`` live in Redis and has no row in PostgreSQL yet
-    must still be a plain 404 -- a wrong implementation that falls back to
-    the live room document for a "quick" answer would instead return 200
-    (or a half-filled payload) here."""
+    """A room that is ``RUNNING`` live has no results: nothing reads the
+    live room document for a "quick" answer, and its code opens nothing."""
     room_code = "LIVEONLY"
     await write_live_redis_room(fake_redis, room_code, state="RUNNING")
 
-    response = api_client.get(RESULTS_URL(room_code))
+    response = api_client.get(REMOVED_RESULTS_BY_CODE_URL(room_code))
 
-    assert response.status_code == 404
-    assert isinstance(response.json()["detail"], str)
+    assert response.status_code in (404, 405)
+    assert "demand_series" not in response.text
 
 
 # ---------------------------------------------------------------------------
@@ -484,45 +442,43 @@ async def test_unfinished_game_in_redis_is_404_not_a_partial_payload(
 # ---------------------------------------------------------------------------
 
 
-def test_public_id_results_match_room_code_results(
+def test_public_id_is_an_opaque_id_not_the_row_id(
     api_client, session_factory, fake_redis
 ):
     game = persist_full_game(session_factory, duration_weeks=8, seed=21)
 
-    by_code = api_client.get(RESULTS_URL(game["room_code"])).json()
-    public_id = by_code["public_id"]
-    assert isinstance(public_id, str) and len(public_id) == 32
-    assert public_id != str(game["game_id"])
-
-    response = api_client.get(RESULTS_BY_ID_URL(public_id))
+    response = api_client.get(RESULTS_BY_ID_URL(game["public_id"]))
 
     assert response.status_code == 200
-    assert response.json() == by_code
+    public_id = response.json()["public_id"]
+    assert public_id == game["public_id"]
+    assert isinstance(public_id, str) and len(public_id) == 32
+    assert public_id != str(game["game_id"])
+    assert api_client.get(RESULTS_BY_ID_URL(str(game["game_id"]))).status_code == 404
 
 
 def test_public_id_keeps_resolving_the_older_game_after_its_code_is_reused(
     api_client, session_factory, fake_redis
 ):
     room_code = unique_room_code()
-    persist_full_game(
+    older_id = persist_full_game(
         session_factory,
         room_code=room_code,
         duration_weeks=8,
         seed=22,
         started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         finished_at=datetime(2026, 1, 1, 2, tzinfo=timezone.utc),
-    )
-    older_id = api_client.get(RESULTS_URL(room_code)).json()["public_id"]
-    persist_full_game(
+    )["public_id"]
+    newer_id = persist_full_game(
         session_factory,
         room_code=room_code,
         duration_weeks=10,
         seed=23,
         started_at=datetime(2026, 3, 1, tzinfo=timezone.utc),
         finished_at=datetime(2026, 3, 1, 2, tzinfo=timezone.utc),
-    )
+    )["public_id"]
 
-    newer = api_client.get(RESULTS_URL(room_code)).json()
+    newer = api_client.get(RESULTS_BY_ID_URL(newer_id)).json()
     older = api_client.get(RESULTS_BY_ID_URL(older_id)).json()
 
     assert newer["public_id"] != older_id
@@ -542,7 +498,7 @@ def test_public_id_results_require_no_authentication_and_leak_nothing(
     api_client, session_factory, fake_redis
 ):
     game = persist_full_game(session_factory, duration_weeks=8, seed=24)
-    public_id = api_client.get(RESULTS_URL(game["room_code"])).json()["public_id"]
+    public_id = game["public_id"]
 
     response = api_client.get(RESULTS_BY_ID_URL(public_id))
 

@@ -298,15 +298,7 @@ def test_deleting_a_user_keeps_the_games_they_played(db: Connection) -> None:
     user_id = insert_user(db)
     game_ids = []
     for _ in range(3):
-        game_id = insert_game(db)
-        insert_row(
-            db,
-            "participants",
-            game_id=game_id,
-            alias="HOST",
-            participant_type="HOST",
-            user_id=user_id,
-        )
+        game_id = insert_game(db, host_user_id=user_id)
         insert_row(db, "participants", game_id=game_id, alias="P1", user_id=user_id)
         for role in Role:
             insert_row(db, "weeks", game_id=game_id, week=1, role=role.value)
@@ -320,7 +312,11 @@ def test_deleting_a_user_keeps_the_games_they_played(db: Connection) -> None:
             text("SELECT user_id FROM participants WHERE game_id = :id"),
             {"id": game_id},
         ).scalars()
-        assert list(owners) == [None, None]
+        assert list(owners) == [None]
+        host = db.execute(
+            text("SELECT host_user_id FROM games WHERE id = :id"), {"id": game_id}
+        ).scalar_one()
+        assert host is None
 
 
 def _count(db: Connection, table: str, game_id: int) -> int:
@@ -335,28 +331,29 @@ def _count(db: Connection, table: str, game_id: int) -> int:
 
 
 def test_a_guest_hosted_game_inserts_with_no_account(db: Connection) -> None:
-    """**D3** -- hosting is a capability, not an account. Who
-    hosted lives only on the ``HOST`` participant row, so ``games`` names no
-    account at all."""
-    assert "host_user_id" not in columns(db, "games")
-    game_id = insert_game(db, host_display_name="Guest host")
-    insert_row(
-        db,
-        "participants",
-        game_id=game_id,
-        alias="HOST",
-        participant_type="HOST",
-        guest_identity="guest_00000000-0000-0000-0000-000000000014",
-    )
+    """**D3** -- hosting is a capability, not an account. A game needs no
+    host account: ``games.host_user_id`` is nullable and only a signed-in
+    host fills it (D23). There is no host name column."""
+    spec = columns(db, "games")
+    assert spec["host_user_id"]["IS_NULLABLE"] == "YES"
+    assert "host_display_name" not in spec
+    game_id = insert_game(db)
     host = db.execute(
+        text("SELECT host_user_id FROM games WHERE id = :id"), {"id": game_id}
+    ).scalar_one()
+    assert host is None
+
+
+def test_games_host_user_id_is_indexed(db: Connection) -> None:
+    """A queried foreign key gets an explicitly named index: PostgreSQL never
+    creates one for a foreign key itself."""
+    indexdef = db.execute(
         text(
-            "SELECT user_id, guest_identity FROM participants "
-            "WHERE game_id = :id AND participant_type = 'HOST'"
-        ),
-        {"id": game_id},
-    ).one()
-    assert host.user_id is None
-    assert host.guest_identity is not None
+            "SELECT indexdef FROM pg_indexes "
+            "WHERE tablename = 'games' AND indexname = 'ix_games_host_user_id'"
+        )
+    ).scalar_one()
+    assert "(host_user_id)" in indexdef
 
 
 def test_participants_accepts_a_guest_and_a_bot(db: Connection) -> None:
@@ -483,21 +480,20 @@ def test_enum_valued_columns_accept_every_member(db: Connection) -> None:
     )
     assert stored_roles == {role.value for role in Role}
 
-    for index, participant_type in enumerate(("HOST", "PLAYER"), start=1):
-        insert_row(
-            db,
-            "participants",
-            game_id=game_id,
-            alias=f"P{index}",
-            role=Role.RETAILER.value if participant_type == "PLAYER" else None,
-            participant_type=participant_type,
-        )
+    insert_row(
+        db,
+        "participants",
+        game_id=game_id,
+        alias="P1",
+        role=Role.RETAILER.value,
+        participant_type="PLAYER",
+    )
     assert set(
         db.execute(
             text("SELECT participant_type FROM participants WHERE game_id = :id"),
             {"id": game_id},
         ).scalars()
-    ) == {"HOST", "PLAYER"}
+    ) == {"PLAYER"}
 
     for mode in RoleAssignmentMode:
         other = insert_game(db)

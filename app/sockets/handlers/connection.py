@@ -3,14 +3,16 @@
 `identity` is server-only — a verified Firebase uid, or a `guest_<uuid4>` — and is
 never on the wire. It is resolved here, at `connect`, and
 every later handler reads `socket_manager.sid_to_identity[sid]` rather than
-accepting anything the client says about who it is.
+accepting anything the client says about who it is. A verified uid is also
+recorded in `socket_manager.sid_to_verified_uid[sid]`, the one place a
+handler may learn that a connection is signed in.
 """
 
 import asyncio
 import logging
 import re
 import uuid
-from typing import Any
+from typing import Any, NamedTuple
 
 import socketio  # type: ignore[import-untyped]
 
@@ -37,7 +39,16 @@ def _new_guest_identity() -> str:
     return f"guest_{uuid.uuid4()}"
 
 
-def resolve_identity(auth: dict | None) -> str | None:
+class Handshake(NamedTuple):
+    """Who a connection is. `verified_uid` is the uid of an ID token that
+    verified, and None for every guest: it is set from the verification
+    itself, never inferred from the shape of `identity`."""
+
+    identity: str
+    verified_uid: str | None
+
+
+def resolve_handshake(auth: dict | None) -> Handshake | None:
     """Return the identity for a handshake payload, or None to reject it.
 
     None means an ID token was presented and did not verify. It is never a
@@ -49,7 +60,7 @@ def resolve_identity(auth: dict | None) -> str | None:
     deliberately.
     """
     if not isinstance(auth, dict):
-        return _new_guest_identity()
+        return Handshake(_new_guest_identity(), None)
 
     id_token = auth.get("idToken")
     if id_token:
@@ -59,13 +70,13 @@ def resolve_identity(auth: dict | None) -> str | None:
         uid = claims.get("uid")
         if not uid or not isinstance(uid, str):
             return None
-        return uid
+        return Handshake(uid, uid)
 
     guest_id = auth.get("guestId")
     if isinstance(guest_id, str) and GUEST_ID_RE.match(guest_id):
-        return guest_id
+        return Handshake(guest_id, None)
 
-    return _new_guest_identity()
+    return Handshake(_new_guest_identity(), None)
 
 
 @sio.event
@@ -84,14 +95,16 @@ async def connect(sid: str, environ: dict, auth: Any = None) -> Any:
         raise socketio.exceptions.ConnectionRefusedError(TOO_MANY_CONNECTIONS_MESSAGE)
     accepted = False
     try:
-        identity = await asyncio.to_thread(resolve_identity, auth)
-        if identity is None:
+        handshake = await asyncio.to_thread(resolve_handshake, auth)
+        if handshake is None:
             # The identity itself is never logged.
             logger.warning("Rejecting handshake for sid %s: the ID token failed.", sid)
             return False
 
         await socket_manager.connect(sid, environ)
-        socket_manager.sid_to_identity[sid] = identity
+        socket_manager.sid_to_identity[sid] = handshake.identity
+        if handshake.verified_uid is not None:
+            socket_manager.sid_to_verified_uid[sid] = handshake.verified_uid
         accepted = True
         return None
     finally:

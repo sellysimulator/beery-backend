@@ -122,7 +122,12 @@ def test_socket_cors_is_not_a_wildcard():
 
 def test_socket_manager_singleton_surface():
     assert isinstance(socket_manager, SocketManager)
-    for name in ("sid_to_room", "sid_to_alias", "sid_to_identity"):
+    for name in (
+        "sid_to_room",
+        "sid_to_alias",
+        "sid_to_identity",
+        "sid_to_verified_uid",
+    ):
         assert isinstance(getattr(socket_manager, name), dict)
 
 

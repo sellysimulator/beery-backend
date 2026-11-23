@@ -277,3 +277,174 @@ def test_ddl_snapshot_matches_migrations(
     assert result.exit_code == 0, result.output
     dump = result.output.decode() if isinstance(result.output, bytes) else result.output
     assert normalize_ddl(dump) == DDL_SNAPSHOT.read_text()
+
+
+# --- 0002: the host record moves from a HOST row to games.host_user_id -----
+
+
+def _execute(url: str, statement: str, **params: Any) -> list[Any]:
+    engine = create_engine(url, future=True)
+    try:
+        with engine.begin() as connection:
+            result = connection.execute(text(statement), params)
+            return list(result) if result.returns_rows else []
+    finally:
+        engine.dispose()
+
+
+def _insert_0001_game(url: str, room_code: str) -> int:
+    rows = _execute(
+        url,
+        "INSERT INTO games (public_id, room_code, host_display_name, rng_seed, "
+        "duration_weeks, weeks_played, ended_early, started_at, finished_at, "
+        "chain_total_cost) VALUES (:public_id, :room_code, 'Prof', 1, 8, 8, false, "
+        "now(), now(), 0) RETURNING id",
+        public_id=room_code.lower().ljust(32, "0"),
+        room_code=room_code,
+    )
+    return int(rows[0][0])
+
+
+def _insert_0001_participant(url: str, game_id: int, **values: Any) -> None:
+    row = {
+        "alias": "P1",
+        "role": "RETAILER",
+        "display_name": "Ana",
+        "participant_type": "PLAYER",
+        "user_id": None,
+        "guest_identity": None,
+        **values,
+    }
+    _execute(
+        url,
+        "INSERT INTO participants (game_id, alias, role, display_name, "
+        "participant_type, is_bot, user_id, guest_identity) VALUES (:game_id, "
+        ":alias, :role, :display_name, :participant_type, false, :user_id, "
+        ":guest_identity)",
+        game_id=game_id,
+        **row,
+    )
+
+
+def _host_row(url: str, game_id: int, **values: Any) -> None:
+    _insert_0001_participant(
+        url,
+        game_id,
+        alias="HOST",
+        role=None,
+        display_name="Prof",
+        participant_type="HOST",
+        **values,
+    )
+
+
+def test_0002_moves_signed_in_hosts_to_games_and_drops_every_host_row(
+    blank_database: str, alembic: AlembicRunner
+) -> None:
+    """The data step of ``0002``. A registered host and a claimed former guest
+    host keep their account as ``games.host_user_id``; a guest host and a game
+    with no host row get NULL; every HOST row is gone, every player row
+    stays, and ``host_display_name`` is dropped."""
+    url = blank_database
+    alembic(url, "upgrade", "0001")
+
+    host_id = _execute(
+        url, "INSERT INTO users (firebase_uid) VALUES ('uid-host') RETURNING id"
+    )[0][0]
+    claimer_id = _execute(
+        url, "INSERT INTO users (firebase_uid) VALUES ('uid-claimer') RETURNING id"
+    )[0][0]
+    player_id = _execute(
+        url, "INSERT INTO users (firebase_uid) VALUES ('uid-player') RETURNING id"
+    )[0][0]
+
+    registered = _insert_0001_game(url, "AAAAA1")
+    _host_row(url, registered, user_id=host_id)
+    _insert_0001_participant(url, registered, user_id=player_id)
+
+    claimed = _insert_0001_game(url, "AAAAA2")
+    _host_row(url, claimed, user_id=claimer_id)  # a guest host who claimed
+
+    guest_hosted = _insert_0001_game(url, "AAAAA3")
+    _host_row(url, guest_hosted, guest_identity="guest_aaaa-host")
+    _insert_0001_participant(url, guest_hosted, guest_identity="guest_aaaa-player")
+
+    hostless = _insert_0001_game(url, "AAAAA4")
+
+    alembic(url, "upgrade", "head")
+
+    hosts = dict(_execute(url, "SELECT id, host_user_id FROM games"))
+    assert hosts == {
+        registered: host_id,
+        claimed: claimer_id,
+        guest_hosted: None,
+        hostless: None,
+    }
+    assert _execute(
+        url, "SELECT COUNT(*) FROM participants WHERE participant_type = 'HOST'"
+    ) == [(0,)]
+    players = _execute(
+        url, "SELECT game_id, user_id, guest_identity FROM participants ORDER BY id"
+    )
+    assert [tuple(row) for row in players] == [
+        (registered, player_id, None),
+        (guest_hosted, None, "guest_aaaa-player"),
+    ]
+    game_columns = {
+        row[0]
+        for row in _execute(
+            url,
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'games'",
+        )
+    }
+    assert "host_user_id" in game_columns
+    assert "host_display_name" not in game_columns
+
+
+def test_0002_downgrade_restores_the_0001_shape(
+    blank_database: str, alembic: AlembicRunner
+) -> None:
+    """Down to 0001: ``host_display_name`` is back (every game reads 'Host';
+    the names are gone), a HOST row is re-created for each recorded signed-in
+    host, and ``host_user_id`` is dropped. A guest host cannot come back."""
+    url = blank_database
+    alembic(url, "upgrade", "0001")
+    host_id = _execute(
+        url, "INSERT INTO users (firebase_uid) VALUES ('uid-host') RETURNING id"
+    )[0][0]
+    registered = _insert_0001_game(url, "BBBBB1")
+    _host_row(url, registered, user_id=host_id)
+    guest_hosted = _insert_0001_game(url, "BBBBB2")
+    _host_row(url, guest_hosted, guest_identity="guest_bbbb-host")
+
+    alembic(url, "upgrade", "head")
+    alembic(url, "downgrade", "0001")
+
+    assert _version_rows(url) == ["0001"]
+    names = dict(_execute(url, "SELECT id, host_display_name FROM games"))
+    assert names == {registered: "Host", guest_hosted: "Host"}
+    host_rows = _execute(
+        url,
+        "SELECT game_id, alias, role, user_id, guest_identity FROM participants "
+        "WHERE participant_type = 'HOST'",
+    )
+    assert [tuple(row) for row in host_rows] == [
+        (registered, "HOST", None, host_id, None)
+    ]
+    game_columns = {
+        row[0]
+        for row in _execute(
+            url,
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'games'",
+        )
+    }
+    assert "host_user_id" not in game_columns
+    # 0001 has no database default on a fact column.
+    default = _execute(
+        url,
+        "SELECT column_default FROM information_schema.columns "
+        "WHERE table_name = 'games' AND column_name = 'host_display_name'",
+    )
+    assert default == [(None,)]

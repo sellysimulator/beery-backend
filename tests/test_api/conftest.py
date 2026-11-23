@@ -34,6 +34,7 @@ from sqlalchemy import text
 
 from app.core.enums import Role
 from app.services.db_service import DbService, build_snapshot
+from app.services.state_service import SCHEMA_VERSION
 
 # --- the Testcontainers PostgreSQL fixtures, imported wholesale (see module
 # docstring for why this file, rather than each test module, imports it) ---
@@ -211,6 +212,7 @@ def persist_full_game(
     duration_weeks: int = 8,
     seed: int = 1,
     host_identity: str | None = None,
+    host_uid: str | None = None,
     host_display_name: str = "Host",
     participants: dict[str, dict[str, Any]] | None = None,
     started_at: datetime | None = None,
@@ -244,6 +246,7 @@ def persist_full_game(
         engine,
         room_code=room_code,
         host_identity=host_identity,
+        host_uid=host_uid,
         host_display_name=host_display_name,
         participants=participants,
         started_at=started_at,
@@ -253,7 +256,12 @@ def persist_full_game(
     db = session_factory()
     game_id = DbService().persist_game(db, snapshot)
     db.commit()
+    public_id = db.execute(
+        text("SELECT public_id FROM games WHERE id = :id"), {"id": game_id}
+    ).scalar_one()
+    db.close()
     return {
+        "public_id": public_id,
         "room_code": room["room_code"],
         "engine": engine,
         "config": config,
@@ -270,7 +278,7 @@ async def write_live_redis_room(fake_redis, room_code: str, **overrides: Any) ->
     ``make_room_document`` uses.
     """
     doc = {
-        "schema_version": 1,
+        "schema_version": SCHEMA_VERSION,
         "room_code": room_code,
         "state": "RUNNING",
         "created_at": "2026-01-01T00:00:00+00:00",
@@ -279,6 +287,7 @@ async def write_live_redis_room(fake_redis, room_code: str, **overrides: Any) ->
         "host_secret": "live-secret-value",
         "host_sid": "sid-1",
         "host_identity": None,
+        "host_uid": None,
         "host_display_name": "Host",
         "participants": {},
         "sid_to_alias": {},
