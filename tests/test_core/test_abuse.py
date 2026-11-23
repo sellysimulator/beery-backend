@@ -215,6 +215,22 @@ def test_the_export_budget_is_one_hundred_an_hour() -> None:
     assert abuse._game_export.window == 3600
 
 
+def test_per_address_limits_fit_a_whole_school_behind_one_address() -> None:
+    """The Novus floor for every per-address cap: a school's NAT shares one
+    address. The per-connection limits stay the guard against one client."""
+    assert abuse.MAX_SOCKETS_PER_IP >= 400
+    assert abuse.REST_LIMIT_PER_IP >= 3000
+    assert abuse.ROOM_STATUS_LIMIT_PER_IP >= 600
+    assert abuse.ROOM_PREVIEW_LIMIT_PER_IP >= 600
+    assert abuse.SOCKET_JOINS_PER_IP >= 600
+    assert abuse._rest.limit == abuse.REST_LIMIT_PER_IP
+    assert abuse._room_status.limit == abuse.ROOM_STATUS_LIMIT_PER_IP
+    assert abuse._room_preview.limit == abuse.ROOM_PREVIEW_LIMIT_PER_IP
+    assert abuse._socket_joins.limit == abuse.SOCKET_JOINS_PER_IP
+    assert abuse.SOCKET_EVENTS_PER_SID == 120
+    assert abuse.ROOM_CREATE_LIMIT_PER_IP == 30
+
+
 def test_retry_after_counts_down_the_window(clock) -> None:
     limiter = RateLimiter(1, window=3600.0)
     assert limiter.allow("a") is True

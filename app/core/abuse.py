@@ -22,8 +22,9 @@ It is wired in at four single points and nowhere else:
   which every socket event handler already wears.
 
 The numbers are module constants, not settings (the hard-limits rule
-in ``CLAUDE.md``). They are sized for a classroom behind one NAT address --
-about forty people sharing one IP -- not for one person.
+in ``CLAUDE.md``). The per-address ones are sized for a whole school behind
+one NAT address -- several classrooms sharing one IP -- not for one person;
+the per-connection ones are the real guard against a single client.
 """
 
 from __future__ import annotations
@@ -60,22 +61,22 @@ __all__ = [
 #: Every limit counts within a fixed window of this many seconds.
 WINDOW_SECONDS = 60.0
 #: All REST requests from one address per window.
-REST_LIMIT_PER_IP = 1200
+REST_LIMIT_PER_IP = 3000
 #: Rooms created per address per ``ROOM_CREATE_WINDOW_SECONDS``, shared by
 #: ``POST /api/v1/rooms/create`` (one each) and ``POST /api/v1/rooms/batch-create``
 #: (one per room, at most ``max_batch_rooms`` = 10 a request). Unauthenticated,
-#: and each one is a room held in memory for 2 h (24 h once started). The standard across every
-#: Novus game: 30 an hour, so three full batches.
+#: and each one is a room held in memory for 2 h (24 h once started). The
+#: standard across every Novus game: 30 an hour, so three full batches.
 ROOM_CREATE_LIMIT_PER_IP = 30
 #: The room-create budget's window: an hour, not ``WINDOW_SECONDS``.
 ROOM_CREATE_WINDOW_SECONDS = 3600.0
 #: ``GET /api/v1/rooms/{code}/status`` per address per window. Unauthenticated
 #: and answers for any code -- the REST half of room-code guessing.
-ROOM_STATUS_LIMIT_PER_IP = 120
+ROOM_STATUS_LIMIT_PER_IP = 600
 #: ``POST /api/v1/rooms/preview`` per address per window. Unauthenticated, and
 #: each one builds a config and draws a demand series. The host form debounces
 #: edits at 300 ms, so one teacher typing flat out stays under 200 a minute.
-ROOM_PREVIEW_LIMIT_PER_IP = 300
+ROOM_PREVIEW_LIMIT_PER_IP = 600
 #: ``GET /api/v1/games/id/{public_id}/export`` (CSV and JSON alike) per
 #: address per ``GAME_EXPORT_WINDOW_SECONDS``. The export by ``public_id`` is
 #: open to anyone who can see the game's results, and each one rebuilds the
@@ -86,13 +87,13 @@ GAME_EXPORT_LIMIT_PER_IP = 100
 #: The export budget's window: an hour, not ``WINDOW_SECONDS``.
 GAME_EXPORT_WINDOW_SECONDS = 3600.0
 #: Sockets open at once from one address.
-MAX_SOCKETS_PER_IP = 200
+MAX_SOCKETS_PER_IP = 400
 #: Socket events per connection per window. The host form debounces config
 #: saves at 400 ms; nobody clicks at two a second for a whole minute.
 SOCKET_EVENTS_PER_SID = 120
 #: ``join`` + ``join_waiting`` per address per window -- the socket half of
 #: room-code guessing.
-SOCKET_JOINS_PER_IP = 300
+SOCKET_JOINS_PER_IP = 600
 #: Keys one limiter tracks at most, whatever arrives.
 MAX_TRACKED_KEYS = 10_000
 #: The largest REST request body, and the largest Socket.IO message

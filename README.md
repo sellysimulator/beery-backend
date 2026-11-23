@@ -105,21 +105,22 @@ peer. Every window is 60 s except room creation's and the export's, which are an
 
 | What | Limit | Over it |
 |---|---|---|
-| Any REST request except `/api/v1/health` | 1200 per address | `429 {"detail": "Too many requests. Please slow down and try again."}`, `Retry-After` = seconds left in the window (60 at most) |
+| Any REST request except `/api/v1/health` | 3000 per address | `429 {"detail": "Too many requests. Please slow down and try again."}`, `Retry-After` = seconds left in the window (60 at most) |
 | `POST /api/v1/rooms/create` | 30 rooms per address per **hour** (`ROOM_CREATE_LIMIT_PER_IP`, `ROOM_CREATE_WINDOW_SECONDS`; the standard across the Novus games) | the same 429, `Retry-After` = seconds left in that hour |
 | `POST /api/v1/rooms/batch-create` | `count` (at most 10) against the same 30 rooms per address per hour, all or nothing (`room_create_allowed`, charged by the route after validation; the middleware leaves it on the general limit): three full batches, then the next batch or single create is refused | the same 429; a refused batch, or one refused for its preset or config, is charged nothing |
-| `GET /api/v1/rooms/{code}/status` | 120 per address | the same 429 |
-| `POST /api/v1/rooms/preview` | 300 per address | the same 429 |
+| `GET /api/v1/rooms/{code}/status` | 600 per address | the same 429 |
+| `POST /api/v1/rooms/preview` | 600 per address | the same 429 |
 | `GET /api/v1/games/id/{public_id}/export` (CSV and JSON together) | 100 per address per **hour** (`GAME_EXPORT_LIMIT_PER_IP`, `GAME_EXPORT_WINDOW_SECONDS`). The export by `public_id` is open, so this is its compute guard; a classroom shares one address, so never lower it | the same 429, `Retry-After` = seconds left in that hour |
-| Open sockets | 200 per address | the handshake is refused (`connect_error`, message `Too many connections from your network. Try again in a minute.`; a failed ID token gets the generic refusal) |
+| Open sockets | 400 per address | the handshake is refused (`connect_error`, message `Too many connections from your network. Try again in a minute.`; a failed ID token gets the generic refusal) |
 | `submit_order` resubmissions | 20 per role per week (`MAX_RESUBMISSIONS_PER_ROLE_PER_WEEK`). The counter is process-local, keyed by (room code, week, role), pruned at the week's close, at the game's finish (ended early too) and, for a room that expired or was deleted mid-week, once older than a room's 24 h lifetime; deliberately not in the room document: a socket is pinned to one worker, and a document field would add a store write per increment | `error {message, code: "TOO_MANY_SUBMISSIONS"}`; the last accepted order stands |
 | Socket events | 120 per connection | `error {message, code: "RATE_LIMITED"}` (play) or `join_error {message}` (lobby); the handler does not run |
-| `join` + `join_waiting` | 300 per address | as above |
+| `join` + `join_waiting` | 600 per address | as above |
 | One REST request body | 64 KB (`MAX_BODY_BYTES`), a declared `Content-Length` or a chunked body as it is read | `413 {"detail": "That request is too large."}`; an oversized `Content-Length` is refused before anything is counted |
 | One socket message | 64 KB (`max_http_buffer_size` = `MAX_BODY_BYTES`) | refused by Engine.IO |
 | Live rooms, in-memory backend | 500 (`MAX_ROOMS` in `state_backend.py`) | `POST /rooms/create` answers `503`; `POST /rooms/batch-create` deletes the rooms it already made, then answers the same `503` |
 
-The numbers are sized for a classroom of about forty people behind one NAT address. A room
+The per-address numbers are sized for a whole school behind one NAT address (the same
+floor in every Novus game); the per-connection ones are the real guard against one client. A room
 code that `generate_room_code` could not have minted is refused before any lock or read
 (`is_room_code`), and a handshake `idToken` over 4096 characters is rejected unverified.
 
