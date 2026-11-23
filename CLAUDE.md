@@ -282,7 +282,8 @@ source change needs a rebuild.
   for the lobby (`{message}`). It logs the traceback and the event name, never the payload.
   It is also the one place socket events are rate-limited (`core/abuse.py`, code
   `RATE_LIMITED`): never add a per-handler limit. REST is limited by
-  `RateLimitMiddleware`, with one exception: `POST /rooms/batch-create` charges the
+  `RateLimitMiddleware` (which also answers 413 for a body over `MAX_BODY_BYTES`, 64 KB,
+  the same cap as a socket message), with one exception: `POST /rooms/batch-create` charges the
   room-create budget itself, `abuse.room_create_allowed(scope, count)` (all or nothing,
   `RateLimiter.allow(key, cost)`), after its preset and config have validated, so the
   middleware leaves that path on the general limit. The room-create budget is **30 rooms per

@@ -6,6 +6,7 @@ from typing import Any
 from socketio import AsyncRedisManager, AsyncServer
 
 from ..config import settings
+from ..core.abuse import MAX_BODY_BYTES
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +29,8 @@ sio = AsyncServer(
     ping_interval=25,
     # The largest legitimate client message is a whole config patch with a
     # 104-week CUSTOM demand series, a few KB. 5 MB per message was 5 MB of
-    # parsing any anonymous socket could ask for.
-    max_http_buffer_size=64 * 1024,
+    # parsing any anonymous socket could ask for. The same cap as a REST body.
+    max_http_buffer_size=MAX_BODY_BYTES,
 )
 
 

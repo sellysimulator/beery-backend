@@ -58,8 +58,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Added before CORS so CORS wraps it: a 429 still carries the CORS headers
-# the page needs to read it, and preflights are never counted.
+# Added before CORS so CORS wraps it: a 429 or 413 still carries the CORS
+# headers the page needs to read it, and preflights are never counted.
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,

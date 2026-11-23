@@ -7,6 +7,7 @@ starts from zero.
 
 from __future__ import annotations
 
+import json
 import logging
 
 import pytest
@@ -280,6 +281,102 @@ def test_a_429_exposes_retry_after_to_browsers(client, monkeypatch):
 
     assert response.status_code == 429
     assert "Retry-After" in response.headers["access-control-expose-headers"]
+
+
+def test_a_body_over_the_cap_is_refused_with_413(client, fake_redis) -> None:
+    body = {"config": {"x": "y" * abuse.MAX_BODY_BYTES}}
+
+    response = client.post("/api/v1/rooms/preview", json=body)
+
+    assert response.status_code == 413
+    assert response.json() == {"detail": abuse.TOO_LARGE_MESSAGE}
+
+
+def test_a_chunked_body_over_the_cap_is_refused_with_413(client) -> None:
+    """A chunked body declares no length: the cap holds as it is read."""
+
+    def chunks():
+        yield b'{"config": {"x": "'
+        for _ in range(4):
+            yield b"y" * abuse.MAX_BODY_BYTES
+        yield b'"}}'
+
+    response = client.post(
+        "/api/v1/rooms/preview",
+        content=chunks(),
+        headers={"content-type": "application/json"},
+    )
+
+    assert response.status_code == 413
+    assert response.json() == {"detail": abuse.TOO_LARGE_MESSAGE}
+
+
+def test_a_small_chunked_body_still_reaches_the_route(client) -> None:
+    body = json.dumps({"config": get_preset("CLASSIC_MIT").to_payload()}).encode()
+
+    def chunks():
+        yield body[:100]
+        yield body[100:]
+
+    response = client.post(
+        "/api/v1/rooms/preview",
+        content=chunks(),
+        headers={"content-type": "application/json"},
+    )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("length", [b"65537", b"abc"])
+async def test_an_oversized_or_unreadable_content_length_is_413_unread(
+    length: bytes,
+) -> None:
+    """Refused from the header alone: the body is never read and nothing is
+    counted against the address."""
+    sent: list[dict] = []
+
+    async def inner(scope, receive, send) -> None:
+        raise AssertionError("the route must not run")
+
+    async def no_receive() -> dict:
+        raise AssertionError("the body must not be read")
+
+    async def send(message) -> None:
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/api/v1/rooms/preview",
+        "headers": [(b"content-length", length)],
+        "client": ("203.0.113.9", 1),
+    }
+    await abuse.RateLimitMiddleware(inner)(scope, no_receive, send)
+
+    assert sent[0]["status"] == 413
+    assert len(abuse._rest) == 0
+
+
+def test_a_413_still_carries_cors_headers(client) -> None:
+    from app.config import settings
+
+    origin = settings.CORS_ORIGINS[0]
+    body = {"config": {"x": "y" * abuse.MAX_BODY_BYTES}}
+
+    response = client.post(
+        "/api/v1/rooms/preview", json=body, headers={"Origin": origin}
+    )
+
+    assert response.status_code == 413
+    assert response.headers["access-control-allow-origin"] == origin
+
+
+def test_a_socket_message_has_the_same_cap() -> None:
+    from app.sockets.manager import sio
+
+    assert abuse.MAX_BODY_BYTES == 64 * 1024
+    assert sio.eio.max_http_buffer_size == abuse.MAX_BODY_BYTES
 
 
 @pytest.mark.asyncio

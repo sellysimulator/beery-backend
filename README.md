@@ -115,7 +115,8 @@ peer. Every window is 60 s except room creation's and the export's, which are an
 | `submit_order` resubmissions | 20 per role per week (`MAX_RESUBMISSIONS_PER_ROLE_PER_WEEK`). The counter is process-local, keyed by (room code, week, role), pruned at the week's close, at the game's finish (ended early too) and, for a room that expired or was deleted mid-week, once older than a room's 24 h lifetime; deliberately not in the room document: a socket is pinned to one worker, and a document field would add a store write per increment | `error {message, code: "TOO_MANY_SUBMISSIONS"}`; the last accepted order stands |
 | Socket events | 120 per connection | `error {message, code: "RATE_LIMITED"}` (play) or `join_error {message}` (lobby); the handler does not run |
 | `join` + `join_waiting` | 300 per address | as above |
-| One socket message | 64 KB (`max_http_buffer_size`) | refused by Engine.IO |
+| One REST request body | 64 KB (`MAX_BODY_BYTES`), a declared `Content-Length` or a chunked body as it is read | `413 {"detail": "That request is too large."}`; an oversized `Content-Length` is refused before anything is counted |
+| One socket message | 64 KB (`max_http_buffer_size` = `MAX_BODY_BYTES`) | refused by Engine.IO |
 | Live rooms, in-memory backend | 500 (`MAX_ROOMS` in `state_backend.py`) | `POST /rooms/create` answers `503`; `POST /rooms/batch-create` deletes the rooms it already made, then answers the same `503` |
 
 The numbers are sized for a classroom of about forty people behind one NAT address. A room
