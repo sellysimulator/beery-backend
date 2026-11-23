@@ -116,7 +116,6 @@ async def test_well_formed_guest_id_is_accepted_verbatim(sock_mgr, firebase_toke
         "GUEST_" + str(uuid.uuid4()),  # wrong case on the prefix
         f"prefix_guest_{uuid.uuid4()}",  # unanchored match attempt
         f"guest_{uuid.uuid4()}_suffix",
-        "",
     ],
     ids=[
         "arbitrary-string",
@@ -125,7 +124,6 @@ async def test_well_formed_guest_id_is_accepted_verbatim(sock_mgr, firebase_toke
         "uppercase-prefix",
         "leading-junk",
         "trailing-junk",
-        "empty",
     ],
 )
 @pytest.mark.asyncio
@@ -197,6 +195,19 @@ async def test_a_handshake_presenting_no_identity_is_refused(
     keeps (**D2**), so guest play loses nothing.
     """
     result = await connect("sid-1", {}, auth)
+
+    assert result is False
+    assert "sid-1" not in sock_mgr.sid_to_identity
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("guest_id", [None, ""], ids=["null", "empty"])
+async def test_a_handshake_with_a_null_or_empty_guest_id_is_refused(
+    sock_mgr, firebase_tokens, guest_id
+):
+    """``guestId`` null or empty, and no ID token: refused like no identity at
+    all, never a fresh guest."""
+    result = await connect("sid-1", {}, {"idToken": None, "guestId": guest_id})
 
     assert result is False
     assert "sid-1" not in sock_mgr.sid_to_identity

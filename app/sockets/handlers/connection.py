@@ -80,7 +80,7 @@ def resolve_handshake(auth: dict | None) -> Handshake | None:
         return Handshake(uid, uid)
 
     guest_id = auth.get("guestId")
-    if guest_id is None:
+    if not guest_id:
         return None
     if isinstance(guest_id, str) and GUEST_ID_RE.match(guest_id):
         return Handshake(guest_id, None)
