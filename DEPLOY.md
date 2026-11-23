@@ -173,7 +173,8 @@ different major version proves the wrong engine.
 - **Neon Free limits.** Compute is fixed at 0.25 CU and scales to zero after
   5 minutes idle; the first request after that waits for a cold start (under
   a second), and `pool_pre_ping=True` replaces connections the suspend
-  dropped. 100 CU-hours a month and 1 GB of storage per project.
+  dropped. A connection attempt gives up after 10 s (`connect_timeout`),
+  and a failed end-of-game write is retried in the background. 100 CU-hours a month and 1 GB of storage per project.
 - **Backups.** Neon Free's restore window is short, so keep our own dumps:
   `pg_dump -Fc --no-owner --no-privileges` against the direct endpoint.
 - **TLS check.** Neon's proxy terminates TLS, so `pg_stat_ssl.ssl` reads `f`

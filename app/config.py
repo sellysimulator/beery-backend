@@ -139,10 +139,15 @@ class Settings(BaseSettings):
 
     @property
     def db_connect_args(self) -> dict[str, Any]:
-        """psycopg connect args: a UTC session, plus the TLS mode.
+        """psycopg connect args: a UTC session, a connect timeout, the TLS mode.
 
         ``options=-c timezone=UTC`` makes every session read and write
         ``timestamptz`` in UTC whatever the server's own ``TimeZone`` is.
+        ``connect_timeout=10`` (seconds, libpq) fails a connection attempt to a
+        cold or unreachable database instead of waiting on the OS's TCP
+        timeout; the end-of-game write retries (``game_service``). There is
+        deliberately no ``statement_timeout``: it would ride in ``options``,
+        and Neon's pooled endpoint refuses startup options.
         With ``DB_SSL_CA`` the server certificate and hostname are verified
         (``sslmode=verify-full``); with only ``DB_REQUIRE_SSL`` the link is
         encrypted but not authenticated (``require``), never a silent
@@ -151,7 +156,7 @@ class Settings(BaseSettings):
         """
         if not self.db_url.startswith("postgresql"):
             return {}
-        args: dict[str, Any] = {"options": "-c timezone=UTC"}
+        args: dict[str, Any] = {"options": "-c timezone=UTC", "connect_timeout": 10}
         if self.DB_SSL_CA.strip():
             args |= {"sslmode": "verify-full", "sslrootcert": _ca_file(self.DB_SSL_CA)}
         elif self.DB_REQUIRE_SSL:

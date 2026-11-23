@@ -216,7 +216,7 @@ reads is there, and nothing that is not read is declared.
 
 | Variable | Notes |
 |---|---|
-| `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_DATABASE` | PostgreSQL (default port 5432, user `postgres`); built into `postgresql+psycopg://…` with the credentials percent-encoded. Every session runs in UTC (`options=-c timezone=UTC`). |
+| `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_DATABASE` | PostgreSQL (default port 5432, user `postgres`); built into `postgresql+psycopg://…` with the credentials percent-encoded. Every session runs in UTC (`options=-c timezone=UTC`), and a connection attempt gives up after 10 s (`connect_timeout=10`); there is no `statement_timeout` (it would ride in the startup `options`, which a pooled Neon endpoint refuses). |
 | `DB_REQUIRE_SSL`, `DB_SSL_CA` | TLS. `DB_REQUIRE_SSL=true` alone is `sslmode=require` (encrypted, server not verified); `DB_SSL_CA` — the Let's Encrypt roots ISRG Root X1 + X2 that Neon's certificates chain to (one public PEM bundle, the same for all four games), as PEM text or a path — is `sslmode=verify-full`. The boot log states which. |
 | `DB_POOL_SIZE`, `DB_MAX_OVERFLOW` | Connection pool per process, default 7 + 2 = 9: Beery's budget is 20 connections, deploys included (two overlapping instances, the startup migration and one psql session; `DEPLOY.md`). |
 | `REDIS_ENABLED` | **`false` by default.** When false, live room state is held in this process and there is no Redis dependency at all. See *Room state and Redis* below. |

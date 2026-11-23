@@ -153,7 +153,7 @@ def test_db_user_with_url_metacharacters_round_trips(monkeypatch):
 
 # --- db_connect_args --------------------------------------------------------
 
-_UTC = {"options": "-c timezone=UTC"}
+_UTC = {"options": "-c timezone=UTC", "connect_timeout": 10}
 
 
 def test_db_connect_args_always_pin_the_session_to_utc(monkeypatch):
@@ -163,6 +163,17 @@ def test_db_connect_args_always_pin_the_session_to_utc(monkeypatch):
     for require in (True, False):
         args = _isolated(monkeypatch, DB_REQUIRE_SSL=require).db_connect_args
         assert args["options"] == "-c timezone=UTC"
+
+
+def test_db_connect_args_bound_the_connect_wait(monkeypatch):
+    """A cold Neon compute or an unreachable host fails a connection attempt
+    after 10 s (libpq ``connect_timeout``) instead of the OS's TCP timeout,
+    minutes away. No ``statement_timeout`` rides along: it would go in the
+    startup ``options``, which Neon's pooled endpoint refuses."""
+    for require in (True, False):
+        args = _isolated(monkeypatch, DB_REQUIRE_SSL=require).db_connect_args
+        assert args["connect_timeout"] == 10
+        assert "statement_timeout" not in args["options"]
 
 
 def test_db_connect_args_without_ssl_or_ca_use_libpq_defaults(monkeypatch):
