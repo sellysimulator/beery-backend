@@ -308,11 +308,9 @@ def test_supporting_enum_members() -> None:
     assert [m.value for m in RoomState] == [
         "LOBBY",
         "CONFIGURING",
-        "READY",
         "RUNNING",
         "PAUSED",
         "FINISHED",
-        "ABANDONED",
     ]
 
 

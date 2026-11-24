@@ -92,8 +92,6 @@ class RoomState(StrEnum):
 
     LOBBY = "LOBBY"
     CONFIGURING = "CONFIGURING"
-    READY = "READY"
     RUNNING = "RUNNING"
     PAUSED = "PAUSED"
     FINISHED = "FINISHED"
-    ABANDONED = "ABANDONED"

@@ -42,6 +42,7 @@ from ...services.display_name import sanitise_display_name
 from ...services.room_service import RoomService
 from ...services.state_backend import StoreFullError
 from ...services.state_service import get_state_service
+from ...sockets.config_events import config_saved_events, emit_config_saved
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,6 @@ _STARTED_DETAIL = "Cannot change configuration after the game has started."
 _ROOMS_FULL_DETAIL = "The server is at its room limit. Please try again later."
 _DEFAULT_PRESET = "CLASSIC_MIT"
 _SEATS_TOTAL = len(ROLE_ORDER)
-_OVER_STATES = {RoomState.FINISHED.value, RoomState.ABANDONED.value}
 
 _room_service = RoomService()
 
@@ -79,12 +79,8 @@ _PRESET_META: dict[str, tuple[str, str]] = {
 }
 
 # A room may be reconfigured in any of these states; anything else (RUNNING,
-# PAUSED, FINISHED, ABANDONED) is frozen.
-_CONFIGURABLE_STATES = {
-    RoomState.LOBBY.value,
-    RoomState.CONFIGURING.value,
-    RoomState.READY.value,
-}
+# PAUSED, FINISHED) is frozen.
+_CONFIGURABLE_STATES = {RoomState.LOBBY.value, RoomState.CONFIGURING.value}
 
 
 def _check_host_secret(room: dict, provided: str | None) -> None:
@@ -138,7 +134,7 @@ def _validated_config(stored: dict, patch: dict) -> GameConfig:
         return GameConfig.from_host_input(merged, DEFAULT_LIMITS)
     except ConfigValidationError as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"{exc.field}: {exc}",
         ) from None
 
@@ -282,7 +278,7 @@ def _summary(room_code: str, room: dict) -> RoomSummary:
         seats_total=_SEATS_TOTAL,
         week=engine.week if engine is not None else None,
         duration_weeks=duration_weeks,
-        finished=room["state"] in _OVER_STATES,
+        finished=room["state"] == RoomState.FINISHED.value,
         can_start=can_start,
         start_blocked_reason=reason,
     )
@@ -338,7 +334,7 @@ async def room_status(room_code: str) -> RoomStatusResponse:
         return RoomStatusResponse(ok=False, reason="Room does not exist.")
 
     state = room["state"]
-    if state in (RoomState.FINISHED.value, RoomState.ABANDONED.value):
+    if state == RoomState.FINISHED.value:
         return RoomStatusResponse(ok=False, reason="This game has already finished.")
     if state in (RoomState.RUNNING.value, RoomState.PAUSED.value):
         return RoomStatusResponse(ok=False, reason="This game has already started.")
@@ -367,7 +363,12 @@ async def update_config(
     payload: ConfigUpdateRequest,
     x_host_secret: str = Header(default="", alias="X-Host-Secret"),
 ) -> ConfigResponse:
-    """Set parameters while configuring. Requires `X-Host-Secret`."""
+    """Set parameters while configuring. Requires `X-Host-Secret`.
+
+    The REST twin of the `config_update` socket event: the same merge, the
+    same checks and the same events afterwards, so an open host tab and the
+    lobby see a config saved here too.
+    """
     state_svc = get_state_service()
     try:
         async with state_svc.lock(room_code):
@@ -389,6 +390,7 @@ async def update_config(
             room["config"] = config.to_payload()
             if room["state"] == RoomState.LOBBY.value:
                 room["state"] = RoomState.CONFIGURING.value
+            events = config_saved_events(room, state_svc, room.get("host_sid") or None)
             await state_svc.save_room(room_code, room)
     except HTTPException:
         raise
@@ -399,6 +401,7 @@ async def update_config(
             detail=_INTERNAL_ERROR_DETAIL,
         ) from None
 
+    await emit_config_saved(events)
     return ConfigResponse(
         room_code=room["room_code"],
         state=RoomState(room["state"]),
@@ -480,7 +483,7 @@ def preview_room_config(payload: ConfigPreviewRequest) -> ConfigPreviewResponse:
         config = GameConfig.from_host_input(draft, DEFAULT_LIMITS)
     except ConfigValidationError as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"{exc.field}: {exc}",
         ) from None
     except Exception:

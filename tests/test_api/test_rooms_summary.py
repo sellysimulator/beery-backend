@@ -136,19 +136,18 @@ def test_a_running_room_reports_its_week_and_cannot_start(client, fake_redis):
     assert summary["start_blocked_reason"] == "The game is already running."
 
 
-def test_a_finished_or_abandoned_room_is_finished(client, fake_redis):
-    a, b = _create(client)
-    for room, state in ((a, "FINISHED"), (b, "ABANDONED")):
+def test_a_finished_room_is_finished(client, fake_redis):
+    (room,) = _create(client, count=2)[:1]
 
-        def finish(doc, state=state):
-            _start(doc)
-            doc["state"] = state
+    def finish(doc):
+        _start(doc)
+        doc["state"] = "FINISHED"
 
-        _edit(fake_redis, room["room_code"], finish)
+    _edit(fake_redis, room["room_code"], finish)
 
-    rooms = _summary(client, _pairs([a, b])).json()["rooms"]
-    assert [s["state"] for s in rooms] == ["FINISHED", "ABANDONED"]
-    assert all(s["finished"] is True and s["can_start"] is False for s in rooms)
+    (summary,) = _summary(client, _pairs([room])).json()["rooms"]
+    assert summary["state"] == "FINISHED"
+    assert summary["finished"] is True and summary["can_start"] is False
 
 
 def test_wrong_secret_and_missing_room_look_the_same(client, fake_redis):

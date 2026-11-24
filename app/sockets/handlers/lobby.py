@@ -34,6 +34,7 @@ from ...core.limits import DEFAULT_LIMITS
 from ...services.game_service import get_game_service
 from ...services.room_service import RoomService, merge_config_patch
 from ...services.state_service import get_state_service, next_free_alias
+from ..config_events import config_saved_events, emit_config_saved
 from ..errors import guarded, requested_room_code
 from ..manager import sio, socket_manager
 from .play import leave_other_rooms
@@ -42,9 +43,7 @@ logger = logging.getLogger(__name__)
 
 _room_service = RoomService()
 
-_PRE_START_STATES = frozenset(
-    {RoomState.LOBBY.value, RoomState.CONFIGURING.value, RoomState.READY.value}
-)
+_PRE_START_STATES = frozenset({RoomState.LOBBY.value, RoomState.CONFIGURING.value})
 _RUNNING_STATES = frozenset({RoomState.RUNNING.value, RoomState.PAUSED.value})
 
 _ROOM_NOT_FOUND = "Room does not exist."
@@ -302,10 +301,7 @@ async def join(sid: str, data: dict | None = None) -> None:
 
             await state_svc.save_room(room_code, room)
         else:
-            if room["state"] in _RUNNING_STATES or room["state"] in (
-                RoomState.FINISHED.value,
-                RoomState.ABANDONED.value,
-            ):
+            if room["state"] not in _PRE_START_STATES:
                 await _reject(sid, _GAME_ALREADY_STARTED_JOIN)
                 return
             if _room_service.seats_taken(room) >= 4:
@@ -422,17 +418,12 @@ async def config_update(sid: str, data: dict | None = None) -> None:
 
     patch = data.get("config")
     state_svc = get_state_service()
-    room_code: str
-    host_target: str
-    config_event: dict
-    lobby_event: dict
 
     async with state_svc.lock(room_id):
         room = await state_svc.get_room(room_id)
         if room is None:
             await _reject(sid, _ROOM_NOT_FOUND)
             return
-        room_code = room["room_code"]
 
         if not _room_service.check_host_secret(room, data):
             await _reject(sid, _INVALID_HOST_SECRET)
@@ -455,14 +446,10 @@ async def config_update(sid: str, data: dict | None = None) -> None:
         if room["state"] == RoomState.LOBBY.value:
             room["state"] = RoomState.CONFIGURING.value
 
-        host_target = _host_target(room, sid)
-        config_event = {"seq": state_svc.next_seq(room), "config": room["config"]}
-        lobby_event = _room_service.lobby_payload(room, state_svc.next_seq(room))
+        events = config_saved_events(room, state_svc, _host_target(room, sid))
+        await state_svc.save_room(room["room_code"], room)
 
-        await state_svc.save_room(room_code, room)
-
-    await socket_manager.emit_to_sid(host_target, "config_updated", config_event)
-    await socket_manager.emit_to_room(room_code, "lobby_update", lobby_event)
+    await emit_config_saved(events)
 
 
 # --- set_role_mode ------------------------------------------------------------------ #

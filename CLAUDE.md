@@ -97,6 +97,7 @@ app/
   services/          stateful/impure layer over the state store and PostgreSQL
   sockets/
     manager.py       AsyncServer `sio` + `socket_manager` (sid → room/alias/identity)
+    config_events.py what a saved config emits (socket and REST saves)
     errors.py        `@guarded(...)` decorator
     handlers/        auto-discovered: connection.py, lobby.py, play.py
 alembic/             env.py reads the URL from settings; versions/0001_postgres_baseline, 0002_games_host_user_id
@@ -256,7 +257,8 @@ The handoff-hardening release deploys **backend first**, then the frontend in th
   `/users/me/games/{public_id}`, `/users/me/hosted-games`, `/rooms/create`, `/rooms/presets`, `/rooms/limits`,
   `POST /rooms/preview`, `POST /rooms/batch-create`, `POST /rooms/summary`,
   `/rooms/{code}/status`,
-  `GET|PUT /rooms/{code}/config`,
+  `GET|PUT /rooms/{code}/config` (the PUT emits what `config_update` emits, through
+  `sockets/config_events.py`),
   `/games/id/{public_id}/results`, `/games/id/{public_id}/export`, `POST /games/claim`.
   Socket in: `connect`, `disconnect`, `join_waiting`, `join`, `leave`, `config_update`,
   `set_role_mode`, `assign_role`, `claim_role`, `release_role`, `start_game`, `submit_order`,

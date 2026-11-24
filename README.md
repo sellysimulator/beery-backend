@@ -75,7 +75,7 @@ Every router under `app/api/v1/` is auto-discovered, so this table is the whole 
 | `GET` | `/api/v1/rooms/limits` | none | Every range the host form checks (`core.limits.Limits`); the frontend keeps no copy |
 | `POST` | `/api/v1/rooms/preview` | none | `{config, patch?}` → the `demand_series`, `demand_is_example` and per-role `lead_times` that draft plays, from the engine's own generator and lead-time function (`core.preview`), plus the validated `config`. A `patch` is merged over `config` first by `merge_config_patch`, as a config save merges it (the multi-game setup form edits its local draft this way); a refused draft is the same 422 as `PUT /config` |
 | `GET` | `/api/v1/rooms/{code}/status` | none | Is this room joinable? Always HTTP 200 — a 404 would be a room-code oracle. `host_display_name` is always `null` |
-| `PUT` | `/api/v1/rooms/{code}/config` | host secret | Applies a config patch while the room is still configurable |
+| `PUT` | `/api/v1/rooms/{code}/config` | host secret | Applies a config patch while the room is still configurable, then emits what the `config_update` socket event emits: `config_updated` to the claimed host tab, `lobby_update` to the room |
 | `GET` | `/api/v1/rooms/{code}/config` | host secret | The current config |
 | `GET` | `/api/v1/games/id/{public_id}/results` | none | The full results payload of a finished game, by its permanent `public_id` (D22): shareable, no time limit, 404 for an unknown id. There is no results or export route by room code (a code is short and reissued, so it names no game) |
 | `GET` | `/api/v1/games/id/{public_id}/export` | none | The complete week-by-week record, `?format=csv` (default) or `json`, by permanent id, open to anyone who can see the results (D22): a guest host has no account to fall back on. It carries the results screen's figures and no uid, email, user id, guest id, session token, secret **or chosen name**: every player is their seat's `P<N>` (Retailer `P1` … Factory `P4`), in CSV and JSON alike. 404 for an unknown id. Limited to 100 an hour per address (below). A finished export is kept in an in-process LRU (64 files, keyed by `(public_id, format)`, no expiry, 200s only), so a repeat download reads nothing from the database; the cache is per instance and empty after a restart |
@@ -397,6 +397,7 @@ app/
 │   └── user_service.py         profile upsert and lookup
 └── sockets/
     ├── manager.py              the AsyncServer and SocketManager (sid → room/alias/identity)
+    ├── config_events.py        what a saved config emits (socket and REST saves)
     ├── errors.py               the @guarded(...) decorator
     └── handlers/               ← auto-discovered handler package
         ├── __init__.py

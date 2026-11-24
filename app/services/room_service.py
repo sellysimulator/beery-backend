@@ -24,7 +24,7 @@ from .display_name import sanitise_display_name as _sanitise_display_name
 
 __all__ = ["RoomService", "merge_config_patch"]
 
-_LOCKED_STATES = frozenset({"RUNNING", "PAUSED", "FINISHED", "ABANDONED"})
+_LOCKED_STATES = frozenset({"RUNNING", "PAUSED", "FINISHED"})
 _ALREADY_RUNNING = "The game is already running."
 _ALREADY_FINISHED = "This game has already finished."
 _CONFIG_NOT_VALID = "The configuration is not valid yet."
@@ -227,7 +227,7 @@ class RoomService:
         state = room["state"]
         if state in ("RUNNING", "PAUSED"):
             return False, _ALREADY_RUNNING
-        if state in ("FINISHED", "ABANDONED"):
+        if state == "FINISHED":
             return False, _ALREADY_FINISHED
 
         try:
