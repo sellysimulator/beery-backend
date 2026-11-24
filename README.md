@@ -446,4 +446,4 @@ docker run --rm -p 8080:8080 --env-file .env beery-backend
 ```
 
 `python:3.11-slim`, plain uvicorn with `--http h11 --proxy-headers`. `.dockerignore` excludes
-`.env`, `tests/`, `venv/` and `.git/`.
+every dotenv file but the example, `tests/`, `venv/`, `.git/` and `.github/`.
