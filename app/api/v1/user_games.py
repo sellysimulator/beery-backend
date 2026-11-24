@@ -14,10 +14,10 @@ never enumerate or read anyone else's profile or match list.
 from __future__ import annotations
 
 import logging
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import Select, Subquery, func, select
 from sqlalchemy.orm import Session
 
 from ...core.enums import Role
@@ -66,7 +66,7 @@ def _resolve_user_id(db: Session, firebase_uid: str) -> int | None:
     return user.id if user is not None else None
 
 
-def _last_week_cost_subquery():  # type: ignore[no-untyped-def]
+def _last_week_cost_subquery() -> Subquery:
     """Each `(game_id, role)`'s final `cumulative_cost` -- the same value
     `RoleResult.total_cost` reads off the same rows in `/results` -- reached
     with `MAX(week)` rather than a per-game recompute of `compute_stats`, so
@@ -98,7 +98,7 @@ def _last_week_cost_subquery():  # type: ignore[no-untyped-def]
     )
 
 
-def _match_history_base(user_id: int):  # type: ignore[no-untyped-def]
+def _match_history_base(user_id: int) -> Select[Any]:
     """The caller's played rows, one per `(game, role)`, unordered and
     unpaginated -- shared by the count and the data query so both agree on
     exactly which rows qualify. Seats only: the host has no participant row

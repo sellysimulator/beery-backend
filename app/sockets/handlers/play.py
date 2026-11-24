@@ -218,7 +218,7 @@ async def substitute_bot(sid: str, data: dict | None = None) -> None:
     room_id = _room_id_of(data)
     if room_id is None:
         return
-    role_raw = data.get("role")
+    role_raw: Any = data.get("role")
 
     state_svc = get_state_service()
     room_code = room_id

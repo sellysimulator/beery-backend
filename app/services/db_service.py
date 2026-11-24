@@ -440,6 +440,7 @@ class DbService:
         self, db: Session, game_id: int, config: GameConfig
     ) -> None:
         rows = []
+        factory = config.factory_config()
         for role in ROLE_ORDER:
             role_config = config.role_config(role)
             is_factory = role is Role.FACTORY
@@ -467,10 +468,10 @@ class DbService:
                     "unit_purchase_cost": _money(role_config.unit_purchase_cost),
                     "starting_capital": _money(role_config.starting_capital),
                     "production_delay_weeks": (
-                        role_config.production_delay_weeks if is_factory else None
+                        factory.production_delay_weeks if is_factory else None
                     ),
                     "production_capacity_per_week": (
-                        role_config.production_capacity_per_week if is_factory else None
+                        factory.production_capacity_per_week if is_factory else None
                     ),
                 }
             )

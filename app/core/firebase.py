@@ -14,7 +14,7 @@ import json
 import logging
 
 import firebase_admin  # type: ignore[import-untyped]
-from firebase_admin import credentials  # type: ignore[import-untyped]
+from firebase_admin import credentials
 
 from ..config import settings
 

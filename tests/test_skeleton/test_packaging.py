@@ -280,7 +280,7 @@ def test_docker_image_builds_and_runs():
     [
         ("black", ["--check", "app", "tests", "alembic"]),
         ("ruff", ["check", "app", "tests", "alembic"]),
-        ("mypy", ["app/core"]),
+        ("mypy", ["app"]),
     ],
 )
 def test_lint_and_type_gates_are_clean(tool, args):

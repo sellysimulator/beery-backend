@@ -205,7 +205,7 @@ holds the lint rules, the same in every Novus backend):
 ```bash
 ./venv/bin/ruff check app tests alembic
 ./venv/bin/black --check app tests alembic
-./venv/bin/mypy app/core
+./venv/bin/mypy app
 ```
 
 **The suite never reaches a real database or Redis.** `tests/conftest.py` pins `DB_*` and

@@ -14,5 +14,5 @@ file in, and nothing here is edited.
 import importlib
 import pkgutil
 
-for _, _name, _ in pkgutil.iter_modules(__path__):
-    importlib.import_module(f"{__name__}.{_name}")
+for _module in pkgutil.iter_modules(__path__):
+    importlib.import_module(f"{__name__}.{_module.name}")

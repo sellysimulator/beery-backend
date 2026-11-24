@@ -217,7 +217,7 @@ class StateService:
 
     # --- concurrency ---
 
-    def lock(self, room_code: str):  # type: ignore[no-untyped-def]
+    def lock(self, room_code: str) -> contextlib.AbstractAsyncContextManager[object]:
         """An async context manager. LOCK_TIMEOUT_SECONDS.
 
         `LOCK_TIMEOUT_SECONDS` is a deadlock escape hatch, not a normal path

@@ -31,6 +31,8 @@ from __future__ import annotations
 import asyncio
 import time
 import weakref
+from collections.abc import Awaitable
+from contextlib import AbstractAsyncContextManager
 from typing import Protocol, Self
 
 __all__ = [
@@ -61,11 +63,13 @@ class StateBackend(Protocol):
     satisfies it without an adapter.
     """
 
-    async def get(self, key: str) -> str | bytes | None: ...
-    async def setex(self, key: str, ttl: int, value: str) -> object: ...
-    async def delete(self, *keys: str) -> int: ...
-    async def exists(self, key: str) -> int: ...
-    def lock(self, key: str, timeout: int = 10) -> object: ...
+    def get(self, key: str, /) -> Awaitable[str | bytes | None]: ...
+    def setex(self, key: str, ttl: int, value: str, /) -> Awaitable[object]: ...
+    def delete(self, *keys: str) -> Awaitable[int]: ...
+    def exists(self, key: str, /) -> Awaitable[int]: ...
+    def lock(
+        self, key: str, /, timeout: int = 10
+    ) -> AbstractAsyncContextManager[object]: ...
 
 
 class _MemoryLock:
@@ -184,4 +188,4 @@ def build_state_backend(enabled: bool, url: str) -> StateBackend:
         )
     import redis.asyncio as aioredis
 
-    return aioredis.from_url(url)  # type: ignore[no-any-return]
+    return aioredis.from_url(url)

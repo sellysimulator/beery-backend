@@ -546,7 +546,7 @@ async def assign_role(sid: str, data: dict | None = None) -> None:
         return
 
     alias = data.get("alias")
-    role_raw = data.get("role")
+    role_raw: Any = data.get("role")
 
     state_svc = get_state_service()
     room_code: str
@@ -636,7 +636,7 @@ async def claim_role(sid: str, data: dict | None = None) -> None:
         await _reject(sid, _ROOM_NOT_FOUND)
         return
 
-    role_raw = data.get("role")
+    role_raw: Any = data.get("role")
 
     state_svc = get_state_service()
     room_code: str

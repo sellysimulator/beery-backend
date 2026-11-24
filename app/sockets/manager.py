@@ -3,7 +3,10 @@
 import logging
 from typing import Any
 
-from socketio import AsyncRedisManager, AsyncServer
+from socketio import (  # type: ignore[import-untyped]
+    AsyncRedisManager,
+    AsyncServer,
+)
 
 from ..config import settings
 from ..core.abuse import MAX_BODY_BYTES

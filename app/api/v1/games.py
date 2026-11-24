@@ -208,13 +208,14 @@ def build_week_export_rows(db: Session, game: Game) -> list[dict]:
         if participant.role is not None
     }
 
-    demand_by_week = dict(
-        db.execute(
+    demand_by_week = {
+        week: quantity
+        for week, quantity in db.execute(
             select(DemandSeries.week, DemandSeries.quantity).where(
                 DemandSeries.game_id == game.id
             )
-        ).all()
-    )
+        )
+    }
 
     week_rows = db.execute(select(Week).where(Week.game_id == game.id)).scalars().all()
     week_rows = sorted(
@@ -350,7 +351,9 @@ def _render_export(
     weeks = build_week_export_rows(db, game)
     if format == "json":
         rendered = CachedExport(
-            body=JSONResponse(content=_export_service.to_json(results, weeks)).body,
+            body=bytes(
+                JSONResponse(content=_export_service.to_json(results, weeks)).body
+            ),
             media_type="application/json",
             headers={},
         )

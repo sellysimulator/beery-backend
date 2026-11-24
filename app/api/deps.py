@@ -8,7 +8,7 @@ path: two of them drift, and the one that drifts is the one that fails open.
 import logging
 
 from fastapi import Header, HTTPException, status
-from firebase_admin import auth as firebase_auth
+from firebase_admin import auth as firebase_auth  # type: ignore[import-untyped]
 
 from ..core.firebase import init_firebase
 

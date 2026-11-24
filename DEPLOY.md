@@ -257,7 +257,7 @@ Run this before a class, every time.
 
 `.github/workflows/ci.yml` runs, on push to `main` and on pull requests:
 
-1. `ruff check app tests alembic`, `black --check app tests alembic`, `mypy app/core`.
+1. `ruff check app tests alembic`, `black --check app tests alembic`, `mypy app`.
 2. `pytest -m "not dbschema" --cov=app --cov-fail-under=80`, plus a
    `coverage report` scoped to `app/core` enforcing `--fail-under=95`.
 3. A separate schema job: `pytest -m dbschema` against an ephemeral
