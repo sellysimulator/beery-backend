@@ -49,7 +49,7 @@ def verify_firebase_id_token(token: str) -> dict | None:
 
     try:
         claims = firebase_auth.verify_id_token(token, app=app)
-    except Exception:  # noqa: BLE001 — any failure whatsoever means reject
+    except Exception:  # any failure whatsoever means reject
         return None
     return claims
 

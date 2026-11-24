@@ -150,10 +150,9 @@ cp .env.example .env
 ./venv/bin/python -m pytest -m dbschema                   # needs a Docker daemon (postgres:18)
 BEERY_DOCKER_BUILD_TEST=1 ./venv/bin/python -m pytest -k docker   # the opt-in image build
 
-# gates (all must be clean; CI runs them over `app tests` only: `ruff check .` also lints
-# alembic/, where env.py has two old findings, so don't widen the scope without fixing them)
-./venv/bin/ruff check app tests
-./venv/bin/black --check app tests
+# gates (all must be clean; CI runs these same commands)
+./venv/bin/ruff check app tests alembic
+./venv/bin/black --check app tests alembic
 ./venv/bin/mypy app/core
 
 # migrations
@@ -482,8 +481,9 @@ The handoff-hardening release deploys **backend first**, then the frontend in th
 - **`state_service.redis_client` is read by name at every call site** — never capture it in
   a constructor, or the test monkeypatch stops working.
 - **Never add `asyncio` to `requirements.txt`** (the PyPI package shadows the stdlib module).
-- Deps are exactly pinned (`==`). There is no `ruff`/`mypy`/`black` config section anywhere —
-  they run on defaults; keep it that way unless you have a reason.
+- Deps are exactly pinned (`==`). `pyproject.toml`'s `[tool.black]` and `[tool.ruff]` blocks
+  are the same in every Novus backend (`E F I B UP`, line length 88): change them in all four
+  or not at all. A `noqa` only with a reason. mypy runs on its defaults.
 - English only, no i18n layer (D13). Do not port Selly's Spanish strings.
 - Before "adding a feature", check the spec's §13 Out of scope and §16 Not built yet —
   spectators, timers, chat, `clone_room`, per-week write-through and non-4-stage chains are

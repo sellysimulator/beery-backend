@@ -7,7 +7,7 @@ module's public surface.
 from __future__ import annotations
 
 import importlib
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import Integer, MetaData
@@ -129,7 +129,7 @@ def test_utcnow_tracks_real_time():
     before = utcnow()
     after = utcnow()
     assert after >= before
-    assert abs((after - datetime.now(timezone.utc)).total_seconds()) < 60
+    assert abs((after - datetime.now(UTC)).total_seconds()) < 60
 
 
 @pytest.mark.parametrize("column_name", ["created_at", "updated_at"])

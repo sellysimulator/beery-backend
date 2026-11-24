@@ -73,12 +73,12 @@ class UserService:
         Does not commit: the row joins the caller's transaction. Two requests
         for the same uid (a doubled `/users/upsert` at sign-in, an upsert
         racing a guest claim, or a sign-in racing the end-of-game write) can
-        both miss the lookup and both INSERT. The INSERT runs in a savepoint: the loser rolls back only that
-        savepoint, keeping the caller's transaction, and re-reads the winner's
-        row. The re-read is a locking read (`FOR UPDATE`): PostgreSQL's default
-        READ COMMITTED already sees the committed winner, and the lock keeps
-        that row in place until the caller's transaction ends -- and keeps the
-        re-read correct even if the session ever runs at REPEATABLE READ.
+        both miss the lookup and both INSERT. The INSERT runs in a savepoint: the
+        loser rolls back only that savepoint, keeping the caller's transaction, and
+        re-reads the winner's row. The re-read is a locking read (`FOR UPDATE`):
+        PostgreSQL's default READ COMMITTED already sees the committed winner, and
+        the lock keeps that row in place until the caller's transaction ends -- and
+        keeps the re-read correct even if the session ever runs at REPEATABLE READ.
         """
         user = self.get_by_firebase_uid(db, firebase_uid)
         if user is not None:

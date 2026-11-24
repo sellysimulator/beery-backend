@@ -126,7 +126,8 @@ def test_preset_descriptions_are_written_from_each_presets_config(client):
 
     classic = next(entry for entry in presets if entry["name"] == "CLASSIC_MIT")
     assert classic["description"].startswith(
-        "36 weeks, 12 units on hand, 2-week delays, demand steps from 4 to 8 at week 5, "
+        "36 weeks, 12 units on hand, 2-week delays, "
+        "demand steps from 4 to 8 at week 5, "
         "$0.50 holding and $1.00 backlog a unit a week."
     )
 

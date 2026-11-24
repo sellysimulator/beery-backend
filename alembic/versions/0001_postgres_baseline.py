@@ -14,10 +14,10 @@ drops every table in reverse dependency order, because a revision with a
 
 Every `TimestampMixin` column carries `server_default=now()`: end-of-game
 persistence writes with batched raw inserts that bypass ORM-side defaults, and a
-NOT NULL column without a database-side default would reject them. They are the only
-server defaults: every fact column is written explicitly by the application. Timestamps are
-`timestamptz`; the application's sessions run in UTC. Constraint and index
-names come from the models or from `Base.metadata`'s naming convention, so
+NOT NULL column without a database-side default would reject them. They are the
+only server defaults: every fact column is written explicitly by the application.
+Timestamps are `timestamptz`; the application's sessions run in UTC. Constraint and
+index names come from the models or from `Base.metadata`'s naming convention, so
 they are the same here, in `db/schema.postgres.sql` and in the models.
 """
 

@@ -16,9 +16,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt -r requirements-dev.txt
       - name: Lint (ruff)
-        run: ruff check app tests
+        run: ruff check app tests alembic
       - name: Format check (black)
-        run: black --check app tests
+        run: black --check app tests alembic
       - name: Type check (mypy on app/core)
         run: mypy app/core
       - name: Tests with coverage (overall floor 80%)

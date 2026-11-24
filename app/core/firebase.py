@@ -51,7 +51,7 @@ def init_firebase() -> firebase_admin.App | None:
             json.loads(settings.FIREBASE_SERVICE_ACCOUNT_JSON)
         )
         _app = firebase_admin.initialize_app(certificate)
-    except Exception as exc:  # noqa: BLE001 — unconfigured must never raise
+    except Exception as exc:  # unconfigured must never raise
         if not _credential_failure_logged:
             # Only the exception type is logged: the message of a credential
             # error can quote the service account contents.

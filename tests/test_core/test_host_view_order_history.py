@@ -62,7 +62,7 @@ def new_engine(duration_weeks: int = 12, bots: frozenset[Role] = frozenset()):
 
 def distinct_orders(week: int) -> dict[Role, int]:
     """Orders that differ by role and by week: 10*(role index + 1) + week."""
-    return {role: 10 * (role.index + 1) + week for role in ROLE_ORDER}
+    return {role: 10 * (role.position + 1) + week for role in ROLE_ORDER}
 
 
 def play_week(engine: GameEngine, orders: dict[Role, int]) -> None:
@@ -125,10 +125,10 @@ def test_resubmitting_in_a_week_records_the_final_order_only():
     engine = new_engine()
     for role in ROLE_ORDER:
         engine.submit_order(role, 5)
-        engine.submit_order(role, 6 + role.index)
+        engine.submit_order(role, 6 + role.position)
     engine.close_week()
     for role in ROLE_ORDER:
-        assert history(engine)[role.value] == [6 + role.index]
+        assert history(engine)[role.value] == [6 + role.position]
 
 
 def test_forced_week_contributes_the_zero_the_engine_recorded():

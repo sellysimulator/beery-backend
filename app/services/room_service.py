@@ -211,7 +211,7 @@ class RoomService:
         for participant in room["participants"].values():
             participant["role"] = None
 
-        for alias, role in zip(aliases, chosen):
+        for alias, role in zip(aliases, chosen, strict=False):
             room["role_to_alias"][role.value] = alias
             room["participants"][alias]["role"] = role.value
 

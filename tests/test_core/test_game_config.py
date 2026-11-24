@@ -248,7 +248,7 @@ def test_role_order_is_retailer_to_factory() -> None:
 
 
 @pytest.mark.parametrize(
-    ("role", "index"),
+    ("role", "position"),
     [
         (Role.RETAILER, 0),
         (Role.WHOLESALER, 1),
@@ -256,8 +256,8 @@ def test_role_order_is_retailer_to_factory() -> None:
         (Role.FACTORY, 3),
     ],
 )
-def test_role_index(role: Role, index: int) -> None:
-    assert role.index == index
+def test_role_position(role: Role, position: int) -> None:
+    assert role.position == position
 
 
 @pytest.mark.parametrize(
@@ -287,7 +287,7 @@ def test_role_upstream(role: Role, upstream: Role | None) -> None:
 
 
 def test_role_index_agrees_with_role_order() -> None:
-    assert tuple(sorted(Role, key=lambda r: r.index)) == ROLE_ORDER
+    assert tuple(sorted(Role, key=lambda r: r.position)) == ROLE_ORDER
 
 
 def test_supporting_enum_members() -> None:
@@ -1785,7 +1785,7 @@ def assert_raises_only_config_validation_error(payload: dict) -> ConfigValidatio
         assert isinstance(err.field, str) and err.field
         assert str(err)
         return err
-    except Exception as err:  # noqa: BLE001 - catching broadly IS the test
+    except Exception as err:  # catching broadly IS the test
         pytest.fail(
             f"from_host_input raised {type(err).__name__}, which callers do not "
             f"catch; it must raise ConfigValidationError: {err}"
@@ -1960,7 +1960,7 @@ def test_no_malformed_payload_escapes_as_anything_else(mutate) -> None:
         cfg = GameConfig.from_host_input(payload, DEFAULT_LIMITS)
     except ConfigValidationError as err:
         assert isinstance(err.field, str) and err.field
-    except Exception as err:  # noqa: BLE001 - catching broadly IS the test
+    except Exception as err:  # catching broadly IS the test
         pytest.fail(
             f"from_host_input raised {type(err).__name__} rather than "
             f"ConfigValidationError: {err}"
@@ -2940,7 +2940,7 @@ def test_the_roles_mapping_reads_like_a_mapping_while_refusing_writes() -> None:
     assert Role.RETAILER in cfg.roles
     assert cfg.roles[Role.RETAILER] == cfg.role_config(Role.RETAILER)
     assert cfg.roles.get(Role.FACTORY) == cfg.factory_config()
-    assert sorted(cfg.roles, key=lambda r: r.index) == list(ROLE_ORDER)
+    assert sorted(cfg.roles, key=lambda r: r.position) == list(ROLE_ORDER)
     assert dict(cfg.roles) == {r: cfg.role_config(r) for r in ROLE_ORDER}
 
 

@@ -21,7 +21,7 @@ only orchestrate sockets around them.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from ...core.bot import bot_for
@@ -442,7 +442,7 @@ async def end_game_early(sid: str, data: dict | None = None) -> None:
 
         state_svc.store_engine(room, engine)
         room["state"] = RoomState.FINISHED.value
-        room["finished_at"] = datetime.now(timezone.utc).isoformat()
+        room["finished_at"] = datetime.now(UTC).isoformat()
         refresh_events = get_game_service().state_refresh_events(
             room, engine, state_svc
         )

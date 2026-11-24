@@ -88,7 +88,7 @@ class _FakeLock:
     ``fake_redis`` fixture.
     """
 
-    _locks: dict[str, asyncio.Lock] = {}  # noqa: RUF012 - shared registry
+    _locks: dict[str, asyncio.Lock] = {}  # shared registry
 
     def __init__(self, key: str, timeout: int = 10) -> None:
         self._key = key
@@ -97,7 +97,7 @@ class _FakeLock:
             _FakeLock._locks[key] = asyncio.Lock()
         self._lock = _FakeLock._locks[key]
 
-    async def __aenter__(self) -> _FakeLock:  # noqa: PYI034
+    async def __aenter__(self) -> _FakeLock:
         await self._lock.acquire()
         return self
 
@@ -549,5 +549,5 @@ def drop_module():
         _purge(package_name)
         try:
             importlib.reload(importlib.import_module(package_name))
-        except Exception:  # noqa: BLE001, S110 - restoration is best effort
+        except Exception:  # restoration is best effort
             pass

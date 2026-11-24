@@ -12,7 +12,7 @@ against a migration that never ran.
 from __future__ import annotations
 
 import sys
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -649,7 +649,7 @@ def test_timestamps_round_trip_as_utc(app_connection: Connection) -> None:
     """
     assert app_connection.execute(text("SHOW TimeZone")).scalar_one() == "UTC"
 
-    written = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+    written = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
     game_id = insert_game(app_connection, started_at=written, finished_at=written)
     read_back = app_connection.execute(
         text("SELECT started_at, created_at FROM games WHERE id = :id"),
@@ -658,13 +658,13 @@ def test_timestamps_round_trip_as_utc(app_connection: Connection) -> None:
 
     started = read_back.started_at
     assert started.tzinfo is not None, "timestamptz must read back aware"
-    assert started.utcoffset() == timezone.utc.utcoffset(None)
+    assert started.utcoffset() == UTC.utcoffset(None)
     assert started == written
 
     created = read_back.created_at
     assert created.tzinfo is not None
-    assert created.utcoffset() == timezone.utc.utcoffset(None)
-    drift = abs((created - datetime.now(timezone.utc)).total_seconds())
+    assert created.utcoffset() == UTC.utcoffset(None)
+    drift = abs((created - datetime.now(UTC)).total_seconds())
     assert drift < 300, f"server_default timestamp is {drift:.0f}s off UTC"
 
 

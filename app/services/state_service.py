@@ -18,7 +18,7 @@ import logging
 import random
 import re
 import secrets
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from ..config import settings
 from ..core.bot import BotAgent
@@ -71,7 +71,7 @@ def new_room_document(
     out of the returned document and hands it to the caller once, and no
     other code path produces one.
     """
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     return {
         "schema_version": SCHEMA_VERSION,
         "room_code": room_code,
@@ -177,7 +177,8 @@ class StateService:
                 await self.save_room(room_code, room)
                 return room
         raise RuntimeError(
-            f"Could not generate a unique room code after {_MAX_CODE_ATTEMPTS} attempts."
+            "Could not generate a unique room code after "
+            f"{_MAX_CODE_ATTEMPTS} attempts."
         )
 
     async def get_room(self, room_code: str) -> dict | None:

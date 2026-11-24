@@ -32,7 +32,7 @@ import itertools
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -150,8 +150,9 @@ def app_db_pointed_at_container(migrated_url: str) -> Iterator[None]:  # noqa: F
     own session rather than taking one from the caller, so it goes through
     ``app/db/session.py``'s module-level engine -- which ``tests/conftest.py``
     deliberately points at a dead port for every other test, so that nothing
-    touches a real database by accident. Tests that call ``persist_finished_game`` (rather
-    than ``DbService.persist_game`` with an explicit session) need that
+    touches a real database by accident. Tests that call
+    ``persist_finished_game`` (rather than ``DbService.persist_game`` with an
+    explicit session) need that
     engine repointed at the throwaway container for the duration of the
     test, exactly as the ``app_connection`` fixture
     (``tests/test_models/conftest.py``) does for its own tests.
@@ -372,7 +373,7 @@ def make_room_document(
     """A room document matching the frozen room document exactly, for a
     finished game -- the shape ``build_snapshot`` reads."""
     participants = participants or {}
-    started = started_at or datetime(2026, 1, 1, tzinfo=timezone.utc)
+    started = started_at or datetime(2026, 1, 1, tzinfo=UTC)
     finished = finished_at or started
     role_to_alias: dict[str, str | None] = {role.value: None for role in Role}
     for alias, participant in participants.items():

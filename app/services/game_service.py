@@ -24,7 +24,7 @@ import logging
 import math
 import time
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -675,7 +675,7 @@ class GameService:
             if finished:
                 room["state"] = RoomState.FINISHED.value
                 if not room.get("finished_at"):
-                    room["finished_at"] = datetime.now(timezone.utc).isoformat()
+                    room["finished_at"] = datetime.now(UTC).isoformat()
             else:
                 for role in ROLE_ORDER:
                     alias = room["role_to_alias"].get(role.value)
@@ -834,7 +834,7 @@ class GameService:
             # that did not.
             current["state"] = RoomState.FINISHED.value
             if not current.get("finished_at"):
-                current["finished_at"] = datetime.now(timezone.utc).isoformat()
+                current["finished_at"] = datetime.now(UTC).isoformat()
             finished_payload = {
                 "seq": state_svc.next_seq(current),
                 "weeks_played": weeks_played,

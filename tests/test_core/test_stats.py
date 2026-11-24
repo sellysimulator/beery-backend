@@ -198,7 +198,7 @@ def test_bullwhip_increases_strictly_from_retailer_to_factory() -> None:
     assert all(isinstance(ratio, float) for ratio in ratios)
     assert (
         ratios[0] < ratios[1] < ratios[2] < ratios[3]  # type: ignore[operator]
-    ), dict(zip([role.value for role in ROLE_ORDER], ratios))
+    ), dict(zip([role.value for role in ROLE_ORDER], ratios, strict=True))
 
 
 # --------------------------------------------------------------------------

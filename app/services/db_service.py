@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -143,8 +143,8 @@ def _parse_timestamp(value: Any) -> datetime:
     else:
         raise ValueError("Room document is missing a required timestamp.")
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc).replace(microsecond=0)
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).replace(microsecond=0)
 
 
 def build_snapshot(room: dict, config: GameConfig, engine: GameEngine) -> GameSnapshot:

@@ -32,7 +32,7 @@ import sys
 import time
 import warnings
 from collections.abc import Callable, Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from itertools import count
 from pathlib import Path
@@ -199,7 +199,7 @@ def docker_unavailable_reason(probe: Callable[[], Any] = _ping_docker) -> str | 
     """``None`` when Docker answers, otherwise the reason it did not."""
     try:
         probe()
-    except Exception as exc:  # noqa: BLE001 - any failure means "no daemon"
+    except Exception as exc:  # any failure means "no daemon"
         return (
             "No Docker daemon is reachable, so the schema suite's Testcontainers "
             f"PostgreSQL suite cannot run: {type(exc).__name__}: {exc}. "
@@ -509,7 +509,7 @@ def _placeholder(column: dict[str, Any]) -> Any:
         length = column["CHARACTER_MAXIMUM_LENGTH"] or 8
         return str(next(_counter))[: int(length)]
     if data_type in {"timestamp with time zone", "timestamp without time zone"}:
-        return datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+        return datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
     raise AssertionError(f"no placeholder for {data_type!r}: {column}")
 
 

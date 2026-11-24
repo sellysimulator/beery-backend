@@ -199,11 +199,12 @@ The skip is the Docker image build, which is opt-in because a cold build is minu
 BEERY_DOCKER_BUILD_TEST=1 ./venv/bin/python -m pytest -k docker
 ```
 
-Quality gates, all of which must be clean (CI runs them over `app tests`):
+Quality gates, all of which must be clean (CI runs the same commands; `pyproject.toml`
+holds the lint rules, the same in every Novus backend):
 
 ```bash
-./venv/bin/ruff check app tests
-./venv/bin/black --check app tests
+./venv/bin/ruff check app tests alembic
+./venv/bin/black --check app tests alembic
 ./venv/bin/mypy app/core
 ```
 

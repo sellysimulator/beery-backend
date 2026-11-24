@@ -27,6 +27,7 @@ import re
 import subprocess
 import sys
 import time
+import tomllib
 import urllib.error
 import urllib.request
 import warnings
@@ -95,7 +96,7 @@ def _docker_unavailable_reason() -> str | None:
             timeout=10,
             check=True,
         )
-    except Exception as exc:  # noqa: BLE001 - any failure means "no daemon"
+    except Exception as exc:  # any failure means "no daemon"
         return f"No Docker daemon is reachable: {type(exc).__name__}: {exc}"
     return None
 
@@ -642,11 +643,21 @@ def test_pyproject_exists_and_lint_tools_are_exactly_pinned() -> None:
     assert black_pin, "black is not pinned to an exact version in requirements-dev.txt"
 
 
-def test_pyproject_does_not_restate_ruff_defaults() -> None:
-    """No ``[tool.ruff]`` section pinning one reading of the
-    defaults, which would silently drift on the next ruff upgrade."""
-    pyproject_text = _read(PYPROJECT)
-    assert "[tool.ruff]" not in pyproject_text
+def test_pyproject_holds_the_lint_rules_every_novus_backend_shares() -> None:
+    """Black and ruff run on the family's one configuration, not on defaults
+    that change with the next ruff upgrade."""
+    config = tomllib.loads(_read(PYPROJECT))["tool"]
+    assert config["black"] == {"line-length": 88, "target-version": ["py311"]}
+    assert config["ruff"] == {
+        "line-length": 88,
+        "target-version": "py311",
+        "lint": {
+            "select": ["E", "F", "I", "B", "UP"],
+            "flake8-bugbear": {
+                "extend-immutable-calls": ["fastapi.Depends", "fastapi.Header"]
+            },
+        },
+    }
 
 
 # --- DEPLOY.md --------------------------------------------------------

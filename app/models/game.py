@@ -264,8 +264,8 @@ class Participant(Base, TimestampMixin):
 
     Exactly one of `user_id` and `guest_identity` is set for a human, and for a
     seat the host swapped to a bot (it keeps its player); both are NULL for a
-    seat that was a bot from the start. `guest_identity` holds the server-only `guest_<uuid4>`
-    string -- it is what attribution needs and what the guest-claim
+    seat that was a bot from the start. `guest_identity` holds the server-only
+    `guest_<uuid4>` string -- it is what attribution needs and what the guest-claim
     flow looks the row up by. It is never returned by any endpoint.
 
     `bullwhip_ratio` is the one `RoleStats` figure that is persisted twice,

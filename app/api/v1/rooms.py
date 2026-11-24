@@ -265,7 +265,7 @@ def _summary(room_code: str, room: dict) -> RoomSummary:
     can_start, reason = _room_service.can_start(room)
     try:
         engine = get_state_service().load_engine(room)
-    except Exception:  # noqa: BLE001 - a broken engine leaves `week` unknown
+    except Exception:  # a broken engine leaves `week` unknown
         logger.warning("Room %s has an engine that will not load.", room_code)
         engine = None
     try:
@@ -506,8 +506,8 @@ async def list_limits() -> Limits:
 
     The backend is the only copy of these numbers. The form builds its checks
     from this response instead of carrying its own table, so the form and
-    `GameConfig.from_host_input` cannot disagree about a bound. The order bounds a player
-    sees travel separately, per game, in `your_state` (`min_order_quantity`,
+    `GameConfig.from_host_input` cannot disagree about a bound. The order bounds a
+    player sees travel separately, per game, in `your_state` (`min_order_quantity`,
     `max_order_quantity`), because a host may lower the ceiling per game.
     """
     return DEFAULT_LIMITS

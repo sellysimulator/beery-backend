@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import random
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from ...core.bot import bot_for
@@ -531,7 +531,7 @@ async def set_role_mode(sid: str, data: dict | None = None) -> None:
     await socket_manager.emit_to_sid(host_target, "config_updated", config_event)
 
 
-# --- assign_role ---------------------------------------------------------------------- #
+# --- assign_role -------------------------------------------------------------------- #
 
 
 @sio.event
@@ -622,7 +622,7 @@ async def assign_role(sid: str, data: dict | None = None) -> None:
     await socket_manager.emit_to_room(room_code, "lobby_update", lobby_event)
 
 
-# --- claim_role ------------------------------------------------------------------------- #
+# --- claim_role --------------------------------------------------------------------- #
 
 
 @sio.event
@@ -702,7 +702,7 @@ async def claim_role(sid: str, data: dict | None = None) -> None:
     await socket_manager.emit_to_room(room_code, "lobby_update", lobby_event)
 
 
-# --- release_role --------------------------------------------------------------------------- #
+# --- release_role ------------------------------------------------------------------- #
 
 
 @sio.event
@@ -756,7 +756,7 @@ async def release_role(sid: str, data: dict | None = None) -> None:
         await socket_manager.emit_to_room(room_code, "lobby_update", lobby_event)
 
 
-# --- start_game ------------------------------------------------------------------------------- #
+# --- start_game --------------------------------------------------------------------- #
 
 
 async def _reject_start(sid: str, message: str, room_code: str | None) -> None:
@@ -809,7 +809,7 @@ async def start_game(sid: str, data: dict | None = None) -> None:
 
         try:
             config: GameConfig | None = state_svc.load_config(room)
-        except Exception:  # noqa: BLE001 - can_start below reports this to the host
+        except Exception:  # can_start below reports this to the host
             logger.warning(
                 "Room %s has a stored config that will not build a GameConfig.",
                 room_code,
@@ -872,7 +872,7 @@ async def start_game(sid: str, data: dict | None = None) -> None:
         engine = GameEngine.start(config, room["seed"], bot_roles)
 
         room["state"] = RoomState.RUNNING.value
-        room["started_at"] = datetime.now(timezone.utc).isoformat()
+        room["started_at"] = datetime.now(UTC).isoformat()
         state_svc.store_engine(room, engine)
         state_svc.store_bots(room, bots)
 
