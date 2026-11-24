@@ -868,3 +868,33 @@ async def test_an_unbounded_room_id_is_not_echoed(
     [(event, payload)] = fake_socket_manager.emits_for("sid-host")
     assert event == "join_error"
     assert "room_code" not in payload
+
+
+# --- the room's lifetime ---------------------------------------------------- #
+
+
+async def test_starting_moves_the_room_from_the_two_hour_ttl_to_the_day(
+    make_room, start_running_game, fake_redis
+):
+    """Every save before the start uses the unstarted room's 2 h TTL; the
+    start's save, and every one after it, the started room's 24 h."""
+    from app.services.state_service import (
+        ROOM_TTL_SECONDS,
+        UNSTARTED_ROOM_TTL_SECONDS,
+    )
+
+    ttls: list[int] = []
+    original = fake_redis.setex
+
+    async def spy(key, ttl, value):
+        ttls.append(ttl)
+        return await original(key, ttl, value)
+
+    fake_redis.setex = spy
+    room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
+    await start_running_game(room)
+
+    started = ttls.index(ROOM_TTL_SECONDS)
+    assert started > 0
+    assert set(ttls[:started]) == {UNSTARTED_ROOM_TTL_SECONDS}
+    assert set(ttls[started:]) == {ROOM_TTL_SECONDS}

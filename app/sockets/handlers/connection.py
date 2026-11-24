@@ -51,16 +51,23 @@ class Handshake(NamedTuple):
 def resolve_handshake(auth: dict | None) -> Handshake | None:
     """Return the identity for a handshake payload, or None to reject it.
 
-    None means an ID token was presented and did not verify. It is never a
-    reason to fall back to an accompanying guest id: a silent downgrade would let
-    anyone hold a seat while presenting a stolen or expired token, which is the
+    None means an ID token was presented and did not verify, or that no
+    identity was presented at all. A failed token is never a reason to fall
+    back to an accompanying guest id: a silent downgrade would let anyone hold
+    a seat while presenting a stolen or expired token, which is the
     impersonation bug the three-identifier model exists to prevent.
+
+    No identity -- neither an ID token nor a guest id -- is what a signed-in
+    browser sends when it could not fetch its token; a fresh guest would seat
+    a signed-in user under a throwaway identity, so it is refused too (the
+    client retries). Every real guest sends the guest id its browser keeps; a
+    malformed one is still replaced by a fresh guest.
 
     An unverifiable token and an unconfigured server are the same answer here,
     deliberately.
     """
     if not isinstance(auth, dict):
-        return Handshake(_new_guest_identity(), None)
+        return None
 
     id_token = auth.get("idToken")
     if id_token:
@@ -73,6 +80,8 @@ def resolve_handshake(auth: dict | None) -> Handshake | None:
         return Handshake(uid, uid)
 
     guest_id = auth.get("guestId")
+    if not guest_id:
+        return None
     if isinstance(guest_id, str) and GUEST_ID_RE.match(guest_id):
         return Handshake(guest_id, None)
 
@@ -98,7 +107,10 @@ async def connect(sid: str, environ: dict, auth: Any = None) -> Any:
         handshake = await asyncio.to_thread(resolve_handshake, auth)
         if handshake is None:
             # The identity itself is never logged.
-            logger.warning("Rejecting handshake for sid %s: the ID token failed.", sid)
+            logger.warning(
+                "Rejecting handshake for sid %s: no identity, or the ID token failed.",
+                sid,
+            )
             return False
 
         await socket_manager.connect(sid, environ)

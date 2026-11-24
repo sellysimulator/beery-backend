@@ -112,11 +112,15 @@ def test_uvicorn_entrypoint_serves_health(live_server):
 def test_socketio_client_completes_a_handshake(live_server):
     """A socket.io client can complete a handshake against
     ``application``."""
+    import uuid
+
     import socketio
 
     client = socketio.Client()
     try:
-        client.connect(live_server, wait_timeout=20)
+        client.connect(
+            live_server, auth={"guestId": f"guest_{uuid.uuid4()}"}, wait_timeout=20
+        )
         assert client.connected
         assert client.get_sid()
     finally:

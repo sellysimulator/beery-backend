@@ -19,8 +19,10 @@ recursing.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
+import time
 from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any
@@ -40,12 +42,13 @@ from ..db import session as db_session
 from ..models.game import Game
 from ..sockets.manager import socket_manager
 from .db_service import build_snapshot, get_db_service
-from .state_service import StateService, get_state_service
+from .state_service import ROOM_TTL_SECONDS, StateService, get_state_service
 from .stats_service import get_stats_service
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "PERSIST_RETRY_DELAYS_SECONDS",
     "GameService",
     "get_game_service",
     "persist_finished_game",
@@ -65,23 +68,73 @@ _STALE_WEEK_MSG = "That week is no longer open."
 _INVALID_ORDER_MSG = "Order must be a whole number."
 _TOO_MANY_MSG = "Too many submissions for this week."
 
-# Resubmission counters, per (room_code, week, role). Deliberately
+#: Seconds before each retry of a failed end-of-game write: three more
+#: attempts after the first, in the background, each off the event loop and
+#: with no room lock held while it writes or sleeps.
+PERSIST_RETRY_DELAYS_SECONDS: tuple[float, ...] = (2.0, 10.0, 30.0)
+
+# Rooms whose end-of-game write is running or waiting for a retry, in this
+# process -- the "already in flight" test that keeps a rejoin from starting a
+# second write beside the first. Process-local, like the counters below.
+_persisting: set[str] = set()
+# The event loop keeps only a weak reference to a task; these are the strong
+# ones that keep a pending retry alive until it ends.
+_retry_tasks: set[asyncio.Task[None]] = set()
+
+# Resubmission counters, per (room_code, week, role): the count and the
+# `time.monotonic()` of that week's first counted submission. Deliberately
 # process-local, not part of the frozen room document (no new top-level key
 # may be added without a schema bump). Socket.IO connections are sticky
 # for their lifetime, so every `submit_order` for one sid is handled by the
 # same worker process that would have to enforce this cap anyway; the guard
 # this exists for is a single client looping submissions, not a
-# cross-process invariant (spec §12.1). Entries are dropped for
-# a week as soon as it closes, so this cannot grow without bound.
-_submission_counts: dict[tuple[str, int, str], int] = {}
+# cross-process invariant (spec §12.1). Entries are dropped for a week as
+# soon as it closes and for a whole room when its game finishes (ended early
+# included). A room that expires or is deleted mid-week closes nothing, so
+# entries older than a room can live without a save are swept as well
+# (`_sweep_submission_counts`): this cannot grow without bound.
+_submission_counts: dict[tuple[str, int, str], tuple[int, float]] = {}
+_SUBMISSION_SWEEP_EVERY_SECONDS = 600.0
+_submissions_swept_at = float("-inf")
 
 
-def _forget_submission_counts(room_code: str, week: int) -> None:
+def _forget_submission_counts(room_code: str, week: int | None = None) -> None:
+    """Drop the counters of one week of a room, or of every week when
+    `week` is None."""
     stale = [
-        key for key in _submission_counts if key[0] == room_code and key[1] == week
+        key
+        for key in _submission_counts
+        if key[0] == room_code and (week is None or key[1] == week)
     ]
     for key in stale:
         _submission_counts.pop(key, None)
+
+
+def _sweep_submission_counts(now: float) -> None:
+    """At most once per `_SUBMISSION_SWEEP_EVERY_SECONDS`, drop every counter
+    whose first submission is older than `ROOM_TTL_SECONDS`.
+
+    Such a week belongs to a room that expired or was deleted while the week
+    was open; if the room is somehow still alive, forgetting its counter only
+    restarts its cap."""
+    global _submissions_swept_at
+    if now - _submissions_swept_at < _SUBMISSION_SWEEP_EVERY_SECONDS:
+        return
+    _submissions_swept_at = now
+    stale = [
+        key
+        for key, (_count, first) in _submission_counts.items()
+        if now - first > ROOM_TTL_SECONDS
+    ]
+    for key in stale:
+        _submission_counts.pop(key, None)
+
+
+def _record_submission(key: tuple[str, int, str], count: int) -> None:
+    now = time.monotonic()
+    _sweep_submission_counts(now)
+    first = _submission_counts.get(key, (0, now))[1]
+    _submission_counts[key] = (count, first)
 
 
 def _coerce_order(value: Any) -> tuple[bool, int]:
@@ -195,6 +248,11 @@ async def persist_finished_game(
     same data, deliberately not threaded through here to avoid a second copy
     to keep in sync.
 
+    The work is synchronous SQLAlchemy, so it runs in a worker thread
+    (`asyncio.to_thread`), never on the event loop: a Neon compute waking from
+    suspend, or a slow write, would otherwise freeze every room in the
+    process for as long as it takes.
+
     Called and read as a bare module-level name, exactly as
     `state_service.redis_client` is, so a test can
     monkeypatch `app.services.game_service.persist_finished_game` without
@@ -204,6 +262,13 @@ async def persist_finished_game(
     `from ... import SessionLocal`, so a test that monkeypatches
     `app.db.session.SessionLocal` reaches this call too.
     """
+    return await asyncio.to_thread(_persist_finished_game_sync, room_code, room, engine)
+
+
+def _persist_finished_game_sync(
+    room_code: str, room: dict, engine: GameEngine
+) -> str | None:
+    """`persist_finished_game`'s body, run in a worker thread. Never raises."""
     try:
         snapshot = build_snapshot(room, engine.config, engine)
     except Exception:
@@ -353,7 +418,7 @@ class GameService:
                 return
 
             count_key = (room_code_out, engine.week, role.value)
-            count = _submission_counts.get(count_key, 0) + 1
+            count = _submission_counts.get(count_key, (0, 0.0))[0] + 1
             if count > MAX_RESUBMISSIONS_PER_ROLE_PER_WEEK:
                 await socket_manager.emit_to_sid(
                     sid,
@@ -361,7 +426,7 @@ class GameService:
                     {"message": _TOO_MANY_MSG, "code": "TOO_MANY_SUBMISSIONS"},
                 )
                 return
-            _submission_counts[count_key] = count
+            _record_submission(count_key, count)
 
             engine.submit_order(role, coerced)
             state_svc.store_engine(room, engine)
@@ -740,8 +805,9 @@ class GameService:
         overwritten, and no two events share a `seq`.
 
         A persistence failure must not break the results screen: it is
-        logged, `persisted` is `False`, and the clients keep the
-        `game_finished` payload they already received."""
+        logged, `persisted` is `False`, the clients keep the `game_finished`
+        payload they already received, and the write is retried in the
+        background (`PERSIST_RETRY_DELAYS_SECONDS`)."""
         state_svc = get_state_service()
         engine = state_svc.load_engine(room)
         if engine is None:
@@ -778,6 +844,9 @@ class GameService:
             }
             await state_svc.save_room(room_code_out, current)
             snapshot = current
+        # No week of this game will close again, so none of its counters will
+        # be dropped at a close (an ended-early game abandons its open week).
+        _forget_submission_counts(room_code_out)
 
         # The debrief goes out BEFORE persistence, not after (spec §10.2).
         # Persistence is a database round trip that may be slow and may fail;
@@ -786,25 +855,136 @@ class GameService:
             room_code_out, "game_finished", finished_payload
         )
 
+        if room_code_out in _persisting:
+            return
+        _persisting.add(room_code_out)
+        await self._persist(room_code_out, snapshot, engine, stats)
+
+    async def persist_if_unsaved(self, room_code: str) -> None:
+        """Write a finished game nobody has saved yet (spec §10.2).
+
+        Called after the host or a player (re)joins, or asks for state in, a
+        FINISHED room: when the room is still `persisted: false` and no write
+        for it is running or waiting to retry in this process, the write is
+        started again -- one attempt now, then the background retries. A no-op
+        otherwise. `room_code` is the room's canonical (upper-case) code.
+        """
+        if room_code in _persisting:
+            return
+        found = await self._unsaved_finished_game(room_code)
+        if found is None or room_code in _persisting:
+            return
+        _persisting.add(room_code)
+        await self._persist(room_code, *found)
+
+    async def _unsaved_finished_game(
+        self, room_code: str
+    ) -> tuple[dict, GameEngine, GameStats] | None:
+        """The room, engine and stats of a FINISHED game still unsaved, or
+        None. A plain read: nothing is written, so no lock."""
+        state_svc = get_state_service()
+        room = await state_svc.get_room(room_code)
+        if (
+            room is None
+            or room["state"] != RoomState.FINISHED.value
+            or room.get("persisted")
+        ):
+            return None
+        engine = state_svc.load_engine(room)
+        if engine is None:
+            return None
+        stats = compute_stats(engine.history, engine.demand_series, engine.weeks_played)
+        return room, engine, stats
+
+    async def _persist(
+        self, room_code: str, snapshot: dict, engine: GameEngine, stats: GameStats
+    ) -> None:
+        """One attempt now; after a failure, the retries in the background.
+
+        The caller has put `room_code` in `_persisting` before this first
+        attempt; `_persist_once` takes it out when the write succeeds or the
+        last attempt fails, before either outcome is announced."""
+        try:
+            saved = await self._persist_once(
+                room_code,
+                snapshot,
+                engine,
+                stats,
+                last=not PERSIST_RETRY_DELAYS_SECONDS,
+            )
+        except BaseException:
+            _persisting.discard(room_code)
+            raise
+        if saved or not PERSIST_RETRY_DELAYS_SECONDS:
+            return
+        task = asyncio.create_task(self._retry_persist(room_code))
+        _retry_tasks.add(task)
+        task.add_done_callback(_retry_tasks.discard)
+
+    async def _retry_persist(self, room_code: str) -> None:
+        """The background retries: sleep, re-read the room, write. Stops early
+        once the game is saved or the room is gone.
+
+        The room stays in `_persisting` through every sleep; the last attempt
+        takes it out before its outcome is announced (`_persist_once`), so a
+        rejoin arriving meanwhile can start a new attempt. Nothing here
+        removes it after that: by then it may be that new attempt's."""
+        try:
+            for attempt, delay in enumerate(PERSIST_RETRY_DELAYS_SECONDS, start=1):
+                await asyncio.sleep(delay)
+                found = await self._unsaved_finished_game(room_code)
+                if found is None:
+                    _persisting.discard(room_code)
+                    return
+                last = attempt == len(PERSIST_RETRY_DELAYS_SECONDS)
+                if await self._persist_once(room_code, *found, last=last):
+                    return
+        except BaseException:
+            _persisting.discard(room_code)
+            raise
+        logger.error(
+            "Gave up persisting the finished game of room %s after %d retries.",
+            room_code,
+            len(PERSIST_RETRY_DELAYS_SECONDS),
+        )
+
+    async def _persist_once(
+        self,
+        room_code: str,
+        snapshot: dict,
+        engine: GameEngine,
+        stats: GameStats,
+        *,
+        last: bool,
+    ) -> bool:
+        """One write, with no lock held, then one short lock to record the
+        outcome and, on success, `game_persisted`. True when saved.
+
+        When the write succeeded or this was the `last` attempt, the room
+        leaves `_persisting` BEFORE the outcome is announced, so a rejoin
+        arriving while it goes out is not mistaken for one beside a write in
+        flight.
+
+        The write is idempotent on (`room_code`, `started_at`), so a retry of
+        a write that did land returns the same game's `public_id`."""
+        state_svc = get_state_service()
         public_id: str | None = None
         try:
-            public_id = await persist_finished_game(
-                room_code_out, snapshot, engine, stats
-            )
+            public_id = await persist_finished_game(room_code, snapshot, engine, stats)
         except Exception:
-            logger.exception("Persisting finished game %s failed.", room_code_out)
+            logger.exception("Persisting finished game %s failed.", room_code)
             public_id = None
 
         persisted = isinstance(public_id, str)
         persisted_payload: dict | None = None
-        async with state_svc.lock(room_code_out):
-            current = await state_svc.get_room(room_code_out)
+        async with state_svc.lock(room_code):
+            current = await state_svc.get_room(room_code)
             if current is None:
                 # Expired or deleted while the write ran: nothing to flag,
                 # and saving the stale snapshot would resurrect the room.
                 logger.warning(
                     "finish_game: room %s vanished before persisted was saved.",
-                    room_code_out,
+                    room_code,
                 )
             else:
                 current["persisted"] = persisted
@@ -813,14 +993,17 @@ class GameService:
                         "seq": state_svc.next_seq(current),
                         "game_id": public_id,
                     }
-                await state_svc.save_room(room_code_out, current)
+                await state_svc.save_room(room_code, current)
 
+        if persisted or last:
+            _persisting.discard(room_code)
         # Only now does the permanent results URL exist. Clients already hold
         # the debrief from `game_finished`; this just lets them link to it.
         if persisted_payload is not None:
             await socket_manager.emit_to_room(
-                room_code_out, "game_persisted", persisted_payload
+                room_code, "game_persisted", persisted_payload
             )
+        return persisted
 
 
 _game_service: GameService | None = None

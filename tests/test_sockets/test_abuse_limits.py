@@ -4,6 +4,8 @@ covered in `tests/test_core/test_abuse.py`."""
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 import socketio  # type: ignore[import-untyped]
 
@@ -12,6 +14,10 @@ from app.core.abuse import RATE_LIMITED_MESSAGE
 from app.sockets import errors
 
 pytestmark = pytest.mark.asyncio
+
+
+def _guest() -> dict:
+    return {"guestId": f"guest_{uuid.uuid4()}"}
 
 
 def _environ(ip: str) -> dict:
@@ -67,12 +73,12 @@ async def test_the_handshake_refuses_past_the_socket_cap(
 
     monkeypatch.setattr(abuse, "MAX_SOCKETS_PER_IP", 1)
 
-    assert await connect("sid-1", _environ("203.0.113.1"), None) is None
+    assert await connect("sid-1", _environ("203.0.113.1"), _guest()) is None
     with pytest.raises(socketio.exceptions.ConnectionRefusedError) as refused:
-        await connect("sid-2", _environ("203.0.113.1"), None)
+        await connect("sid-2", _environ("203.0.113.1"), _guest())
     assert refused.value.error_args["message"] == TOO_MANY_CONNECTIONS_MESSAGE
     assert "sid-2" not in fake_socket_manager.sid_to_identity
-    assert await connect("sid-3", _environ("203.0.113.2"), None) is None
+    assert await connect("sid-3", _environ("203.0.113.2"), _guest()) is None
 
 
 async def test_a_refused_token_gives_its_socket_slot_back(
@@ -86,7 +92,7 @@ async def test_a_refused_token_gives_its_socket_slot_back(
     assert (
         await connect("sid-1", _environ("203.0.113.1"), {"idToken": "forged"}) is False
     )
-    assert await connect("sid-2", _environ("203.0.113.1"), None) is None
+    assert await connect("sid-2", _environ("203.0.113.1"), _guest()) is None
 
 
 async def test_disconnect_gives_the_socket_slot_back(
@@ -96,9 +102,9 @@ async def test_disconnect_gives_the_socket_slot_back(
 
     monkeypatch.setattr(abuse, "MAX_SOCKETS_PER_IP", 1)
 
-    assert await connect("sid-1", _environ("203.0.113.1"), None) is None
+    assert await connect("sid-1", _environ("203.0.113.1"), _guest()) is None
     await disconnect("sid-1")
-    assert await connect("sid-2", _environ("203.0.113.1"), None) is None
+    assert await connect("sid-2", _environ("203.0.113.1"), _guest()) is None
 
 
 async def test_a_handshake_that_fails_gives_its_socket_slot_back(
@@ -118,9 +124,9 @@ async def test_a_handshake_that_fails_gives_its_socket_slot_back(
 
     monkeypatch.setattr(fake_socket_manager, "connect", _fails_once)
     with pytest.raises(RuntimeError):
-        await connect("sid-1", _environ("203.0.113.1"), None)
+        await connect("sid-1", _environ("203.0.113.1"), _guest())
 
-    assert await connect("sid-2", _environ("203.0.113.1"), None) is None
+    assert await connect("sid-2", _environ("203.0.113.1"), _guest()) is None
 
 
 async def test_a_disconnect_that_fails_still_gives_the_slot_back(
@@ -129,7 +135,7 @@ async def test_a_disconnect_that_fails_still_gives_the_slot_back(
     from app.sockets.handlers.connection import connect, disconnect
 
     monkeypatch.setattr(abuse, "MAX_SOCKETS_PER_IP", 1)
-    assert await connect("sid-1", _environ("203.0.113.1"), None) is None
+    assert await connect("sid-1", _environ("203.0.113.1"), _guest()) is None
 
     async def _boom(sid: str) -> None:
         raise RuntimeError("socket manager down")
@@ -138,4 +144,4 @@ async def test_a_disconnect_that_fails_still_gives_the_slot_back(
     with pytest.raises(RuntimeError):
         await disconnect("sid-1")
 
-    assert await connect("sid-2", _environ("203.0.113.1"), None) is None
+    assert await connect("sid-2", _environ("203.0.113.1"), _guest()) is None

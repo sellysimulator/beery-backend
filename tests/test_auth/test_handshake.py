@@ -116,7 +116,6 @@ async def test_well_formed_guest_id_is_accepted_verbatim(sock_mgr, firebase_toke
         "GUEST_" + str(uuid.uuid4()),  # wrong case on the prefix
         f"prefix_guest_{uuid.uuid4()}",  # unanchored match attempt
         f"guest_{uuid.uuid4()}_suffix",
-        "",
     ],
     ids=[
         "arbitrary-string",
@@ -125,7 +124,6 @@ async def test_well_formed_guest_id_is_accepted_verbatim(sock_mgr, firebase_toke
         "uppercase-prefix",
         "leading-junk",
         "trailing-junk",
-        "empty",
     ],
 )
 @pytest.mark.asyncio
@@ -148,8 +146,8 @@ async def test_malformed_guest_id_is_replaced_by_a_fresh_one(
 
 @pytest.mark.parametrize(
     "supplied",
-    [12345, 3.5, True, None, ["guest"], {"guest": "id"}],
-    ids=["int", "float", "bool", "none", "list", "dict"],
+    [12345, 3.5, True, ["guest"], {"guest": "id"}],
+    ids=["int", "float", "bool", "list", "dict"],
 )
 @pytest.mark.asyncio
 async def test_a_non_string_guest_id_is_replaced_rather_than_crashing(
@@ -168,27 +166,51 @@ async def test_a_non_string_guest_id_is_replaced_rather_than_crashing(
     assert GUEST_RE.match(sock_mgr.sid_to_identity["sid-1"])
 
 
-# --- no usable auth ----------------------------------------------------------
+# --- no identity presented -------------------------------------------------
 
 
 @pytest.mark.parametrize(
     "auth",
-    [None, {}, "not-a-dict", ["also", "not", "a", "dict"], 7],
-    ids=["none", "empty-dict", "string", "list", "int"],
+    [
+        None,
+        {},
+        {"idToken": None, "guestId": None},
+        {"idToken": "", "guestId": None},
+        "not-a-dict",
+        ["also", "not", "a", "dict"],
+        7,
+    ],
+    ids=["none", "empty-dict", "both-null", "empty-token", "string", "list", "int"],
 )
 @pytest.mark.asyncio
-async def test_absent_or_unusable_auth_yields_a_fresh_guest(
+async def test_a_handshake_presenting_no_identity_is_refused(
     sock_mgr, firebase_tokens, auth
 ):
-    """No ``auth`` at all is a guest, not a rejection.
+    """Neither an ID token nor a guest id: refused, never a fresh guest.
 
-    Guest play is a first-class path (**D2**, **D3**), so the handshake must
-    mint an identity rather than refuse the connection.
+    A signed-in browser whose ID token could not be fetched sends exactly
+    ``{idToken: null, guestId: null}``; minting a guest for it would seat a
+    signed-in user under a throwaway identity, and their game would never
+    reach their account. Every real guest sends the guest id its browser
+    keeps (**D2**), so guest play loses nothing.
     """
     result = await connect("sid-1", {}, auth)
 
-    assert result is not False
-    assert GUEST_RE.match(sock_mgr.sid_to_identity["sid-1"])
+    assert result is False
+    assert "sid-1" not in sock_mgr.sid_to_identity
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("guest_id", [None, ""], ids=["null", "empty"])
+async def test_a_handshake_with_a_null_or_empty_guest_id_is_refused(
+    sock_mgr, firebase_tokens, guest_id
+):
+    """``guestId`` null or empty, and no ID token: refused like no identity at
+    all, never a fresh guest."""
+    result = await connect("sid-1", {}, {"idToken": None, "guestId": guest_id})
+
+    assert result is False
+    assert "sid-1" not in sock_mgr.sid_to_identity
 
 
 # --- distinct fresh guest ids ------------------------------------------------
@@ -203,8 +225,8 @@ async def test_two_anonymous_handshakes_get_different_identities(
     A shared or constant guest id would put every anonymous visitor into one
     identity, so two browsers would fight over a single seat per room.
     """
-    await connect("sid-1", {}, None)
-    await connect("sid-2", {}, None)
+    await connect("sid-1", {}, {"guestId": "not-a-guest-id"})
+    await connect("sid-2", {}, {"guestId": "not-a-guest-id"})
 
     assert sock_mgr.sid_to_identity["sid-1"] != sock_mgr.sid_to_identity["sid-2"]
 
@@ -237,8 +259,9 @@ def test_resolve_identity_matches_the_truth_table(firebase_tokens):
     assert resolve_identity({"guestId": guest_id}) == guest_id
     assert GUEST_RE.match(resolve_identity({"guestId": "nope"}) or "")
     assert GUEST_RE.match(resolve_identity({"guestId": 12345}) or "")
-    assert GUEST_RE.match(resolve_identity({}) or "")
-    assert GUEST_RE.match(resolve_identity(None) or "")
+    assert resolve_identity({}) is None
+    assert resolve_identity(None) is None
+    assert resolve_identity({"idToken": None, "guestId": None}) is None
     assert (
         resolve_identity({"idToken": "good-token", "guestId": guest_id})
         == "firebase-uid-123"
@@ -258,7 +281,7 @@ def test_only_a_verified_token_yields_a_verified_uid(firebase_tokens):
         "firebase-uid-123", "firebase-uid-123"
     )
     assert resolve_handshake({"guestId": guest_id}) == Handshake(guest_id, None)
-    for auth in ({"guestId": FIREBASE_UID_SHAPED}, {"guestId": "nope"}, {}, None):
+    for auth in ({"guestId": FIREBASE_UID_SHAPED}, {"guestId": "nope"}):
         handshake = resolve_handshake(auth)
         assert handshake is not None
         assert handshake.verified_uid is None
@@ -316,7 +339,7 @@ async def test_disconnect_clears_all_three_sid_maps(sock_mgr, firebase_tokens):
     sock_mgr.sid_to_alias["sid-1"] = "P1"
 
     # A second, unrelated connection that must survive untouched.
-    await connect("sid-2", {}, None)
+    await connect("sid-2", {}, {"guestId": f"guest_{uuid.uuid4()}"})
     sock_mgr.sid_to_room["sid-2"] = "ROOM42"
     sock_mgr.sid_to_alias["sid-2"] = "P2"
     survivor = sock_mgr.sid_to_identity["sid-2"]
@@ -413,10 +436,9 @@ async def test_a_client_asserted_identity_key_has_no_effect(sock_mgr, firebase_t
     firebase_tokens.configure()
     firebase_tokens.add("good-token", uid="firebase-uid-123")
 
-    await connect("sid-1", {}, {"identity": "SOMEONE_ELSE_UID"})
-    minted = sock_mgr.sid_to_identity["sid-1"]
-    assert minted != "SOMEONE_ELSE_UID"
-    assert GUEST_RE.match(minted)
+    # Alone it is no identity at all: refused.
+    assert await connect("sid-1", {}, {"identity": "SOMEONE_ELSE_UID"}) is False
+    assert "sid-1" not in sock_mgr.sid_to_identity
 
     # And it cannot override either of the two fields that *are* read.
     guest_id = f"guest_{uuid.uuid4()}"
@@ -435,17 +457,15 @@ async def test_a_client_asserted_identity_key_has_no_effect(sock_mgr, firebase_t
 async def test_neighbouring_identity_fields_are_ignored_too(sock_mgr, firebase_tokens):
     """Adjacent spellings: ``uid``, ``user_id`` and ``sub`` are
     the names a decoded token uses, and none of them is an input."""
-    await connect(
-        "sid-1",
-        {},
-        {
-            "uid": "SOMEONE_ELSE_UID",
-            "user_id": "SOMEONE_ELSE_UID",
-            "sub": "SOMEONE_ELSE_UID",
-        },
-    )
+    neighbours = {
+        "uid": "SOMEONE_ELSE_UID",
+        "user_id": "SOMEONE_ELSE_UID",
+        "sub": "SOMEONE_ELSE_UID",
+    }
+    assert await connect("sid-1", {}, neighbours) is False
+    await connect("sid-2", {}, {**neighbours, "guestId": "nope"})
 
-    assert GUEST_RE.match(sock_mgr.sid_to_identity["sid-1"])
+    assert GUEST_RE.match(sock_mgr.sid_to_identity["sid-2"])
     assert "SOMEONE_ELSE_UID" not in sock_mgr.sid_to_identity.values()
 
 
@@ -503,8 +523,8 @@ async def test_unconfigured_firebase_rejects_tokens_but_still_admits_guests(
     assert accepted is not False
     assert sock_mgr.sid_to_identity["sid-2"] == guest_id
 
-    anonymous = await connect("sid-3", {}, None)
-    assert anonymous is not False
+    malformed = await connect("sid-3", {}, {"guestId": "nope"})
+    assert malformed is not False
     assert GUEST_RE.match(sock_mgr.sid_to_identity["sid-3"])
 
 

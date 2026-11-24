@@ -11,7 +11,8 @@ becomes N times looser, never tighter.
 It is wired in at four single points and nowhere else:
 
 * ``RateLimitMiddleware`` -- added once in ``app/main.py``; every REST route,
-  including the hourly game-export budget (``GAME_EXPORT_LIMIT_PER_IP``).
+  including the hourly game-export budget (``GAME_EXPORT_LIMIT_PER_IP``), and
+  the ``MAX_BODY_BYTES`` cap on a request body.
 * ``room_create_allowed`` -- ``POST /api/v1/rooms/batch-create`` charges the
   room-create budget one hit per room it makes, from inside the route, because
   only the route knows the count once the body has been validated.
@@ -21,8 +22,9 @@ It is wired in at four single points and nowhere else:
   which every socket event handler already wears.
 
 The numbers are module constants, not settings (the hard-limits rule
-in ``CLAUDE.md``). They are sized for a classroom behind one NAT address --
-about forty people sharing one IP -- not for one person.
+in ``CLAUDE.md``). The per-address ones are sized for a whole school behind
+one NAT address -- several classrooms sharing one IP -- not for one person;
+the per-connection ones are the real guard against a single client.
 """
 
 from __future__ import annotations
@@ -39,10 +41,12 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "GAME_EXPORT_LIMIT_PER_IP",
     "GAME_EXPORT_WINDOW_SECONDS",
+    "MAX_BODY_BYTES",
     "MAX_SOCKETS_PER_IP",
     "RATE_LIMITED_MESSAGE",
     "ROOM_CREATE_LIMIT_PER_IP",
     "ROOM_CREATE_WINDOW_SECONDS",
+    "TOO_LARGE_MESSAGE",
     "RateLimitMiddleware",
     "RateLimiter",
     "client_ip",
@@ -57,22 +61,22 @@ __all__ = [
 #: Every limit counts within a fixed window of this many seconds.
 WINDOW_SECONDS = 60.0
 #: All REST requests from one address per window.
-REST_LIMIT_PER_IP = 1200
+REST_LIMIT_PER_IP = 3000
 #: Rooms created per address per ``ROOM_CREATE_WINDOW_SECONDS``, shared by
 #: ``POST /api/v1/rooms/create`` (one each) and ``POST /api/v1/rooms/batch-create``
 #: (one per room, at most ``max_batch_rooms`` = 10 a request). Unauthenticated,
-#: and each one is a room held in memory for 24 h. The standard across every
-#: Novus game: 30 an hour, so three full batches.
+#: and each one is a room held in memory for 2 h (24 h once started). The
+#: standard across every Novus game: 30 an hour, so three full batches.
 ROOM_CREATE_LIMIT_PER_IP = 30
 #: The room-create budget's window: an hour, not ``WINDOW_SECONDS``.
 ROOM_CREATE_WINDOW_SECONDS = 3600.0
 #: ``GET /api/v1/rooms/{code}/status`` per address per window. Unauthenticated
 #: and answers for any code -- the REST half of room-code guessing.
-ROOM_STATUS_LIMIT_PER_IP = 120
+ROOM_STATUS_LIMIT_PER_IP = 600
 #: ``POST /api/v1/rooms/preview`` per address per window. Unauthenticated, and
 #: each one builds a config and draws a demand series. The host form debounces
 #: edits at 300 ms, so one teacher typing flat out stays under 200 a minute.
-ROOM_PREVIEW_LIMIT_PER_IP = 300
+ROOM_PREVIEW_LIMIT_PER_IP = 600
 #: ``GET /api/v1/games/id/{public_id}/export`` (CSV and JSON alike) per
 #: address per ``GAME_EXPORT_WINDOW_SECONDS``. The export by ``public_id`` is
 #: open to anyone who can see the game's results, and each one rebuilds the
@@ -83,18 +87,25 @@ GAME_EXPORT_LIMIT_PER_IP = 100
 #: The export budget's window: an hour, not ``WINDOW_SECONDS``.
 GAME_EXPORT_WINDOW_SECONDS = 3600.0
 #: Sockets open at once from one address.
-MAX_SOCKETS_PER_IP = 200
+MAX_SOCKETS_PER_IP = 400
 #: Socket events per connection per window. The host form debounces config
 #: saves at 400 ms; nobody clicks at two a second for a whole minute.
 SOCKET_EVENTS_PER_SID = 120
 #: ``join`` + ``join_waiting`` per address per window -- the socket half of
 #: room-code guessing.
-SOCKET_JOINS_PER_IP = 300
+SOCKET_JOINS_PER_IP = 600
 #: Keys one limiter tracks at most, whatever arrives.
 MAX_TRACKED_KEYS = 10_000
+#: The largest REST request body, and the largest Socket.IO message
+#: (``max_http_buffer_size`` in ``app/sockets/manager.py``). The largest
+#: legitimate one is a whole config with a 104-week ``CUSTOM`` demand series,
+#: a few KB.
+MAX_BODY_BYTES = 64 * 1024
 
 #: The ``detail`` of a REST 429 and the ``message`` of a refused socket event.
 RATE_LIMITED_MESSAGE = "Too many requests. Please slow down and try again."
+#: The ``detail`` of a REST 413.
+TOO_LARGE_MESSAGE = "That request is too large."
 
 #: Never limited: Render's health check and the frontend's cold-start probe.
 _EXEMPT_PATHS = frozenset({"/api/v1/health"})
@@ -279,27 +290,75 @@ async def _too_many_requests(send: Send, retry_after: int) -> None:
     """A 429 whose body is FastAPI's ``{"detail": "<string>"}`` shape, which
     the frontend's ``errorMessage`` helper already renders, and whose
     ``Retry-After`` is the seconds left in the window that refused it."""
-    body = json.dumps({"detail": RATE_LIMITED_MESSAGE}).encode("utf-8")
+    await _refuse(
+        send,
+        429,
+        RATE_LIMITED_MESSAGE,
+        [(b"retry-after", str(retry_after).encode("ascii"))],
+    )
+
+
+async def _too_large(send: Send) -> None:
+    """A 413 in the same ``{"detail": "<string>"}`` shape."""
+    await _refuse(send, 413, TOO_LARGE_MESSAGE, [])
+
+
+async def _refuse(
+    send: Send, status: int, detail: str, extra: list[tuple[bytes, bytes]]
+) -> None:
+    body = json.dumps({"detail": detail}).encode("utf-8")
     await send(
         {
             "type": "http.response.start",
-            "status": 429,
+            "status": status,
             "headers": [
                 (b"content-type", b"application/json"),
                 (b"content-length", str(len(body)).encode("ascii")),
-                (b"retry-after", str(retry_after).encode("ascii")),
+                *extra,
             ],
         }
     )
     await send({"type": "http.response.body", "body": body})
 
 
+def _declared_too_large(scope: Scope) -> bool:
+    """A ``Content-Length`` over ``MAX_BODY_BYTES``, or one that is not a
+    number."""
+    for name, value in scope.get("headers") or ():
+        if name.lower() == b"content-length":
+            return not value.isdigit() or int(value) > MAX_BODY_BYTES
+    return False
+
+
+async def _read_body(receive: Receive) -> tuple[list[Message], bool]:
+    """The request's messages up to the end of its body, and whether that
+    body is over ``MAX_BODY_BYTES``. A chunked body declares no
+    ``Content-Length``, so its cap holds here, as it arrives."""
+    messages: list[Message] = []
+    size = 0
+    while True:
+        message = await receive()
+        messages.append(message)
+        if message["type"] != "http.request":
+            return messages, False
+        size += len(message.get("body", b""))
+        if size > MAX_BODY_BYTES:
+            return messages, True
+        if not message.get("more_body", False):
+            return messages, False
+
+
 class RateLimitMiddleware:
-    """Pure ASGI middleware: a 429 once an address is over its REST budget.
+    """Pure ASGI middleware: a 429 once an address is over its REST budget,
+    and a 413 for a body over ``MAX_BODY_BYTES``.
+
+    A declared ``Content-Length`` over the cap is refused before anything is
+    counted or read; any other body is read up to the cap and handed on to
+    the route unchanged.
 
     Add it *before* ``CORSMiddleware`` in ``app/main.py``, so CORS wraps it:
-    the 429 then carries CORS headers the browser lets the page read, and a
-    preflight is answered by CORS without being counted here.
+    the 429 or 413 then carries CORS headers the browser lets the page read,
+    and a preflight is answered by CORS without being counted here.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -309,6 +368,9 @@ class RateLimitMiddleware:
         if scope["type"] != "http" or scope["path"] in _EXEMPT_PATHS:
             await self.app(scope, receive, send)
             return
+        if _declared_too_large(scope):
+            await _too_large(send)
+            return
         ip = client_ip(scope)
         strict = _route_limiter(scope["method"], scope["path"])
         if not _rest.allow(ip):
@@ -317,7 +379,15 @@ class RateLimitMiddleware:
         if strict is not None and not strict.allow(ip):
             await _too_many_requests(send, strict.retry_after(ip))
             return
-        await self.app(scope, receive, send)
+        messages, too_large = await _read_body(receive)
+        if too_large:
+            await _too_large(send)
+            return
+
+        async def replay() -> Message:
+            return messages.pop(0) if messages else await receive()
+
+        await self.app(scope, replay, send)
 
 
 # --- Socket.IO ------------------------------------------------------------- #

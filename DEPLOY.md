@@ -173,7 +173,8 @@ different major version proves the wrong engine.
 - **Neon Free limits.** Compute is fixed at 0.25 CU and scales to zero after
   5 minutes idle; the first request after that waits for a cold start (under
   a second), and `pool_pre_ping=True` replaces connections the suspend
-  dropped. 100 CU-hours a month and 1 GB of storage per project.
+  dropped. A connection attempt gives up after 10 s (`connect_timeout`),
+  and a failed end-of-game write is retried in the background. 100 CU-hours a month and 1 GB of storage per project.
 - **Backups.** Neon Free's restore window is short, so keep our own dumps:
   `pg_dump -Fc --no-owner --no-privileges` against the direct endpoint.
 - **TLS check.** Neon's proxy terminates TLS, so `pg_stat_ssl.ssl` reads `f`
@@ -191,6 +192,13 @@ play.
 **When a change touches anything under `app/sockets/handlers/` or
 `src/api/socketHandlers.ts`, deploy `Beery_Backend` and `Beery_Frontend` in
 the same window, backend first.**
+
+**The handoff-hardening release (branch `fix/handoff-hardening`) ships backend
+first, then the frontend in the same window.** The new backend accepts the old
+frontend's signed-in and guest handshakes, but refuses one with no identity at
+all, which the old frontend still sends on a first visit (no sign-in, no guest
+id yet) and then shows a "Sign-in could not be verified" alert until the new
+frontend is live; the new frontend never connects without an identity.
 
 **The exception: a backend change that drops a field the live frontend reads
 ships frontend first.** Backend first would leave the old frontend reading a

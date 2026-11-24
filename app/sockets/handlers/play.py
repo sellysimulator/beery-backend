@@ -45,7 +45,7 @@ _UNKNOWN_ROLE = "Unknown role."
 _ROLE_UNFILLED = "That role is unfilled."
 _GAME_NOT_STARTED = "The game has not started."
 
-__all__ = ["on_participant_disconnected"]
+__all__ = ["leave_other_rooms", "on_participant_disconnected"]
 
 
 def _payload(data: Any) -> dict:
@@ -482,6 +482,11 @@ async def request_state(sid: str, data: dict | None = None) -> None:
         room = await state_svc.get_room(room_id)
         if room is None:
             return
+        room_code = room["room_code"]
+        # A finished game nobody has saved yet is written again (spec §10.2).
+        unsaved = room["state"] == RoomState.FINISHED.value and not room.get(
+            "persisted"
+        )
 
         engine = state_svc.load_engine(room)
         if engine is None:
@@ -503,10 +508,12 @@ async def request_state(sid: str, data: dict | None = None) -> None:
                 {"seq": state_svc.next_seq(room), **engine.player_view(role)},
             )
 
-        await state_svc.save_room(room["room_code"], room)
+        await state_svc.save_room(room_code, room)
 
     event, payload = reply
     await socket_manager.emit_to_sid(sid, event, payload)
+    if unsaved:
+        await get_game_service().persist_if_unsaved(room_code)
 
 
 # --- disconnection -------------------------------------------------------------- #
@@ -532,6 +539,36 @@ async def on_participant_disconnected(sid: str) -> None:
         logger.exception("on_participant_disconnected failed for sid %s.", sid)
 
 
+async def leave_other_rooms(sid: str, room_code: str) -> None:
+    """``sid`` has just claimed or joined ``room_code``: leave every other
+    game room it is still in, as a disconnect from that room would.
+
+    A tab that goes from one game to another keeps its socket. Left in the
+    old room it would still hear that room's broadcasts, and the old room
+    would still name it as its host or a seated player -- so when the socket
+    finally drops, the disconnect below (which finds one room for a sid)
+    could mark the wrong room. Called by ``join_waiting`` and ``join`` after
+    their own lock is released; each old room takes its own lock here.
+
+    The socket leaves the Socket.IO room BEFORE the old room is told: the
+    tab has already started its store over for the new room, and the old
+    room's ``participant_disconnected`` / ``game_paused`` carry that room's
+    much higher ``seq``. Heard by this socket, it would raise the tab's
+    ``lastSeq`` above every event of the new room, which would all be
+    dropped. The per-process maps that still point at the old room go too,
+    so the eventual disconnect is charged to the new one.
+    """
+    for other in [name for name in sio.rooms(sid) if name not in (sid, room_code)]:
+        await sio.leave_room(sid, other)
+        if socket_manager.sid_to_room.get(sid) == other:
+            socket_manager.sid_to_room.pop(sid, None)
+            socket_manager.sid_to_alias.pop(sid, None)
+        try:
+            await _leave_room_document(sid, other)
+        except Exception:
+            logger.exception("Leaving room %s failed for sid %s.", other, sid)
+
+
 async def _disconnect_from_room(sid: str) -> None:
     """The real disconnect behaviour, split out so `on_participant_disconnected`
     can wrap it in one broad, logged try/except."""
@@ -541,7 +578,12 @@ async def _disconnect_from_room(sid: str) -> None:
         room_code = candidates[0] if candidates else None
     if room_code is None:
         return
+    await _leave_room_document(sid, room_code)
 
+
+async def _leave_room_document(sid: str, room_code: str) -> None:
+    """``sid`` is gone from ``room_code``: its seat is marked disconnected
+    (pausing a running game, D7) or, for the host, ``host_sid`` is cleared."""
     state_svc = get_state_service()
     room_code_out = room_code
     disconnected_payload: dict | None = None

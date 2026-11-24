@@ -36,6 +36,7 @@ from ...services.room_service import RoomService, merge_config_patch
 from ...services.state_service import get_state_service, next_free_alias
 from ..errors import guarded, requested_room_code
 from ..manager import sio, socket_manager
+from .play import leave_other_rooms
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,13 @@ def _game_started_payload(room: dict, engine: GameEngine, seq: int) -> dict:
     }
 
 
+def _finished_unsaved(room: dict) -> bool:
+    """A FINISHED room whose game has not reached PostgreSQL: the caller,
+    after its emits, asks `GameService.persist_if_unsaved` to write it again
+    (a no-op while a write for it is already running or waiting to retry)."""
+    return room["state"] == RoomState.FINISHED.value and not room.get("persisted")
+
+
 # --- join_waiting ----------------------------------------------------------- #
 
 
@@ -140,6 +148,10 @@ async def join_waiting(sid: str, data: dict | None = None) -> None:
         # requires an alias. The host holds no alias and must never appear
         # in either sid-to-alias map.
         await sio.enter_room(sid, room_code)
+        # The room this sid's disconnect is charged to. A tab that was seated
+        # in another room keeps no alias from it: the host holds none.
+        socket_manager.sid_to_room[sid] = room_code
+        socket_manager.sid_to_alias.pop(sid, None)
 
         host_secret_value = room["host_secret"]
         lobby_event = _room_service.lobby_payload(room, state_svc.next_seq(room))
@@ -153,6 +165,7 @@ async def join_waiting(sid: str, data: dict | None = None) -> None:
         # deliberately not replayed: it would force the client back to RUNNING
         # over a PAUSED or FINISHED `lobby_update`.
         host_state_event: dict | None = None
+        unsaved = _finished_unsaved(room)
         if (
             room["state"] in _RUNNING_STATES
             or room["state"] == RoomState.FINISHED.value
@@ -166,6 +179,7 @@ async def join_waiting(sid: str, data: dict | None = None) -> None:
 
         await state_svc.save_room(room_code, room)
 
+    await leave_other_rooms(sid, room_code)
     await socket_manager.emit_to_sid(
         sid, "host_claimed", {"room_id": room_code, "host_secret": host_secret_value}
     )
@@ -177,6 +191,8 @@ async def join_waiting(sid: str, data: dict | None = None) -> None:
         )
     if host_state_event is not None:
         await socket_manager.emit_to_sid(sid, "host_state", host_state_event)
+    if unsaved:
+        await get_game_service().persist_if_unsaved(room_code)
 
 
 # --- join --------------------------------------------------------------------- #
@@ -204,6 +220,7 @@ async def join(sid: str, data: dict | None = None) -> None:
     joined_event: dict
     reconnected_event: dict | None = None
     resync_events: list[tuple[str, dict]] = []
+    unsaved = False
 
     async with state_svc.lock(room_id):
         room = await state_svc.get_room(room_id)
@@ -243,6 +260,7 @@ async def join(sid: str, data: dict | None = None) -> None:
                 "role": participant.get("role"),
             }
 
+            unsaved = _finished_unsaved(room)
             if room["state"] in _RUNNING_STATES and participant.get("role"):
                 engine = state_svc.load_engine(room)
                 if engine is not None:
@@ -323,6 +341,7 @@ async def join(sid: str, data: dict | None = None) -> None:
 
             await state_svc.save_room(room_code, room)
 
+    await leave_other_rooms(sid, room_code)
     await socket_manager.emit_to_room(room_code, "lobby_update", lobby_event)
     await socket_manager.emit_to_sid(sid, "joined", joined_event)
     if reconnected_event is not None:
@@ -331,6 +350,8 @@ async def join(sid: str, data: dict | None = None) -> None:
         )
     for event_name, event_payload in resync_events:
         await socket_manager.emit_to_sid(sid, event_name, event_payload)
+    if unsaved:
+        await get_game_service().persist_if_unsaved(room_code)
 
 
 # --- leave ---------------------------------------------------------------------- #
