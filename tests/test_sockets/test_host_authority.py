@@ -12,6 +12,8 @@ import hmac
 
 import pytest
 
+from app.api.v1.rooms import update_config
+from app.schemas.room import ConfigUpdateRequest
 from app.sockets.handlers.lobby import config_update, join_waiting
 from tests.test_sockets.conftest import make_config, new_guest
 
@@ -415,6 +417,41 @@ async def test_config_update_with_right_secret_updates_and_emits_to_host_only(
     for sid, event, payload in fake_socket_manager.sid_emits:
         if sid != "sid-host":
             assert not _contains_key_recursive(payload, "config"), (sid, event)
+
+
+async def test_the_rest_save_sends_exactly_the_events_of_the_socket_save(
+    make_room, fake_socket_manager, connect_identity
+):
+    """`PUT /rooms/{code}/config` and `config_update` saving the same patch:
+    the same events, to the same targets, with the same payloads but `seq`."""
+    room = await make_room()
+    room_code, secret = room["room_code"], room["host_secret"]
+    await connect_identity("sid-host", new_guest())
+    await join_waiting("sid-host", {"room_id": room_code, "host_secret": secret})
+    patch = {"duration_weeks": 20}
+
+    def events():
+        sent = [
+            (who, event, {k: v for k, v in data.items() if k != "seq"})
+            for who, event, data in fake_socket_manager.emits
+        ]
+        fake_socket_manager.clear()
+        return sent
+
+    fake_socket_manager.clear()
+    await config_update(
+        "sid-host", {"room_id": room_code, "host_secret": secret, "config": patch}
+    )
+    over_socket = events()
+    await update_config(
+        room_code, ConfigUpdateRequest(config=patch), x_host_secret=secret
+    )
+
+    assert [(who, event) for who, event, _data in over_socket] == [
+        ("sid-host", "config_updated"),
+        (room_code, "lobby_update"),
+    ]
+    assert events() == over_socket
 
 
 async def test_config_update_after_start_is_rejected_and_changes_nothing(

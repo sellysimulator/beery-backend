@@ -121,7 +121,7 @@ async def test_start_game_broadcasts_the_bot_seats_it_filled(
 # --- no bot fill -------------------------------------------------------------- #
 
 
-async def test_start_game_with_three_players_no_bot_fill_is_rejected_with_matching_reason(
+async def test_start_game_three_players_no_bot_fill_rejected_with_matching_reason(
     make_room, connect_identity, fake_socket_manager, state_svc
 ):
     room = await _seat_n(
@@ -790,10 +790,10 @@ async def test_bot_fill_off_keeps_the_unfilled_roles_reason(
     )
 
 
-# --- every start_game refusal names its room -------------------------------------------------- #
-# The multi-game dashboard starts several rooms from one socket, so each refusal carries the
-# `room_code` it was for, next to `message`, to land on that game's card. Additive: `message`
-# is unchanged.
+# --- every start_game refusal names its room ------------------------------- #
+# The multi-game dashboard starts several rooms from one socket, so each refusal
+# carries the `room_code` it was for, next to `message`, to land on that game's
+# card. Additive: `message` is unchanged.
 
 
 async def test_a_refused_start_carries_the_room_code_next_to_the_message(

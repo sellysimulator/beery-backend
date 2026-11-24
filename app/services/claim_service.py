@@ -10,8 +10,9 @@ duplicating it.
 from __future__ import annotations
 
 import logging
+from typing import Any, cast
 
-from sqlalchemy import text
+from sqlalchemy import CursorResult, text
 from sqlalchemy.orm import Session
 
 from .stats_service import get_stats_service
@@ -71,9 +72,14 @@ class ClaimService:
                 photo_url=None,
             )
 
-        result = db.execute(
-            _CLAIM_PARTICIPANTS,
-            {"user_id": user.id, "guest_identity": guest_identity},
+        # `Session.execute` is typed `Result`; an UPDATE's is a `CursorResult`,
+        # which is the one that carries `rowcount`.
+        result = cast(
+            CursorResult[Any],
+            db.execute(
+                _CLAIM_PARTICIPANTS,
+                {"user_id": user.id, "guest_identity": guest_identity},
+            ),
         )
         claimed = int(result.rowcount or 0)
         db.commit()

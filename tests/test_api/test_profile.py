@@ -10,7 +10,7 @@ Reuses ``persist_full_game``, ``register_user``, ``bearer_for`` and the
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -147,7 +147,7 @@ def test_match_history_is_own_newest_first_and_clamped(
     headers = bearer_for(
         firebase_tokens, firebase_uid=firebase_uid, token="tok-history-owner"
     )
-    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    base = datetime(2026, 1, 1, tzinfo=UTC)
     games = [
         _persist_game_for_player(
             session_factory,
@@ -317,7 +317,7 @@ def test_game_detail_for_a_game_the_caller_only_hosted_is_404(
         session_factory,
         host_uid=host_uid,
         seed=210,
-        finished_at=datetime(2026, 3, 1, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 3, 1, tzinfo=UTC),
     )
 
     response = api_client.get(GAME_DETAIL_URL(game["public_id"]), headers=headers)
@@ -373,7 +373,7 @@ def test_hosted_games_is_own_newest_first_paged_and_shaped(
     host_uid = "uid-hosted-owner"
     register_user(session_factory, firebase_uid=host_uid, display_name="Prof")
     headers = bearer_for(firebase_tokens, firebase_uid=host_uid, token="tok-hosted")
-    base = datetime(2026, 4, 1, tzinfo=timezone.utc)
+    base = datetime(2026, 4, 1, tzinfo=UTC)
     games = [
         _persist_hosted_game(
             session_factory,
@@ -452,7 +452,7 @@ def test_hosted_games_issues_a_bounded_number_of_statements(
     host_uid = "uid-hosted-25"
     register_user(session_factory, firebase_uid=host_uid, display_name="Prof")
     headers = bearer_for(firebase_tokens, firebase_uid=host_uid, token="tok-h25")
-    base = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    base = datetime(2026, 5, 1, tzinfo=UTC)
     for i in range(25):
         _persist_hosted_game(
             session_factory,

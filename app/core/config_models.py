@@ -812,11 +812,12 @@ def _checked_demand(raw: Any, duration_weeks: int, limits: Limits) -> _AnyDemand
     fields = _mapping(raw)
     if fields is None:
         raise ConfigValidationError("demand", "demand must be a dict naming a kind.")
+    raw_kind: Any = fields.get("kind")
     try:
-        kind = DemandKind(fields.get("kind"))
+        kind = DemandKind(raw_kind)
     except ValueError:
         raise ConfigValidationError(
-            "demand.kind", f"Unknown demand kind {fields.get('kind')!r}."
+            "demand.kind", f"Unknown demand kind {raw_kind!r}."
         ) from None
     cap = limits.max_order_quantity
 

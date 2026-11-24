@@ -13,10 +13,10 @@ neighbour is the one it orders from (spec §6.2).
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 
-class Role(str, Enum):
+class Role(StrEnum):
     """One of the four stations in the chain."""
 
     RETAILER = "RETAILER"
@@ -25,7 +25,7 @@ class Role(str, Enum):
     FACTORY = "FACTORY"
 
     @property
-    def index(self) -> int:  # type: ignore[override]
+    def position(self) -> int:
         """Position in `ROLE_ORDER`: RETAILER 0 .. FACTORY 3."""
         return ROLE_ORDER.index(self)
 
@@ -35,7 +35,7 @@ class Role(str, Enum):
 
         The Retailer's customer is the demand series, which is not a role.
         """
-        position = self.index
+        position = self.position
         if position == 0:
             return None
         return ROLE_ORDER[position - 1]
@@ -46,7 +46,7 @@ class Role(str, Enum):
 
         The Factory's supplier is its own production line.
         """
-        position = self.index
+        position = self.position
         if position + 1 >= len(ROLE_ORDER):
             return None
         return ROLE_ORDER[position + 1]
@@ -60,7 +60,7 @@ ROLE_ORDER: tuple[Role, ...] = (
 )
 
 
-class RoleAssignmentMode(str, Enum):
+class RoleAssignmentMode(StrEnum):
     """How the four roles are handed out in the lobby."""
 
     HOST_ASSIGNS = "HOST_ASSIGNS"
@@ -68,7 +68,7 @@ class RoleAssignmentMode(str, Enum):
     RANDOM = "RANDOM"
 
 
-class DemandKind(str, Enum):
+class DemandKind(StrEnum):
     """The end-customer demand generator the host picked."""
 
     CONSTANT = "CONSTANT"
@@ -79,7 +79,7 @@ class DemandKind(str, Enum):
     CUSTOM = "CUSTOM"
 
 
-class Distribution(str, Enum):
+class Distribution(StrEnum):
     """The draw used by `STOCHASTIC` demand."""
 
     NORMAL = "NORMAL"
@@ -87,13 +87,11 @@ class Distribution(str, Enum):
     UNIFORM = "UNIFORM"
 
 
-class RoomState(str, Enum):
+class RoomState(StrEnum):
     """Lifecycle of a room."""
 
     LOBBY = "LOBBY"
     CONFIGURING = "CONFIGURING"
-    READY = "READY"
     RUNNING = "RUNNING"
     PAUSED = "PAUSED"
     FINISHED = "FINISHED"
-    ABANDONED = "ABANDONED"

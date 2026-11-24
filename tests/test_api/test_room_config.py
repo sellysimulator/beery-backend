@@ -9,9 +9,12 @@ Driven entirely through the public REST surface and the shared
 
 from __future__ import annotations
 
+import contextlib
+import json
+
 import pytest
 
-from .conftest import config_url, create_room, status_url
+from .conftest import config_url, create_room, iter_pairs, status_url
 
 
 def _headers(secret: str) -> dict[str, str]:
@@ -335,7 +338,7 @@ def test_deep_merge_does_not_clobber_untouched_role_fields(client, fake_redis):
     assert roles["FACTORY"] == before["roles"]["FACTORY"]
 
 
-# --- Sanity: PUT does not emit anything and moves LOBBY -> CONFIGURING ----
+# --- PUT moves LOBBY -> CONFIGURING and tells the room ---------------------
 
 
 def test_put_config_advances_lobby_to_configuring_and_status_reflects_it(
@@ -351,3 +354,103 @@ def test_put_config_advances_lobby_to_configuring_and_status_reflects_it(
 
     status = client.get(status_url(room_code)).json()
     assert status["state"] == "CONFIGURING"
+
+
+def _set_host_sid(fake_redis, room_code: str, sid: str) -> None:
+    key = f"room:{room_code}"
+    room = json.loads(fake_redis._store[key])
+    room["host_sid"] = sid
+    fake_redis._store[key] = json.dumps(room)
+
+
+def test_put_config_tells_the_claimed_host_tab_and_the_room(
+    client, fake_redis, fake_socket_manager
+):
+    """The socket save's events: the config to the host alone, the lobby to
+    everyone, each with a `seq` the stored room has already used."""
+    room_code, secret = create_room(client)
+    _set_host_sid(fake_redis, room_code, "sid-host")
+
+    stored = client.put(
+        config_url(room_code),
+        json={"config": {"duration_weeks": 12}},
+        headers=_headers(secret),
+    ).json()["config"]
+
+    config_emit, lobby_emit = fake_socket_manager.emits
+    assert config_emit[:2] == ("sid-host", "config_updated")
+    assert set(config_emit[2]) == {"seq", "config"}
+    assert config_emit[2]["config"] == stored
+    assert lobby_emit[:2] == (room_code, "lobby_update")
+    assert lobby_emit[2]["state"] == "CONFIGURING"
+    assert lobby_emit[2]["seq"] == config_emit[2]["seq"] + 1
+    assert json.loads(fake_redis._store[f"room:{room_code}"])["seq"] == (
+        lobby_emit[2]["seq"]
+    )
+    keys = {key for key, _value in iter_pairs(lobby_emit[2])}
+    assert not keys & {"config", "host_secret", "host_identity", "host_sid"}
+    assert secret not in json.dumps(fake_socket_manager.emits)
+
+
+def test_put_config_with_no_claimed_host_sends_the_config_to_nobody(
+    client, fake_redis, fake_socket_manager
+):
+    room_code, secret = create_room(client)
+
+    client.put(
+        config_url(room_code),
+        json={"config": {"duration_weeks": 12}},
+        headers=_headers(secret),
+    )
+
+    assert [(who, event) for who, event, _data in fake_socket_manager.emits] == [
+        (room_code, "lobby_update")
+    ]
+
+
+def test_put_config_emits_after_the_lock_is_released(
+    client, fake_redis, fake_socket_manager, monkeypatch
+):
+    from app.services.state_service import get_state_service
+
+    room_code, secret = create_room(client)
+    state_svc = get_state_service()
+    held: list[bool] = []
+    real_lock = state_svc.lock
+    inside = False
+
+    @contextlib.asynccontextmanager
+    async def spy_lock(code):
+        nonlocal inside
+        async with real_lock(code):
+            inside = True
+            try:
+                yield
+            finally:
+                inside = False
+
+    async def emit_to_room(room_id, event, data):
+        held.append(inside)
+
+    monkeypatch.setattr(state_svc, "lock", spy_lock)
+    monkeypatch.setattr(fake_socket_manager, "emit_to_room", emit_to_room)
+
+    client.put(
+        config_url(room_code),
+        json={"config": {"duration_weeks": 12}},
+        headers=_headers(secret),
+    )
+
+    assert held == [False]
+
+
+def test_a_refused_put_emits_nothing(client, fake_redis, fake_socket_manager):
+    room_code, secret = create_room(client)
+
+    for body, headers in (
+        ({"config": {"duration_weeks": 500}}, _headers(secret)),
+        ({"config": {"duration_weeks": 12}}, _headers(secret + "x")),
+    ):
+        assert client.put(config_url(room_code), json=body, headers=headers).is_error
+
+    assert fake_socket_manager.emits == []

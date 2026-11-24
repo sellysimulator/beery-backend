@@ -1033,7 +1033,7 @@ def test_customer_demand_series_absent_when_not_shared(role: Role) -> None:
 def test_no_order_quantity_leaks_under_any_visibility(
     combination: tuple[bool, ...],
 ) -> None:
-    flags = dict(zip(VISIBILITY_FLAGS, combination))
+    flags = dict(zip(VISIBILITY_FLAGS, combination, strict=True))
     config = make_config(
         demand=get_preset("CLASSIC_MIT").demand,
         duration_weeks=36,

@@ -278,14 +278,13 @@ def test_docker_image_builds_and_runs():
 @pytest.mark.parametrize(
     "tool,args",
     [
-        ("black", ["--check", "app"]),
-        ("ruff", ["check", "app"]),
-        ("mypy", ["app/core"]),
+        ("black", ["--check", "app", "tests", "alembic"]),
+        ("ruff", ["check", "app", "tests", "alembic"]),
+        ("mypy", ["app"]),
     ],
 )
 def test_lint_and_type_gates_are_clean(tool, args):
-    """``black --check app``, ``ruff check app`` and ``mypy app/core`` are
-    clean."""
+    """The lint and type gates, exactly as CI runs them, are clean."""
     pytest.importorskip(tool)
     proc = subprocess.run(
         [sys.executable, "-m", tool, *args],

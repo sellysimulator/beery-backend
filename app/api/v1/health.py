@@ -56,7 +56,7 @@ async def _database_reachable() -> bool:
         await asyncio.wait_for(
             anyio.to_thread.run_sync(_ping_database), timeout=_CHECK_TIMEOUT_SECONDS
         )
-    except Exception as exc:  # noqa: BLE001 — any failure means "not reachable"
+    except Exception as exc:  # any failure means "not reachable"
         logger.warning("Deep health: database unreachable (%s).", type(exc).__name__)
         return False
     return True
@@ -83,14 +83,14 @@ async def _redis_reachable() -> bool:
             socket_timeout=_CHECK_TIMEOUT_SECONDS,
         )
         await asyncio.wait_for(client.ping(), timeout=_CHECK_TIMEOUT_SECONDS)
-    except Exception as exc:  # noqa: BLE001 — any failure means "not reachable"
+    except Exception as exc:  # any failure means "not reachable"
         logger.warning("Deep health: Redis unreachable (%s).", type(exc).__name__)
         return False
     finally:
         if client is not None:
             try:
                 await client.aclose()
-            except Exception:  # noqa: BLE001 — a probe must not fail on cleanup
+            except Exception:  # a probe must not fail on cleanup
                 logger.warning("Deep health: closing the Redis probe failed.")
     return True
 

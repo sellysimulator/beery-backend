@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from .agents import FactoryAgent, RoleAgent, agent_for
@@ -42,7 +42,7 @@ __all__ = [
 ]
 
 
-class GamePhase(str, Enum):
+class GamePhase(StrEnum):
     """Where a game is in its lifecycle.
 
     A *constructed* engine is never `AWAITING_START`: `start()` returns one in
@@ -130,7 +130,7 @@ class OrderOutOfRangeError(ValueError):
         self.high = high
 
 
-def _require_role(value: object) -> Role:
+def _require_role(value: Any) -> Role:
     """Coerce `value` to a `Role`, raising `ValueError` if it is not one."""
     if isinstance(value, Role):
         return value
@@ -757,7 +757,7 @@ class GameEngine:
         if visibility.show_leaderboard_during_game:
             ranked = sorted(
                 ROLE_ORDER,
-                key=lambda other: (self.agents[other].accumulated_cost, other.index),
+                key=lambda other: (self.agents[other].accumulated_cost, other.position),
             )
             view["leaderboard"] = [
                 {

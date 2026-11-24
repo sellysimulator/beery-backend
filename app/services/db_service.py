@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -143,8 +143,8 @@ def _parse_timestamp(value: Any) -> datetime:
     else:
         raise ValueError("Room document is missing a required timestamp.")
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc).replace(microsecond=0)
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).replace(microsecond=0)
 
 
 def build_snapshot(room: dict, config: GameConfig, engine: GameEngine) -> GameSnapshot:
@@ -440,6 +440,7 @@ class DbService:
         self, db: Session, game_id: int, config: GameConfig
     ) -> None:
         rows = []
+        factory = config.factory_config()
         for role in ROLE_ORDER:
             role_config = config.role_config(role)
             is_factory = role is Role.FACTORY
@@ -467,10 +468,10 @@ class DbService:
                     "unit_purchase_cost": _money(role_config.unit_purchase_cost),
                     "starting_capital": _money(role_config.starting_capital),
                     "production_delay_weeks": (
-                        role_config.production_delay_weeks if is_factory else None
+                        factory.production_delay_weeks if is_factory else None
                     ),
                     "production_capacity_per_week": (
-                        role_config.production_capacity_per_week if is_factory else None
+                        factory.production_capacity_per_week if is_factory else None
                     ),
                 }
             )

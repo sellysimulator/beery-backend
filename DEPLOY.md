@@ -48,7 +48,7 @@ production, never at the Hosting origin.
 
 ```
 DEBUG=false
-CORS_ORIGINS=["https://beersim.web.app","http://localhost:5173"]
+CORS_ORIGINS=["https://beersim.web.app","https://beersim.firebaseapp.com"]
 DB_HOST= DB_PORT= DB_USER= DB_PASSWORD= DB_DATABASE=
 DB_REQUIRE_SSL=true
 DB_SSL_CA=
@@ -57,7 +57,8 @@ REDIS_URL=
 FIREBASE_SERVICE_ACCOUNT_JSON=
 ```
 
-- `CORS_ORIGINS` is **never** `["*"]` -- the app sets `allow_credentials=True`
+- `CORS_ORIGINS` in production is the two Hosting origins only, no
+  `localhost`, and is **never** `["*"]` -- the app sets `allow_credentials=True`
   and rejects the combination at startup (`Settings` raises).
 - `FIREBASE_SERVICE_ACCOUNT_JSON` is the whole service account JSON **on one
   line**, in single quotes or unquoted. With double quotes, python-dotenv
@@ -257,7 +258,7 @@ Run this before a class, every time.
 
 `.github/workflows/ci.yml` runs, on push to `main` and on pull requests:
 
-1. `ruff check app tests`, `black --check app tests`, `mypy app/core`.
+1. `ruff check app tests alembic`, `black --check app tests alembic`, `mypy app`.
 2. `pytest -m "not dbschema" --cov=app --cov-fail-under=80`, plus a
    `coverage report` scoped to `app/core` enforcing `--fail-under=95`.
 3. A separate schema job: `pytest -m dbschema` against an ephemeral

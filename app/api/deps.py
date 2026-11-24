@@ -8,7 +8,7 @@ path: two of them drift, and the one that drifts is the one that fails open.
 import logging
 
 from fastapi import Header, HTTPException, status
-from firebase_admin import auth as firebase_auth
+from firebase_admin import auth as firebase_auth  # type: ignore[import-untyped]
 
 from ..core.firebase import init_firebase
 
@@ -49,7 +49,7 @@ def verify_firebase_id_token(token: str) -> dict | None:
 
     try:
         claims = firebase_auth.verify_id_token(token, app=app)
-    except Exception:  # noqa: BLE001 — any failure whatsoever means reject
+    except Exception:  # any failure whatsoever means reject
         return None
     return claims
 

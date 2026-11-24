@@ -1,12 +1,17 @@
+# Keep secrets, local environments and build/test debris out of the image.
 .env
-tests/
+.env.*
+!.env.example
 venv/
+.venv/
 .git/
+.github/
 __pycache__/
 **/__pycache__/
-*.pyc
+*.py[cod]
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
 htmlcov/
+tests/

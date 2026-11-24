@@ -134,7 +134,7 @@ class RoomSummary(BaseModel):
     `exists` is false, and every other field null, both for a room that is not
     there and for a wrong `host_secret`: the answer is no oracle for which
     codes are live. `week` is the engine's open week and is null until the
-    game starts; `finished` is true once the room is FINISHED or ABANDONED.
+    game starts; `finished` is true once the room is FINISHED.
     `can_start` and `start_blocked_reason` are `RoomService.can_start`'s
     answer, the rule `start_game` itself applies.
     """

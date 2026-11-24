@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import csv
 import io
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -134,7 +134,7 @@ def _persist_export_game(
                 is_bot=True,
             ),
         }
-    finished_at = datetime(2026, 5, 17, 10, 0, tzinfo=timezone.utc)
+    finished_at = datetime(2026, 5, 17, 10, 0, tzinfo=UTC)
     game = persist_full_game(
         session_factory,
         duration_weeks=duration_weeks,
@@ -142,7 +142,7 @@ def _persist_export_game(
         host_identity=host_uid,
         host_uid=host_uid,
         participants=participants,
-        started_at=datetime(2026, 5, 17, 8, 0, tzinfo=timezone.utc),
+        started_at=datetime(2026, 5, 17, 8, 0, tzinfo=UTC),
         finished_at=finished_at,
     )
     game["headers"] = headers
@@ -289,12 +289,12 @@ def _persist_manual_game_with_substitution(
         for index, role in enumerate(ROLE_ORDER)
     ]
 
-    finished_at = datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc)
+    finished_at = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
     snapshot = GameSnapshot(
         room_code=unique_room_code(),
         host_uid=host_uid,
         seed=seed,
-        started_at=datetime(2026, 6, 1, 8, 0, tzinfo=timezone.utc),
+        started_at=datetime(2026, 6, 1, 8, 0, tzinfo=UTC),
         finished_at=finished_at,
         weeks_played=duration_weeks,
         ended_early=False,
@@ -467,8 +467,8 @@ def test_a_claim_changes_nothing_about_who_may_export(
         session_factory,
         seed=37,
         host_identity=guest,
-        started_at=datetime(2026, 5, 18, 8, 0, tzinfo=timezone.utc),
-        finished_at=datetime(2026, 5, 18, 10, 0, tzinfo=timezone.utc),
+        started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC),
+        finished_at=datetime(2026, 5, 18, 10, 0, tzinfo=UTC),
     )
     headers = bearer_for(
         firebase_tokens, firebase_uid="uid-former-guest-host", token="tok-claim-37"

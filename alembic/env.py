@@ -15,13 +15,12 @@ from alembic import context
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.config import settings
-from app.db.base import Base
-
 # Populates `Base.metadata`: importing the package imports every model module.
 # Without this the metadata is empty here and autogenerate would propose
 # dropping every table that exists.
-import app.models  # noqa: E402,F401
+import app.models  # noqa: F401
+from app.config import settings
+from app.db.base import Base
 
 config = context.config
 

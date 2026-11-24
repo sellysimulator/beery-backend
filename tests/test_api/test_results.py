@@ -28,7 +28,7 @@ defined or re-imported here.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -206,8 +206,8 @@ def test_timestamps_are_utc_with_a_z_suffix(api_client, session_factory, fake_re
         session_factory,
         duration_weeks=8,
         seed=9,
-        started_at=datetime(2026, 1, 1, 8, 0, 0, 750_000, tzinfo=timezone.utc),
-        finished_at=datetime(2026, 1, 1, 10, 30, tzinfo=timezone.utc),
+        started_at=datetime(2026, 1, 1, 8, 0, 0, 750_000, tzinfo=UTC),
+        finished_at=datetime(2026, 1, 1, 10, 30, tzinfo=UTC),
     )
 
     payload = api_client.get(RESULTS_BY_ID_URL(game["public_id"])).json()
@@ -466,16 +466,16 @@ def test_public_id_keeps_resolving_the_older_game_after_its_code_is_reused(
         room_code=room_code,
         duration_weeks=8,
         seed=22,
-        started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        finished_at=datetime(2026, 1, 1, 2, tzinfo=timezone.utc),
+        started_at=datetime(2026, 1, 1, tzinfo=UTC),
+        finished_at=datetime(2026, 1, 1, 2, tzinfo=UTC),
     )["public_id"]
     newer_id = persist_full_game(
         session_factory,
         room_code=room_code,
         duration_weeks=10,
         seed=23,
-        started_at=datetime(2026, 3, 1, tzinfo=timezone.utc),
-        finished_at=datetime(2026, 3, 1, 2, tzinfo=timezone.utc),
+        started_at=datetime(2026, 3, 1, tzinfo=UTC),
+        finished_at=datetime(2026, 3, 1, 2, tzinfo=UTC),
     )["public_id"]
 
     newer = api_client.get(RESULTS_BY_ID_URL(newer_id)).json()

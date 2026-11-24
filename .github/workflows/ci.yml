@@ -16,11 +16,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt -r requirements-dev.txt
       - name: Lint (ruff)
-        run: ruff check app tests
+        run: ruff check app tests alembic
       - name: Format check (black)
-        run: black --check app tests
-      - name: Type check (mypy on app/core)
-        run: mypy app/core
+        run: black --check app tests alembic
+      - name: Type check (mypy)
+        run: mypy app
       - name: Tests with coverage (overall floor 80%)
         run: pytest -m "not dbschema" --cov=app --cov-report=term-missing --cov-fail-under=80
       - name: Enforce app/core coverage floor (95%)

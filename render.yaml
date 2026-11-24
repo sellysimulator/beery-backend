@@ -29,6 +29,10 @@ services:
     dockerfilePath: ./Dockerfile
     dockerContext: .
     plan: free
+    region: virginia
+    # Live room state is in process memory and Alembic runs at container
+    # startup, where it must not race itself.
+    numInstances: 1
     healthCheckPath: /api/v1/health
     # Render deploys a push to the linked branch only once every GitHub check
     # on that commit has passed -- this IS the CI gate. There is deliberately no
@@ -43,7 +47,7 @@ services:
       # Never ["*"]: this app sets allow_credentials=True, and Settings refuses
       # the combination at load.
       - key: CORS_ORIGINS
-        value: '["https://beersim.web.app","http://localhost:5173"]'
+        value: '["https://beersim.web.app","https://beersim.firebaseapp.com"]'
       - key: DB_HOST
         sync: false
       - key: DB_PORT

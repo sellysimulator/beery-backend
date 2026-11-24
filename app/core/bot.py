@@ -72,10 +72,12 @@ class BotAgent:
     """Sterman's anchor-and-adjust heuristic, bound to one role.
 
     ```
-    expected_demand_t = theta * observed_demand_(t-1) + (1 - theta) * expected_demand_(t-1)
+    expected_demand_t = theta * observed_demand_(t-1)
+                        + (1 - theta) * expected_demand_(t-1)
 
     order_t = max(0, expected_demand_t
-                     + alpha * (target_stock - inventory_t + backlog_t - beta * supply_line_t))
+                     + alpha * (target_stock - inventory_t + backlog_t
+                                - beta * supply_line_t))
     ```
 
     `beta` is the whole point: how much of its supply line the bot

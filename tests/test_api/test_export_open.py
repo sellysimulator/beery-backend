@@ -25,7 +25,7 @@ import io
 import json
 import sqlite3
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -195,8 +195,8 @@ def _persist(db_factory) -> dict[str, Any]:
         host_uid=HOST_UID,
         host_display_name=HOST_NAME,
         participants=participants,
-        started_at=datetime(2026, 11, 1, 9, 0, tzinfo=timezone.utc),
-        finished_at=datetime(2026, 11, 1, 10, 0, tzinfo=timezone.utc),
+        started_at=datetime(2026, 11, 1, 9, 0, tzinfo=UTC),
+        finished_at=datetime(2026, 11, 1, 10, 0, tzinfo=UTC),
     )
     room["host_secret"] = HOST_SECRET
     snapshot = build_snapshot(room, config, engine)

@@ -50,9 +50,10 @@ def seat_alias(role: Role | str) -> str:
 #
 # Two names to read with care:
 # - `incoming_orders_in_flight_after` (the `weeks` column's
-#   `orders_in_flight_after`, renamed at this boundary only): orders the downstream customer placed that are
-#   still travelling TO this role. Not the player's on-screen "orders in
-#   flight", which are the player's own orders going upstream.
+#   `orders_in_flight_after`, renamed at this boundary only): orders the
+#   downstream customer placed that are still travelling TO this role. Not the
+#   player's on-screen "orders in flight", which are the player's own orders
+#   going upstream.
 # - `total_week_cost` (not `week_cost`): holding + backlog + fixed order +
 #   purchase cost for the week. The screens show "Holding & backlog" and
 #   "Order cost" separately and never a single "week cost".

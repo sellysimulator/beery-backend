@@ -11,7 +11,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-import socketio
+import socketio  # type: ignore[import-untyped]
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel

@@ -22,7 +22,7 @@ import dataclasses
 import inspect
 import logging
 import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -482,10 +482,10 @@ def test_same_room_and_second_is_one_game_whatever_the_microseconds(
     the fraction are still one game."""
     room_code = unique_room_code()
     first = _snapshot_started_at(
-        room_code, datetime(2026, 1, 1, 8, 0, 0, 100_000, tzinfo=timezone.utc), 41
+        room_code, datetime(2026, 1, 1, 8, 0, 0, 100_000, tzinfo=UTC), 41
     )
     second = _snapshot_started_at(
-        room_code, datetime(2026, 1, 1, 8, 0, 0, 900_000, tzinfo=timezone.utc), 41
+        room_code, datetime(2026, 1, 1, 8, 0, 0, 900_000, tzinfo=UTC), 41
     )
 
     game_id_1 = DbService().persist_game(session_factory(), first)
@@ -496,8 +496,8 @@ def test_same_room_and_second_is_one_game_whatever_the_microseconds(
     assert verify_db.query(Game).filter_by(room_code=room_code).count() == 1
     stored = verify_db.get(Game, game_id_1)
     assert stored is not None
-    assert stored.started_at == datetime(2026, 1, 1, 8, 0, 0, tzinfo=timezone.utc)
-    assert stored.started_at.utcoffset() == timezone.utc.utcoffset(None)
+    assert stored.started_at == datetime(2026, 1, 1, 8, 0, 0, tzinfo=UTC)
+    assert stored.started_at.utcoffset() == UTC.utcoffset(None)
 
 
 def test_same_room_in_a_different_second_is_a_second_game(session_factory):
@@ -505,10 +505,10 @@ def test_same_room_in_a_different_second_is_a_second_game(session_factory):
     second: two rows, two ids."""
     room_code = unique_room_code()
     first = _snapshot_started_at(
-        room_code, datetime(2026, 1, 1, 8, 0, 0, tzinfo=timezone.utc), 43
+        room_code, datetime(2026, 1, 1, 8, 0, 0, tzinfo=UTC), 43
     )
     second = _snapshot_started_at(
-        room_code, datetime(2026, 1, 1, 8, 0, 1, tzinfo=timezone.utc), 43
+        room_code, datetime(2026, 1, 1, 8, 0, 1, tzinfo=UTC), 43
     )
 
     game_id_1 = DbService().persist_game(session_factory(), first)
@@ -573,7 +573,7 @@ def test_concurrent_persist_calls_write_one_game_row(session_factory):
     def _worker() -> None:
         try:
             results.append(DbService().persist_game(session_factory(), snapshot))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             errors.append(exc)
 
     threads = [threading.Thread(target=_worker) for _ in range(5)]
@@ -663,7 +663,7 @@ def test_batched_participants_and_role_configs_get_server_side_timestamps(db):
     """
     config = make_config(duration_weeks=8)
     engine = run_full_game(config, seed=47)
-    ancient = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    ancient = datetime(2000, 1, 1, tzinfo=UTC)
     room = make_room_document(
         config,
         engine,
@@ -676,7 +676,7 @@ def test_batched_participants_and_role_configs_get_server_side_timestamps(db):
     snapshot = build_snapshot(room, config, engine)
     game_id = DbService().persist_game(db, snapshot)
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     role_config_rows = db.query(RoleConfigRow).filter_by(game_id=game_id).all()
     participant_rows = db.query(Participant).filter_by(game_id=game_id).all()
     assert role_config_rows and participant_rows
@@ -684,7 +684,7 @@ def test_batched_participants_and_role_configs_get_server_side_timestamps(db):
         assert row.created_at is not None
         assert row.updated_at is not None
         assert (
-            now - row.created_at.astimezone(timezone.utc)
+            now - row.created_at.astimezone(UTC)
         ).total_seconds() < 300, (
             "created_at looks sourced from the room document, not the DB clock"
         )
@@ -777,8 +777,8 @@ def test_money_rounds_half_up_to_two_decimals_at_the_boundary(db):
         room_code=unique_room_code(),
         host_uid=None,
         seed=1,
-        started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        finished_at=datetime(2026, 1, 1, 1, tzinfo=timezone.utc),
+        started_at=datetime(2026, 1, 1, tzinfo=UTC),
+        finished_at=datetime(2026, 1, 1, 1, tzinfo=UTC),
         weeks_played=1,
         ended_early=True,
         config=config,
@@ -813,8 +813,8 @@ async def test_persistence_runs_with_the_room_lock_released(
     """`persist_finished_game` must never call `state_svc.lock` at all --
     the same spy-on-`lock` technique the socket suite uses for
     `finish_game` (``tests/test_sockets/test_week_broadcast.py::
-    test_finish_game_saves_under_the_room_lock_and_persists_outside_it``), applied directly to
-    the persistence function. Counting real lock
+    test_finish_game_saves_under_the_room_lock_and_persists_outside_it``), applied
+    directly to the persistence function. Counting real lock
     acquisitions proves the claim regardless of timing, unlike racing a
     concurrent operation against an in-memory fake."""
     state_svc = get_state_service()
