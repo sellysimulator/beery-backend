@@ -62,6 +62,7 @@ EXPECTED_TOP_LEVEL_KEYS = {
     "seq",
     "paused_reason",
     "persisted",
+    "public_id",
 }
 
 

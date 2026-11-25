@@ -221,15 +221,16 @@ The handoff-hardening release deploys **backend first**, then the frontend in th
   `seq` inside it; emit and call any other `GameService` method only after it is released.
   `submit`, `run_bot_decisions`, `close_week_if_ready` and `broadcast_state` each take their
   own lock. `finish_game` takes two short ones around a lock-free persistence call: one to
-  re-read, mint `game_finished`'s `seq` and save, one to re-read, set `persisted`, mint
-  `game_persisted`'s `seq` and save — never saving the caller's copy, so a mutation made
+  re-read, mint `game_finished`'s `seq` and save, one to re-read, set `persisted` and
+  `public_id`, mint `game_persisted`'s `seq` and save — never saving the caller's copy, so a mutation made
   while the database write runs survives. A failed write is retried in the background
   (`PERSIST_RETRY_DELAYS_SECONDS` = 2, 10, 30 s; no lock held while writing or sleeping),
   and a `join_waiting`, `join` or `request_state` in a FINISHED room still `persisted:
   false` with no write in flight (`_persisting`: from before the first attempt until the
   last one ends, left BEFORE `game_persisted` or the give-up log, so a rejoin during either
   can start anew) starts it again
-  (`GameService.persist_if_unsaved`); the write is idempotent on (`room_code`,
+  (`GameService.persist_if_unsaved`); a stored room's `join_waiting` and `join` re-send
+  `game_persisted` from `room["public_id"]`; the write is idempotent on (`room_code`,
   `started_at`). Its callers (`_drive`, `close_week_if_ready`,
   `end_game_early`) call it only after their own lock block. The all-bot cascade is a loop of short acquisitions
   (`GameService._drive`), not recursion, and a double close is prevented by re-reading the

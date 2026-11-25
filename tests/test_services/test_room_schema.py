@@ -56,6 +56,7 @@ EXPECTED_TOP_LEVEL_KEYS = {
     "seq",
     "paused_reason",
     "persisted",
+    "public_id",
 }
 
 
@@ -92,7 +93,7 @@ def _role_to_alias_value(role_to_alias: dict, role: Role):
 
 
 def test_module_constants_match_00_decisions_section_5():
-    assert SCHEMA_VERSION == 2
+    assert SCHEMA_VERSION == 3
     assert ROOM_CODE_LENGTH == 6
     assert ROOM_TTL_SECONDS == 86_400
     assert LOCK_TIMEOUT_SECONDS == 10
@@ -125,6 +126,7 @@ def test_new_room_document_fresh_lobby_defaults():
     assert room["seq"] == 0
     assert room["engine"] is None
     assert room["persisted"] is False
+    assert room["public_id"] is None
     for role in (Role.RETAILER, Role.WHOLESALER, Role.DISTRIBUTOR, Role.FACTORY):
         assert _role_to_alias_value(room["role_to_alias"], role) is None
 

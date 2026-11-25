@@ -146,6 +146,7 @@ never given a fresh guest identity; a malformed guest id still gets a fresh one.
   A failed end-of-game write is retried in the background three times (after 2, 10 and
   30 s), and the host or a player rejoining, or asking for state in, a finished room whose
   game is still unsaved starts it again; `game_persisted` follows whichever write lands.
+  Once stored, a host claim or a player's `join` gets `game_persisted` again.
   Recipients and payloads are in the spec's §11.2.
 
 `your_state` carries the role's whole `own_history` only where a client may have missed a

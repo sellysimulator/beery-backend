@@ -29,8 +29,8 @@ from .state_backend import StateBackend, build_state_backend
 
 logger = logging.getLogger(__name__)
 
-# 2: the server-only `host_uid` key (spec D23).
-SCHEMA_VERSION: int = 2
+# 2: the server-only `host_uid` key (spec D23). 3: the `public_id` key.
+SCHEMA_VERSION: int = 3
 ROOM_CODE_ALPHABET: str = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no 0/O/1/I/L
 ROOM_CODE_LENGTH: int = 6
 ROOM_TTL_SECONDS: int = 86_400  # 24 hours; every save_room refreshes it
@@ -103,6 +103,9 @@ def new_room_document(
         "seq": 0,
         "paused_reason": None,
         "persisted": False,
+        # The stored game's `public_id`, or None until it is stored: a page
+        # loaded after `game_persisted` gets it again when it claims or joins.
+        "public_id": None,
     }
 
 

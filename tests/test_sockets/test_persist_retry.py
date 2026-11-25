@@ -203,6 +203,80 @@ async def test_a_player_rejoining_an_unsaved_finished_room_saves_it(
     assert len(_persisted_events(fake_socket_manager, game["room_code"])) == 1
 
 
+async def _saved_finished_game(make_room, start_running_game, monkeypatch):
+    """A FINISHED room whose game was stored, and announced to the room, under
+    ``PUBLIC_ID``."""
+    room = await make_room(role_assignment_mode="PLAYER_CHOOSES")
+    game = await start_running_game(room)
+    await _finish_with(game, FlakyDatabase(failures=0), monkeypatch)
+    return game
+
+
+async def test_a_host_opening_a_stored_finished_room_gets_its_id_again(
+    make_room,
+    start_running_game,
+    connect_identity,
+    state_svc,
+    fake_socket_manager,
+    monkeypatch,
+):
+    """``game_persisted`` was broadcast once; a host page loaded since has only
+    the claim's answer to learn the id from, and says "Saving the results…"
+    until it does."""
+    game = await _saved_finished_game(make_room, start_running_game, monkeypatch)
+    await connect_identity("host-new-tab", "guest_new_tab")
+
+    await join_waiting(
+        "host-new-tab",
+        {"room_id": game["room_code"], "host_secret": game["host_secret"]},
+    )
+
+    emits = fake_socket_manager.emits_for("host-new-tab")
+    assert [event for event, _ in emits] == [
+        "host_claimed",
+        "config_updated",
+        "host_state",
+        "game_persisted",
+    ]
+    host_state, persisted = emits[-2][1], emits[-1][1]
+    assert persisted["game_id"] == PUBLIC_ID
+    assert persisted["seq"] > host_state["seq"]
+    assert (await state_svc.get_room(game["room_code"]))["seq"] == persisted["seq"]
+
+
+async def test_a_player_rejoining_a_stored_finished_room_gets_its_id_again(
+    make_room, start_running_game, fake_socket_manager, monkeypatch
+):
+    game = await _saved_finished_game(make_room, start_running_game, monkeypatch)
+    sid = game["sids_by_role"]["RETAILER"]
+    before = len(fake_socket_manager.emits_for(sid))
+
+    await join(sid, {"room_id": game["room_code"]})
+
+    emits = fake_socket_manager.emits_for(sid)[before:]
+    assert [event for event, _ in emits] == ["joined", "your_state", "game_persisted"]
+    assert emits[-1][1]["game_id"] == PUBLIC_ID
+    assert emits[-1][1]["seq"] > emits[-2][1]["seq"]
+
+
+async def test_an_unsaved_finished_room_sends_no_id(
+    make_room, start_running_game, fake_socket_manager, monkeypatch
+):
+    game = await _unsaved_finished_game(make_room, start_running_game, monkeypatch)
+    before = len(fake_socket_manager.emits_for(game["host_sid"]))
+    monkeypatch.setattr(
+        game_service_module, "persist_finished_game", FlakyDatabase(failures=9).persist
+    )
+
+    await join_waiting(
+        game["host_sid"],
+        {"room_id": game["room_code"], "host_secret": game["host_secret"]},
+    )
+
+    events = [e for e, _ in fake_socket_manager.emits_for(game["host_sid"])[before:]]
+    assert "host_state" in events and "game_persisted" not in events
+
+
 async def test_request_state_in_an_unsaved_finished_room_saves_it(
     make_room, start_running_game, state_svc, fake_socket_manager, monkeypatch
 ):
