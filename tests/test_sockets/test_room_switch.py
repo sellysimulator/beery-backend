@@ -139,7 +139,7 @@ async def test_a_player_switching_rooms_hears_nothing_more_from_the_old_one(
     new = await make_room()
     heard = _hearers(fake_socket_manager, sid)
     # The fake records the join without entering the Socket.IO room; the
-    # real `socket_manager.join_room` enters it before `leave_other_rooms`.
+    # real `socket_manager.join_room` enters it before `exit_other_rooms`.
     await sio.enter_room(sid, new["room_code"])
 
     await join(sid, {"room_id": new["room_code"]})
@@ -176,3 +176,33 @@ async def test_a_player_who_becomes_a_host_elsewhere_is_charged_to_the_new_room(
 
     assert (await state_svc.get_room(game["room_code"]))["host_sid"] is None
     assert "host_disconnected" in fake_socket_manager.events_for(game["room_code"])
+
+
+@pytest.mark.parametrize("as_host", [False, True])
+async def test_the_socket_is_out_of_the_old_room_before_the_new_one_sends_anything(
+    make_room, connect_identity, fake_socket_manager, monkeypatch, as_host
+):
+    """Fails when the old room is left after the new room's turn: its broadcasts could
+    then reach the tab among the new room's events."""
+    old, new = await make_room(), await make_room()
+    await connect_identity("sid-tab", new_guest())
+    await sio.enter_room("sid-tab", old["room_code"])
+    still_in_old: list[bool] = []
+
+    def watching(real):
+        async def emit(target, event, data):
+            still_in_old.append(old["room_code"] in sio.rooms("sid-tab"))
+            await real(target, event, data)
+
+        return emit
+
+    for name in ("emit_to_room", "emit_to_sid"):
+        real = getattr(fake_socket_manager, name)
+        monkeypatch.setattr(fake_socket_manager, name, watching(real))
+
+    if as_host:
+        await join_waiting("sid-tab", _claim(new))
+    else:
+        await join("sid-tab", {"room_id": new["room_code"]})
+
+    assert still_in_old and not any(still_in_old)

@@ -3,17 +3,16 @@
 It works alongside `app/sockets/handlers/play.py`. This module holds the two
 rules that dominate the play loop: **the server is authoritative** and
 **redaction happens before send** (spec §8.8) -- every broadcast built here is
-assembled key by key, never by spreading a room document or a view into an
-`emit_to_room` payload.
+assembled key by key, never by spreading a room document or a view into a
+room event's payload.
 
 The locking contract is obeyed throughout: every method that reads,
-mutates and saves room state does all three inside one
-``state_svc.lock(room_code)`` acquisition, then returns to its caller, which
-emits and chains into any further ``GameService`` call only after that lock
-has been released. The bot cascade -- a submit closing a week, which plays
-the bots, which may close the next week, and so on -- is driven by the
-private ``_drive`` loop, a plain ``while``, never by two public methods
-calling each other. That is what keeps a 104-week all-bot game from
+mutates and saves room state does all three inside one ``room_turn(room_code)``,
+which sends its events once the lock is released, and chains into any further
+``GameService`` call only after that. The bot cascade -- a submit closing a
+week, which plays the bots, which may close the next week, and so on -- is
+driven by the private ``_drive`` loop, a plain ``while``, never by two public
+methods calling each other. That is what keeps a 104-week all-bot game from
 recursing.
 """
 
@@ -40,8 +39,8 @@ from ..core.game_engine import (
 from ..core.stats import GameStats, compute_stats
 from ..db import session as db_session
 from ..models.game import Game
-from ..sockets.manager import socket_manager
 from .db_service import build_snapshot, get_db_service
+from .room_turn import Emit, room_turn
 from .state_service import ROOM_TTL_SECONDS, StateService, get_state_service
 from .stats_service import get_stats_service
 
@@ -165,10 +164,14 @@ def _sid_for_alias(room: dict, alias: str | None) -> str | None:
     return None
 
 
+def _error(sid: str, message: str, code: str) -> Emit:
+    return Emit(sid, "error", {"message": message, "code": code})
+
+
 def _host_refresh_after_submission(
     room: dict, engine: GameEngine, state_svc: StateService
-) -> tuple[str, dict] | None:
-    """A fresh `host_state` for the host's submission tracker, or `None`.
+) -> list[Emit]:
+    """A fresh `host_state` for the host's submission tracker, if there is a host.
 
     The host console reads every "decided" mark from `host_state`, so without
     this one the tracker shows nobody as decided until the week closes.
@@ -180,13 +183,13 @@ def _host_refresh_after_submission(
     be the one from before the last submission and the console would end the
     game showing that player as "Still deciding". One extra `host_state` a
     week is the price of a rule with no exception in it. Called inside the
-    lock, so the `seq` is allocated with the others; the caller emits it
-    after the lock.
+    room's turn, so the `seq` is allocated with the others.
     """
     host_sid = room.get("host_sid")
     if not (isinstance(host_sid, str) and host_sid):
-        return None
-    return host_sid, {"seq": state_svc.next_seq(room), **engine.host_view()}
+        return []
+    payload = {"seq": state_svc.next_seq(room), **engine.host_view()}
+    return [Emit(host_sid, "host_state", payload)]
 
 
 def _week_record_payload(record: WeekRecord) -> dict:
@@ -313,93 +316,62 @@ class GameService:
     # --- submission ---------------------------------------------------- #
 
     async def submit(self, room_code: str, sid: str, week: Any, order: Any) -> None:
-        """`submit_order`. Acquires the lock once; every emit, and
-        the cascade into `close_week_if_ready`, happens only after it is
-        released."""
+        """`submit_order`. Acquires the lock once; the cascade into
+        `close_week_if_ready` happens only after it is released."""
         state_svc = get_state_service()
-        room_code_out = room_code
-        order_submitted_payload: dict | None = None
-        your_state_target: tuple[str, dict] | None = None
-        host_state_target: tuple[str, dict] | None = None
 
-        async with state_svc.lock(room_code):
+        async with room_turn(room_code) as emits:
             room = await state_svc.get_room(room_code)
             if room is None:
-                await socket_manager.emit_to_sid(
-                    sid, "error", {"message": _ROOM_NOT_FOUND, "code": "NOT_IN_ROOM"}
-                )
+                emits.append(_error(sid, _ROOM_NOT_FOUND, "NOT_IN_ROOM"))
                 return
             room_code_out = room["room_code"]
 
             if room["state"] == RoomState.PAUSED.value:
-                await socket_manager.emit_to_sid(
-                    sid, "error", {"message": _GAME_PAUSED_MSG, "code": "GAME_PAUSED"}
-                )
+                emits.append(_error(sid, _GAME_PAUSED_MSG, "GAME_PAUSED"))
                 return
             if room["state"] == RoomState.FINISHED.value:
-                await socket_manager.emit_to_sid(
-                    sid,
-                    "error",
-                    {"message": _GAME_FINISHED_MSG, "code": "GAME_FINISHED"},
-                )
+                emits.append(_error(sid, _GAME_FINISHED_MSG, "GAME_FINISHED"))
                 return
             if room["state"] != RoomState.RUNNING.value:
-                await socket_manager.emit_to_sid(
-                    sid,
-                    "error",
-                    {"message": _NOT_RUNNING_MSG, "code": "GAME_NOT_RUNNING"},
-                )
+                emits.append(_error(sid, _NOT_RUNNING_MSG, "GAME_NOT_RUNNING"))
                 return
 
             alias = room["sid_to_alias"].get(sid)
             participant = room["participants"].get(alias) if alias else None
             if participant is None:
-                await socket_manager.emit_to_sid(
-                    sid, "error", {"message": _NOT_IN_ROOM_MSG, "code": "NOT_IN_ROOM"}
-                )
+                emits.append(_error(sid, _NOT_IN_ROOM_MSG, "NOT_IN_ROOM"))
                 return
 
             role_raw = participant.get("role")
             if role_raw is None:
-                await socket_manager.emit_to_sid(
-                    sid, "error", {"message": _NO_ROLE_MSG, "code": "NO_ROLE"}
-                )
+                emits.append(_error(sid, _NO_ROLE_MSG, "NO_ROLE"))
                 return
             if participant.get("is_bot"):
-                await socket_manager.emit_to_sid(
-                    sid, "error", {"message": _BOT_SEATED_MSG, "code": "NO_ROLE"}
-                )
+                emits.append(_error(sid, _BOT_SEATED_MSG, "NO_ROLE"))
                 return
             role = Role(role_raw)
 
             engine = state_svc.load_engine(room)
             if engine is None or engine.phase is not GamePhase.DECISION:
-                await socket_manager.emit_to_sid(
-                    sid,
-                    "error",
-                    {"message": _NOT_RUNNING_MSG, "code": "GAME_NOT_RUNNING"},
-                )
+                emits.append(_error(sid, _NOT_RUNNING_MSG, "GAME_NOT_RUNNING"))
                 return
 
             if week != engine.week:
-                await socket_manager.emit_to_sid(
-                    sid, "error", {"message": _STALE_WEEK_MSG, "code": "STALE_WEEK"}
-                )
-                await socket_manager.emit_to_sid(
-                    sid,
-                    "your_state",
-                    {"seq": state_svc.next_seq(room), **engine.player_view(role)},
+                emits.append(_error(sid, _STALE_WEEK_MSG, "STALE_WEEK"))
+                emits.append(
+                    Emit(
+                        sid,
+                        "your_state",
+                        {"seq": state_svc.next_seq(room), **engine.player_view(role)},
+                    )
                 )
                 await state_svc.save_room(room_code_out, room)
                 return
 
             valid, coerced = _coerce_order(order)
             if not valid:
-                await socket_manager.emit_to_sid(
-                    sid,
-                    "error",
-                    {"message": _INVALID_ORDER_MSG, "code": "INVALID_ORDER"},
-                )
+                emits.append(_error(sid, _INVALID_ORDER_MSG, "INVALID_ORDER"))
                 return
             # Refused, never clamped: an order outside the game's bounds is
             # sent back with the bounds in the message (the order form reads
@@ -407,61 +379,52 @@ class GameService:
             # spends no resubmission.
             low, high = engine.order_bounds()
             if not low <= coerced <= high:
-                await socket_manager.emit_to_sid(
-                    sid,
-                    "error",
-                    {
-                        "message": str(OrderOutOfRangeError(low, high)),
-                        "code": "INVALID_ORDER",
-                    },
+                emits.append(
+                    _error(sid, str(OrderOutOfRangeError(low, high)), "INVALID_ORDER")
                 )
                 return
 
             count_key = (room_code_out, engine.week, role.value)
             count = _submission_counts.get(count_key, (0, 0.0))[0] + 1
             if count > MAX_RESUBMISSIONS_PER_ROLE_PER_WEEK:
-                await socket_manager.emit_to_sid(
-                    sid,
-                    "error",
-                    {"message": _TOO_MANY_MSG, "code": "TOO_MANY_SUBMISSIONS"},
-                )
+                emits.append(_error(sid, _TOO_MANY_MSG, "TOO_MANY_SUBMISSIONS"))
                 return
             _record_submission(count_key, count)
 
             engine.submit_order(role, coerced)
             state_svc.store_engine(room, engine)
 
-            order_submitted_payload = {
-                "seq": state_svc.next_seq(room),
-                "week": engine.week,
-                "role": role.value,
-                "display_name": participant.get("display_name"),
-                "is_bot": bool(participant.get("is_bot")),
-            }
+            emits.append(
+                Emit(
+                    room_code_out,
+                    "order_submitted",
+                    {
+                        "seq": state_svc.next_seq(room),
+                        "week": engine.week,
+                        "role": role.value,
+                        "display_name": participant.get("display_name"),
+                        "is_bot": bool(participant.get("is_bot")),
+                    },
+                    to_room=True,
+                )
+            )
             # Per-round: no history. Nothing was added to it by a submission,
             # and the client already holds every closed week's record.
-            your_state_target = (
-                sid,
-                {
-                    "seq": state_svc.next_seq(room),
-                    **engine.player_view(role, with_history=False),
-                },
+            emits.append(
+                Emit(
+                    sid,
+                    "your_state",
+                    {
+                        "seq": state_svc.next_seq(room),
+                        **engine.player_view(role, with_history=False),
+                    },
+                )
             )
-            host_state_target = _host_refresh_after_submission(room, engine, state_svc)
+            emits += _host_refresh_after_submission(room, engine, state_svc)
 
             await state_svc.save_room(room_code_out, room)
 
-        if order_submitted_payload is not None:
-            await socket_manager.emit_to_room(
-                room_code_out, "order_submitted", order_submitted_payload
-            )
-        if host_state_target is not None:
-            host_sid, host_payload = host_state_target
-            await socket_manager.emit_to_sid(host_sid, "host_state", host_payload)
-        if your_state_target is not None:
-            target_sid, payload = your_state_target
-            await socket_manager.emit_to_sid(target_sid, "your_state", payload)
-            await self.close_week_if_ready(room_code_out)
+        await self.close_week_if_ready(room_code_out)
 
     # --- bots ------------------------------------------------------------ #
 
@@ -496,14 +459,12 @@ class GameService:
     async def _play_bot_round(self, room_code: str) -> bool:
         """One lock cycle: a decision from every bot role that has not yet
         submitted for the open week. Returns whether any bot played.
-        Emits `order_submitted` for each, after the lock is released, then a
-        fresh `host_state` while the week is still waiting on a human."""
+        Sends `order_submitted` for each, then a fresh `host_state` while the
+        week is still waiting on a human."""
         state_svc = get_state_service()
-        room_code_out = room_code
-        events: list[dict] = []
-        host_state_target: tuple[str, dict] | None = None
+        changed = False
 
-        async with state_svc.lock(room_code):
+        async with room_turn(room_code) as emits:
             room = await state_svc.get_room(room_code)
             if room is None:
                 return False
@@ -517,7 +478,6 @@ class GameService:
 
             config = state_svc.load_config(room)
             bots = state_svc.load_bots(room)
-            changed = False
 
             for role in ROLE_ORDER:
                 if role in engine.pending_orders:
@@ -545,30 +505,28 @@ class GameService:
                 bots[role] = bot
                 changed = True
 
-                events.append(
-                    {
-                        "seq": state_svc.next_seq(room),
-                        "week": engine.week,
-                        "role": role.value,
-                        "display_name": participant.get("display_name"),
-                        "is_bot": True,
-                    }
+                emits.append(
+                    Emit(
+                        room_code_out,
+                        "order_submitted",
+                        {
+                            "seq": state_svc.next_seq(room),
+                            "week": engine.week,
+                            "role": role.value,
+                            "display_name": participant.get("display_name"),
+                            "is_bot": True,
+                        },
+                        to_room=True,
+                    )
                 )
 
             if changed:
                 state_svc.store_engine(room, engine)
                 state_svc.store_bots(room, bots)
-                host_state_target = _host_refresh_after_submission(
-                    room, engine, state_svc
-                )
+                emits += _host_refresh_after_submission(room, engine, state_svc)
                 await state_svc.save_room(room_code_out, room)
 
-        for payload in events:
-            await socket_manager.emit_to_room(room_code_out, "order_submitted", payload)
-        if host_state_target is not None:
-            host_sid, host_payload = host_state_target
-            await socket_manager.emit_to_sid(host_sid, "host_state", host_payload)
-        return bool(events)
+        return changed
 
     async def _drive(self, room_code: str) -> None:
         """The iterative bot cascade shared by `run_bot_decisions` and
@@ -615,16 +573,8 @@ class GameService:
         can pass it to `finish_game` (after this lock is released) as the
         snapshot it persists; `finish_game` takes its own lock for its saves."""
         state_svc = get_state_service()
-        room_code_out = room_code
-        week_closed_payload: dict | None = None
-        your_week_closed_events: list[tuple[str, dict]] = []
-        your_state_events: list[tuple[str, dict]] = []
-        host_state_event: tuple[str, dict] | None = None
-        closed = False
-        finished = False
-        saved_room: dict | None = None
 
-        async with state_svc.lock(room_code):
+        async with room_turn(room_code) as emits:
             room = await state_svc.get_room(room_code)
             if room is None:
                 return False, False, None
@@ -640,7 +590,6 @@ class GameService:
 
             closed_week = engine.week
             records = engine.close_week(force=force)
-            closed = True
             finished = engine.phase is GamePhase.FINISHED
             state_svc.store_engine(room, engine)
 
@@ -650,20 +599,28 @@ class GameService:
                 if finished
                 else [r.value for r in ROLE_ORDER if r not in engine.pending_orders]
             )
-            week_closed_payload = {
-                "seq": state_svc.next_seq(room),
-                "week": closed_week,
-                "next_week": next_week,
-                "awaiting_roles": awaiting_roles,
-            }
+            emits.append(
+                Emit(
+                    room_code_out,
+                    "week_closed",
+                    {
+                        "seq": state_svc.next_seq(room),
+                        "week": closed_week,
+                        "next_week": next_week,
+                        "awaiting_roles": awaiting_roles,
+                    },
+                    to_room=True,
+                )
+            )
 
             for record in records:
                 alias = room["role_to_alias"].get(record.role.value)
                 target_sid = _sid_for_alias(room, alias)
                 if target_sid is not None:
-                    your_week_closed_events.append(
-                        (
+                    emits.append(
+                        Emit(
                             target_sid,
+                            "your_week_closed",
                             {
                                 "seq": state_svc.next_seq(room),
                                 "week": closed_week,
@@ -684,9 +641,10 @@ class GameService:
                         continue
                     # The closed week's record went out in `your_week_closed`
                     # just above; this state leaves the history to it.
-                    your_state_events.append(
-                        (
+                    emits.append(
+                        Emit(
                             target_sid,
+                            "your_state",
                             {
                                 "seq": state_svc.next_seq(room),
                                 **engine.player_view(role, with_history=False),
@@ -695,33 +653,24 @@ class GameService:
                     )
                 host_sid = room.get("host_sid")
                 if isinstance(host_sid, str) and host_sid:
-                    host_state_event = (
-                        host_sid,
-                        {"seq": state_svc.next_seq(room), **engine.host_view()},
+                    emits.append(
+                        Emit(
+                            host_sid,
+                            "host_state",
+                            {"seq": state_svc.next_seq(room), **engine.host_view()},
+                        )
                     )
 
             await state_svc.save_room(room_code_out, room)
-            saved_room = room
             _forget_submission_counts(room_code_out, closed_week)
 
-        await socket_manager.emit_to_room(
-            room_code_out, "week_closed", week_closed_payload
-        )
-        for target_sid, payload in your_week_closed_events:
-            await socket_manager.emit_to_sid(target_sid, "your_week_closed", payload)
-        for target_sid, payload in your_state_events:
-            await socket_manager.emit_to_sid(target_sid, "your_state", payload)
-        if host_state_event is not None:
-            target_sid, payload = host_state_event
-            await socket_manager.emit_to_sid(target_sid, "host_state", payload)
-
-        return closed, finished, saved_room
+        return True, finished, room
 
     # --- resync ------------------------------------------------------------#
 
     async def broadcast_state(self, room_code: str) -> None:
         """Acquires, allocates its sequence numbers, saves, releases,
-        then emits. Refreshes every seated human's `your_state` and the
+        then sends. Refreshes every seated human's `your_state` and the
         host's `host_state` -- `resume_game`'s use after lifting a pause.
 
         It re-reads the room under the lock rather than saving a snapshot the
@@ -732,31 +681,27 @@ class GameService:
         window is small and the failure leaves no trace.
         """
         state_svc = get_state_service()
-        pending: list[tuple[str, str, dict]] = []
 
-        async with state_svc.lock(room_code):
+        async with room_turn(room_code) as emits:
             room = await state_svc.get_room(room_code)
             if room is None:
                 return
             engine = state_svc.load_engine(room)
             if engine is None:
                 return
-            pending = self.state_refresh_events(room, engine, state_svc)
+            emits += self.state_refresh_events(room, engine, state_svc)
             await state_svc.save_room(room["room_code"], room)
-
-        for target_sid, event, payload in pending:
-            await socket_manager.emit_to_sid(target_sid, event, payload)
 
     def state_refresh_events(
         self, room: dict, engine: GameEngine, state_svc: StateService
-    ) -> list[tuple[str, str, dict]]:
+    ) -> list[Emit]:
         """Allocate one `seq` per recipient and build their refresh payload:
         `your_state` for every connected human seat, `host_state` for the host.
 
-        Called inside the lock; the caller saves before emitting any of them.
+        Called inside the room's turn; the caller saves before it ends.
         `broadcast_state` and `end_game_early` both use it.
         """
-        events: list[tuple[str, str, dict]] = []
+        events: list[Emit] = []
         for role in ROLE_ORDER:
             alias = room["role_to_alias"].get(role.value)
             participant = room["participants"].get(alias) if alias else None
@@ -766,7 +711,7 @@ class GameService:
             if target_sid is None:
                 continue
             events.append(
-                (
+                Emit(
                     target_sid,
                     "your_state",
                     {"seq": state_svc.next_seq(room), **engine.player_view(role)},
@@ -776,7 +721,7 @@ class GameService:
         host_sid = room.get("host_sid")
         if isinstance(host_sid, str) and host_sid:
             events.append(
-                (
+                Emit(
                     host_sid,
                     "host_state",
                     {"seq": state_svc.next_seq(room), **engine.host_view()},
@@ -793,11 +738,10 @@ class GameService:
         reentrant): `room` is the document it saved under that lock, and is
         used here only as the read-only snapshot handed to persistence.
 
-        1. Under the lock: re-read the room, mint `game_finished`'s `seq`
-           and save. Emit after release.
+        1. A turn: re-read the room, mint `game_finished`'s `seq` and save.
         2. No lock: persist (a database write that may be slow or fail).
-        3. Under the lock: re-read the room again, set `persisted`, mint
-           `game_persisted`'s `seq` and save. Emit after release.
+        3. A turn: re-read the room again, set `persisted`, mint
+           `game_persisted`'s `seq` and save.
 
         Each save is of the document just read under the lock, never of the
         caller's copy, so a mutation made while persistence runs (a
@@ -822,7 +766,10 @@ class GameService:
         for record in engine.history:
             orders_by_role[record.role.value].append(record.order)
 
-        async with state_svc.lock(room_code_out):
+        # The debrief goes out BEFORE persistence, not after (spec §10.2).
+        # Persistence is a database round trip that may be slow and may fail;
+        # the results screen must not wait on it and must not be lost with it.
+        async with room_turn(room_code_out) as emits:
             current = await state_svc.get_room(room_code_out)
             if current is None:
                 logger.error(
@@ -835,25 +782,25 @@ class GameService:
             current["state"] = RoomState.FINISHED.value
             if not current.get("finished_at"):
                 current["finished_at"] = datetime.now(UTC).isoformat()
-            finished_payload = {
-                "seq": state_svc.next_seq(current),
-                "weeks_played": weeks_played,
-                "stats": stats_to_payload(stats),
-                "demand_series": list(engine.demand_series),
-                "orders_by_role": orders_by_role,
-            }
+            emits.append(
+                Emit(
+                    room_code_out,
+                    "game_finished",
+                    {
+                        "seq": state_svc.next_seq(current),
+                        "weeks_played": weeks_played,
+                        "stats": stats_to_payload(stats),
+                        "demand_series": list(engine.demand_series),
+                        "orders_by_role": orders_by_role,
+                    },
+                    to_room=True,
+                )
+            )
             await state_svc.save_room(room_code_out, current)
             snapshot = current
         # No week of this game will close again, so none of its counters will
         # be dropped at a close (an ended-early game abandons its open week).
         _forget_submission_counts(room_code_out)
-
-        # The debrief goes out BEFORE persistence, not after (spec §10.2).
-        # Persistence is a database round trip that may be slow and may fail;
-        # the results screen must not wait on it and must not be lost with it.
-        await socket_manager.emit_to_room(
-            room_code_out, "game_finished", finished_payload
-        )
 
         if room_code_out in _persisting:
             return
@@ -957,8 +904,8 @@ class GameService:
         *,
         last: bool,
     ) -> bool:
-        """One write, with no lock held, then one short lock to record the
-        outcome and, on success, `game_persisted`. True when saved.
+        """One write, with no lock held, then one turn to record the outcome
+        and, on success, send `game_persisted`. True when saved.
 
         When the write succeeded or this was the `last` attempt, the room
         leaves `_persisting` BEFORE the outcome is announced, so a rejoin
@@ -976,8 +923,7 @@ class GameService:
             public_id = None
 
         persisted = isinstance(public_id, str)
-        persisted_payload: dict | None = None
-        async with state_svc.lock(room_code):
+        async with room_turn(room_code) as emits:
             current = await state_svc.get_room(room_code)
             if current is None:
                 # Expired or deleted while the write ran: nothing to flag,
@@ -990,20 +936,23 @@ class GameService:
                 current["persisted"] = persisted
                 if persisted:
                     current["public_id"] = public_id
-                    persisted_payload = {
-                        "seq": state_svc.next_seq(current),
-                        "game_id": public_id,
-                    }
+                    # Only now does the permanent results URL exist. Clients
+                    # already hold the debrief from `game_finished`; this just
+                    # lets them link to it.
+                    emits.append(
+                        Emit(
+                            room_code,
+                            "game_persisted",
+                            {
+                                "seq": state_svc.next_seq(current),
+                                "game_id": public_id,
+                            },
+                            to_room=True,
+                        )
+                    )
                 await state_svc.save_room(room_code, current)
-
-        if persisted or last:
-            _persisting.discard(room_code)
-        # Only now does the permanent results URL exist. Clients already hold
-        # the debrief from `game_finished`; this just lets them link to it.
-        if persisted_payload is not None:
-            await socket_manager.emit_to_room(
-                room_code, "game_persisted", persisted_payload
-            )
+            if persisted or last:
+                _persisting.discard(room_code)
         return persisted
 
 

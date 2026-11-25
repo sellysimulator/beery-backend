@@ -6,9 +6,9 @@ module is discovered by ``app/sockets/handlers/__init__.py`` and needs no
 edit anywhere upstream.
 
 Every read-modify-write of room state is wrapped in
-``async with state_svc.lock(room_code)``. Emits happen after the lock is
-released, from values captured while it was held, so a slow transport write
-never extends how long the room is locked.
+``async with room_turn(room_code)``, which sends the events put in its list
+once the lock is released, so a slow transport write never extends how long
+the room is locked. Nothing is sent inside the block, refusals included.
 
 ``room["sid_to_alias"]`` is authoritative; ``socket_manager.sid_to_alias`` is
 per-process bookkeeping written by ``socket_manager.join_room`` as a side
@@ -33,11 +33,12 @@ from ...core.game_engine import GameEngine
 from ...core.limits import DEFAULT_LIMITS
 from ...services.game_service import get_game_service
 from ...services.room_service import RoomService, merge_config_patch
-from ...services.state_service import get_state_service, next_free_alias
-from ..config_events import config_saved_events, emit_config_saved
+from ...services.room_turn import Emit, room_turn
+from ...services.state_service import StateService, get_state_service, next_free_alias
+from ..config_events import config_saved_emits
 from ..errors import guarded, requested_room_code
 from ..manager import sio, socket_manager
-from .play import leave_other_rooms
+from .play import exit_other_rooms, leave_rooms
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,12 @@ def _room_id_of(data: dict) -> str | None:
     return room_id if isinstance(room_id, str) and room_id else None
 
 
+def _join_error(sid: str, message: str) -> Emit:
+    return Emit(sid, "join_error", {"message": message})
+
+
 async def _reject(sid: str, message: str) -> None:
+    """A refusal with no room to take a turn on."""
     await socket_manager.emit_to_sid(sid, "join_error", {"message": message})
 
 
@@ -95,9 +101,39 @@ def _game_started_payload(room: dict, engine: GameEngine, seq: int) -> dict:
     }
 
 
+def _lobby_update(room: dict, state_svc: StateService) -> Emit:
+    return Emit(
+        room["room_code"],
+        "lobby_update",
+        _room_service.lobby_payload(room, state_svc.next_seq(room)),
+        to_room=True,
+    )
+
+
+def _roles_assigned(room: dict, state_svc: StateService) -> Emit:
+    return Emit(
+        room["room_code"],
+        "roles_assigned",
+        {
+            "seq": state_svc.next_seq(room),
+            "role_to_alias": dict(room["role_to_alias"]),
+        },
+        to_room=True,
+    )
+
+
+def _game_persisted(sid: str, room: dict, state_svc: StateService) -> Emit:
+    """``game_persisted`` again, for a page loaded since it was broadcast."""
+    return Emit(
+        sid,
+        "game_persisted",
+        {"seq": state_svc.next_seq(room), "game_id": room["public_id"]},
+    )
+
+
 def _finished_unsaved(room: dict) -> bool:
     """A FINISHED room whose game has not reached PostgreSQL: the caller,
-    after its emits, asks `GameService.persist_if_unsaved` to write it again
+    after its turn, asks `GameService.persist_if_unsaved` to write it again
     (a no-op while a write for it is already running or waiting to retry)."""
     return room["state"] == RoomState.FINISHED.value and not room.get("persisted")
 
@@ -116,16 +152,11 @@ async def join_waiting(sid: str, data: dict | None = None) -> None:
         return
 
     state_svc = get_state_service()
-    room_code: str
-    host_secret_value: str
-    lobby_event: dict
-    config_event: dict
-    host_reconnected_event: dict | None
 
-    async with state_svc.lock(room_id):
+    async with room_turn(room_id) as emits:
         room = await state_svc.get_room(room_id)
         if room is None:
-            await _reject(sid, _ROOM_NOT_FOUND)
+            emits.append(_join_error(sid, _ROOM_NOT_FOUND))
             return
         room_code = room["room_code"]
 
@@ -133,7 +164,7 @@ async def join_waiting(sid: str, data: dict | None = None) -> None:
         by_secret = _room_service.check_host_secret(room, data)
         by_identity = _room_service.check_host_identity(room, identity)
         if not (by_secret or by_identity):
-            await _reject(sid, _INVALID_HOST_SECRET)
+            emits.append(_join_error(sid, _INVALID_HOST_SECRET))
             return
 
         if by_secret and identity and not room.get("host_identity"):
@@ -152,10 +183,30 @@ async def join_waiting(sid: str, data: dict | None = None) -> None:
         socket_manager.sid_to_room[sid] = room_code
         socket_manager.sid_to_alias.pop(sid, None)
 
-        host_secret_value = room["host_secret"]
-        lobby_event = _room_service.lobby_payload(room, state_svc.next_seq(room))
-        config_event = {"seq": state_svc.next_seq(room), "config": room["config"]}
-        host_reconnected_event = {"seq": state_svc.next_seq(room)} if was_away else None
+        emits.append(
+            Emit(
+                sid,
+                "host_claimed",
+                {"room_id": room_code, "host_secret": room["host_secret"]},
+            )
+        )
+        emits.append(_lobby_update(room, state_svc))
+        emits.append(
+            Emit(
+                sid,
+                "config_updated",
+                {"seq": state_svc.next_seq(room), "config": room["config"]},
+            )
+        )
+        if was_away:
+            emits.append(
+                Emit(
+                    room_code,
+                    "host_reconnected",
+                    {"seq": state_svc.next_seq(room)},
+                    to_room=True,
+                )
+            )
 
         # A refreshed host console has an empty store and renders nothing until
         # a `host_state` arrives; without this one it waits for the next week
@@ -163,8 +214,6 @@ async def join_waiting(sid: str, data: dict | None = None) -> None:
         # its seq is higher and the client applies it. `game_started` is
         # deliberately not replayed: it would force the client back to RUNNING
         # over a PAUSED or FINISHED `lobby_update`.
-        host_state_event: dict | None = None
-        persisted_event: dict | None = None
         unsaved = _finished_unsaved(room)
         if (
             room["state"] in _RUNNING_STATES
@@ -172,40 +221,41 @@ async def join_waiting(sid: str, data: dict | None = None) -> None:
         ):
             engine = state_svc.load_engine(room)
             if engine is not None:
-                host_state_event = {
-                    "seq": state_svc.next_seq(room),
-                    **engine.host_view(),
-                }
+                emits.append(
+                    Emit(
+                        sid,
+                        "host_state",
+                        {"seq": state_svc.next_seq(room), **engine.host_view()},
+                    )
+                )
         # `game_persisted` was broadcast once; a page loaded since has no results
         # link and would say "Saving the results…" for good. Only a stored game
         # has the id.
         if room.get("public_id"):
-            persisted_event = {
-                "seq": state_svc.next_seq(room),
-                "game_id": room["public_id"],
-            }
+            emits.append(_game_persisted(sid, room, state_svc))
 
         await state_svc.save_room(room_code, room)
+        left = await exit_other_rooms(sid, room_code)
 
-    await leave_other_rooms(sid, room_code)
-    await socket_manager.emit_to_sid(
-        sid, "host_claimed", {"room_id": room_code, "host_secret": host_secret_value}
-    )
-    await socket_manager.emit_to_room(room_code, "lobby_update", lobby_event)
-    await socket_manager.emit_to_sid(sid, "config_updated", config_event)
-    if host_reconnected_event is not None:
-        await socket_manager.emit_to_room(
-            room_code, "host_reconnected", host_reconnected_event
-        )
-    if host_state_event is not None:
-        await socket_manager.emit_to_sid(sid, "host_state", host_state_event)
-    if persisted_event is not None:
-        await socket_manager.emit_to_sid(sid, "game_persisted", persisted_event)
+    await leave_rooms(sid, left)
     if unsaved:
         await get_game_service().persist_if_unsaved(room_code)
 
 
 # --- join --------------------------------------------------------------------- #
+
+
+def _joined(sid: str, alias: str, session_token: str, role: str | None) -> Emit:
+    return Emit(
+        sid,
+        "joined",
+        {
+            "alias": alias,
+            "session_token": session_token,
+            "role": role,
+            "is_host": False,
+        },
+    )
 
 
 @sio.event
@@ -225,17 +275,12 @@ async def join(sid: str, data: dict | None = None) -> None:
     display_name_raw = data.get("display_name")
 
     state_svc = get_state_service()
-    room_code: str
-    lobby_event: dict
-    joined_event: dict
-    reconnected_event: dict | None = None
-    resync_events: list[tuple[str, dict]] = []
     unsaved = False
 
-    async with state_svc.lock(room_id):
+    async with room_turn(room_id) as emits:
         room = await state_svc.get_room(room_id)
         if room is None:
-            await _reject(sid, _ROOM_NOT_FOUND)
+            emits.append(_join_error(sid, _ROOM_NOT_FOUND))
             return
         room_code = room["room_code"]
 
@@ -252,39 +297,45 @@ async def join(sid: str, data: dict | None = None) -> None:
 
             await socket_manager.join_room(sid, room_code, alias)
 
-            lobby_event = _room_service.lobby_payload(room, state_svc.next_seq(room))
-            joined_event = {
-                "alias": alias,
-                "session_token": participant["session_token"],
-                "role": participant["role"],
-                "is_host": False,
-            }
+            emits.append(_lobby_update(room, state_svc))
+            emits.append(
+                _joined(sid, alias, participant["session_token"], participant["role"])
+            )
             # This is the play loop's event (spec §9.6): without
             # it the host is never told a dropped player has come back, and
             # a pause-on-disconnect looks permanent even though resuming
             # would work.
-            reconnected_event = {
-                "seq": state_svc.next_seq(room),
-                "alias": alias,
-                "display_name": participant.get("display_name"),
-                "role": participant.get("role"),
-            }
+            emits.append(
+                Emit(
+                    room_code,
+                    "participant_reconnected",
+                    {
+                        "seq": state_svc.next_seq(room),
+                        "alias": alias,
+                        "display_name": participant.get("display_name"),
+                        "role": participant.get("role"),
+                    },
+                    to_room=True,
+                )
+            )
 
             unsaved = _finished_unsaved(room)
             if room["state"] in _RUNNING_STATES and participant.get("role"):
                 engine = state_svc.load_engine(room)
                 if engine is not None:
                     role = Role(participant["role"])
-                    resync_events.append(
-                        (
+                    emits.append(
+                        Emit(
+                            sid,
                             "game_started",
                             _game_started_payload(
                                 room, engine, state_svc.next_seq(room)
                             ),
                         )
                     )
-                    resync_events.append(
-                        (
+                    emits.append(
+                        Emit(
+                            sid,
                             "your_state",
                             {
                                 "seq": state_svc.next_seq(room),
@@ -300,8 +351,9 @@ async def join(sid: str, data: dict | None = None) -> None:
                 engine = state_svc.load_engine(room)
                 if engine is not None:
                     role = Role(participant["role"])
-                    resync_events.append(
-                        (
+                    emits.append(
+                        Emit(
+                            sid,
                             "your_state",
                             {
                                 "seq": state_svc.next_seq(room),
@@ -311,23 +363,15 @@ async def join(sid: str, data: dict | None = None) -> None:
                     )
                 # Broadcast once when the game was stored, as for the host.
                 if room.get("public_id"):
-                    resync_events.append(
-                        (
-                            "game_persisted",
-                            {
-                                "seq": state_svc.next_seq(room),
-                                "game_id": room["public_id"],
-                            },
-                        )
-                    )
+                    emits.append(_game_persisted(sid, room, state_svc))
 
             await state_svc.save_room(room_code, room)
         else:
             if room["state"] not in _PRE_START_STATES:
-                await _reject(sid, _GAME_ALREADY_STARTED_JOIN)
+                emits.append(_join_error(sid, _GAME_ALREADY_STARTED_JOIN))
                 return
             if _room_service.seats_taken(room) >= 4:
-                await _reject(sid, _ROOM_FULL)
+                emits.append(_join_error(sid, _ROOM_FULL))
                 return
 
             alias = next_free_alias(room)
@@ -349,25 +393,13 @@ async def join(sid: str, data: dict | None = None) -> None:
 
             await socket_manager.join_room(sid, room_code, alias)
 
-            lobby_event = _room_service.lobby_payload(room, state_svc.next_seq(room))
-            joined_event = {
-                "alias": alias,
-                "session_token": new_token,
-                "role": None,
-                "is_host": False,
-            }
+            emits.append(_lobby_update(room, state_svc))
+            emits.append(_joined(sid, alias, new_token, None))
 
             await state_svc.save_room(room_code, room)
+        left = await exit_other_rooms(sid, room_code)
 
-    await leave_other_rooms(sid, room_code)
-    await socket_manager.emit_to_room(room_code, "lobby_update", lobby_event)
-    await socket_manager.emit_to_sid(sid, "joined", joined_event)
-    if reconnected_event is not None:
-        await socket_manager.emit_to_room(
-            room_code, "participant_reconnected", reconnected_event
-        )
-    for event_name, event_payload in resync_events:
-        await socket_manager.emit_to_sid(sid, event_name, event_payload)
+    await leave_rooms(sid, left)
     if unsaved:
         await get_game_service().persist_if_unsaved(room_code)
 
@@ -386,20 +418,19 @@ async def leave(sid: str, data: dict | None = None) -> None:
         return
 
     state_svc = get_state_service()
-    room_code: str
-    lobby_event: dict | None = None
 
-    async with state_svc.lock(room_id):
+    async with room_turn(room_id) as emits:
         room = await state_svc.get_room(room_id)
         if room is None:
-            await _reject(sid, _ROOM_NOT_FOUND)
+            emits.append(_join_error(sid, _ROOM_NOT_FOUND))
             return
         room_code = room["room_code"]
 
         if room["state"] not in _PRE_START_STATES:
-            await _reject(sid, _CANNOT_LEAVE_STARTED)
+            emits.append(_join_error(sid, _CANNOT_LEAVE_STARTED))
             return
 
+        emits.append(Emit(sid, "leave_ack", {"room_id": room_code}))
         # The alias comes ONLY from the authoritative map -- a client may
         # never supply an alias to remove; that would let anyone kick
         # anyone.
@@ -413,16 +444,11 @@ async def leave(sid: str, data: dict | None = None) -> None:
             for stale_sid in [s for s, a in room["sid_to_alias"].items() if a == alias]:
                 room["sid_to_alias"].pop(stale_sid, None)
 
-            lobby_event = _room_service.lobby_payload(room, state_svc.next_seq(room))
+            emits.append(_lobby_update(room, state_svc))
 
         await state_svc.save_room(room_code, room)
-
-    socket_manager.sid_to_alias.pop(sid, None)
-    socket_manager.sid_to_room.pop(sid, None)
-
-    await socket_manager.emit_to_sid(sid, "leave_ack", {"room_id": room_code})
-    if lobby_event is not None:
-        await socket_manager.emit_to_room(room_code, "lobby_update", lobby_event)
+        socket_manager.sid_to_alias.pop(sid, None)
+        socket_manager.sid_to_room.pop(sid, None)
 
 
 # --- config_update ---------------------------------------------------------------- #
@@ -441,18 +467,18 @@ async def config_update(sid: str, data: dict | None = None) -> None:
     patch = data.get("config")
     state_svc = get_state_service()
 
-    async with state_svc.lock(room_id):
+    async with room_turn(room_id) as emits:
         room = await state_svc.get_room(room_id)
         if room is None:
-            await _reject(sid, _ROOM_NOT_FOUND)
+            emits.append(_join_error(sid, _ROOM_NOT_FOUND))
             return
 
         if not _room_service.check_host_secret(room, data):
-            await _reject(sid, _INVALID_HOST_SECRET)
+            emits.append(_join_error(sid, _INVALID_HOST_SECRET))
             return
 
         if room["state"] not in _PRE_START_STATES:
-            await _reject(sid, _CONFIG_STARTED)
+            emits.append(_join_error(sid, _CONFIG_STARTED))
             return
 
         merged = merge_config_patch(
@@ -461,17 +487,15 @@ async def config_update(sid: str, data: dict | None = None) -> None:
         try:
             config = GameConfig.from_host_input(merged, DEFAULT_LIMITS)
         except ConfigValidationError as exc:
-            await _reject(sid, f"{exc.field}: {exc}")
+            emits.append(_join_error(sid, f"{exc.field}: {exc}"))
             return
 
         room["config"] = config.to_payload()
         if room["state"] == RoomState.LOBBY.value:
             room["state"] = RoomState.CONFIGURING.value
 
-        events = config_saved_events(room, state_svc, _host_target(room, sid))
+        emits += config_saved_emits(room, state_svc, _host_target(room, sid))
         await state_svc.save_room(room["room_code"], room)
-
-    await emit_config_saved(events)
 
 
 # --- set_role_mode ------------------------------------------------------------------ #
@@ -490,32 +514,27 @@ async def set_role_mode(sid: str, data: dict | None = None) -> None:
 
     mode = data.get("mode")
     state_svc = get_state_service()
-    room_code: str
-    host_target: str
-    roles_event: dict
-    lobby_event: dict
-    config_event: dict
 
-    async with state_svc.lock(room_id):
+    async with room_turn(room_id) as emits:
         room = await state_svc.get_room(room_id)
         if room is None:
-            await _reject(sid, _ROOM_NOT_FOUND)
+            emits.append(_join_error(sid, _ROOM_NOT_FOUND))
             return
         room_code = room["room_code"]
 
         if not _room_service.check_host_secret(room, data):
-            await _reject(sid, _INVALID_HOST_SECRET)
+            emits.append(_join_error(sid, _INVALID_HOST_SECRET))
             return
 
         if room["state"] not in _PRE_START_STATES:
-            await _reject(sid, _ROLE_ACTION_STARTED)
+            emits.append(_join_error(sid, _ROLE_ACTION_STARTED))
             return
 
         merged = merge_config_patch(room["config"], {"role_assignment_mode": mode})
         try:
             config = GameConfig.from_host_input(merged, DEFAULT_LIMITS)
         except ConfigValidationError as exc:
-            await _reject(sid, f"{exc.field}: {exc}")
+            emits.append(_join_error(sid, f"{exc.field}: {exc}"))
             return
 
         room["config"] = config.to_payload()
@@ -525,19 +544,17 @@ async def set_role_mode(sid: str, data: dict | None = None) -> None:
         for participant in room["participants"].values():
             participant["role"] = None
 
-        host_target = _host_target(room, sid)
-        roles_event = {
-            "seq": state_svc.next_seq(room),
-            "role_to_alias": dict(room["role_to_alias"]),
-        }
-        lobby_event = _room_service.lobby_payload(room, state_svc.next_seq(room))
-        config_event = {"seq": state_svc.next_seq(room), "config": room["config"]}
+        emits.append(_roles_assigned(room, state_svc))
+        emits.append(_lobby_update(room, state_svc))
+        emits.append(
+            Emit(
+                _host_target(room, sid),
+                "config_updated",
+                {"seq": state_svc.next_seq(room), "config": room["config"]},
+            )
+        )
 
         await state_svc.save_room(room_code, room)
-
-    await socket_manager.emit_to_room(room_code, "roles_assigned", roles_event)
-    await socket_manager.emit_to_room(room_code, "lobby_update", lobby_event)
-    await socket_manager.emit_to_sid(host_target, "config_updated", config_event)
 
 
 # --- assign_role -------------------------------------------------------------------- #
@@ -558,32 +575,29 @@ async def assign_role(sid: str, data: dict | None = None) -> None:
     role_raw: Any = data.get("role")
 
     state_svc = get_state_service()
-    room_code: str
-    roles_event: dict
-    lobby_event: dict
 
-    async with state_svc.lock(room_id):
+    async with room_turn(room_id) as emits:
         room = await state_svc.get_room(room_id)
         if room is None:
-            await _reject(sid, _ROOM_NOT_FOUND)
+            emits.append(_join_error(sid, _ROOM_NOT_FOUND))
             return
         room_code = room["room_code"]
 
         if not _room_service.check_host_secret(room, data):
-            await _reject(sid, _INVALID_HOST_SECRET)
+            emits.append(_join_error(sid, _INVALID_HOST_SECRET))
             return
 
         if room["state"] not in _PRE_START_STATES:
-            await _reject(sid, _ROLE_ACTION_STARTED)
+            emits.append(_join_error(sid, _ROLE_ACTION_STARTED))
             return
 
         config = state_svc.load_config(room)
         if config.role_assignment_mode is RoleAssignmentMode.RANDOM:
-            await _reject(sid, _RANDOM_ROLES_DEALT)
+            emits.append(_join_error(sid, _RANDOM_ROLES_DEALT))
             return
 
         if not isinstance(alias, str) or alias not in room["participants"]:
-            await _reject(sid, _UNKNOWN_PARTICIPANT)
+            emits.append(_join_error(sid, _UNKNOWN_PARTICIPANT))
             return
 
         if role_raw is None:
@@ -592,7 +606,7 @@ async def assign_role(sid: str, data: dict | None = None) -> None:
             try:
                 new_role = Role(role_raw)
             except ValueError:
-                await _reject(sid, _UNKNOWN_ROLE)
+                emits.append(_join_error(sid, _UNKNOWN_ROLE))
                 return
 
         # A role someone else holds is refused, not moved. Moving it would
@@ -602,7 +616,7 @@ async def assign_role(sid: str, data: dict | None = None) -> None:
         if new_role is not None:
             holder = room["role_to_alias"].get(new_role.value)
             if holder is not None and holder != alias:
-                await _reject(sid, _ROLE_HELD)
+                emits.append(_join_error(sid, _ROLE_HELD))
                 return
 
         current_role = room["participants"][alias].get("role")
@@ -619,16 +633,10 @@ async def assign_role(sid: str, data: dict | None = None) -> None:
             new_role.value if new_role is not None else None
         )
 
-        roles_event = {
-            "seq": state_svc.next_seq(room),
-            "role_to_alias": dict(room["role_to_alias"]),
-        }
-        lobby_event = _room_service.lobby_payload(room, state_svc.next_seq(room))
+        emits.append(_roles_assigned(room, state_svc))
+        emits.append(_lobby_update(room, state_svc))
 
         await state_svc.save_room(room_code, room)
-
-    await socket_manager.emit_to_room(room_code, "roles_assigned", roles_event)
-    await socket_manager.emit_to_room(room_code, "lobby_update", lobby_event)
 
 
 # --- claim_role --------------------------------------------------------------------- #
@@ -648,44 +656,41 @@ async def claim_role(sid: str, data: dict | None = None) -> None:
     role_raw: Any = data.get("role")
 
     state_svc = get_state_service()
-    room_code: str
-    roles_event: dict
-    lobby_event: dict
 
-    async with state_svc.lock(room_id):
+    async with room_turn(room_id) as emits:
         room = await state_svc.get_room(room_id)
         if room is None:
-            await _reject(sid, _ROOM_NOT_FOUND)
+            emits.append(_join_error(sid, _ROOM_NOT_FOUND))
             return
         room_code = room["room_code"]
 
         if room["state"] not in _PRE_START_STATES:
-            await _reject(sid, _ROLE_ACTION_STARTED)
+            emits.append(_join_error(sid, _ROLE_ACTION_STARTED))
             return
 
         config = state_svc.load_config(room)
         mode = config.role_assignment_mode
         if mode is RoleAssignmentMode.HOST_ASSIGNS:
-            await _reject(sid, _HOST_ASSIGNING)
+            emits.append(_join_error(sid, _HOST_ASSIGNING))
             return
         if mode is RoleAssignmentMode.RANDOM:
-            await _reject(sid, _RANDOM_ROLES_DEALT)
+            emits.append(_join_error(sid, _RANDOM_ROLES_DEALT))
             return
 
         alias = room["sid_to_alias"].get(sid)
         if alias is None or alias not in room["participants"]:
-            await _reject(sid, _UNKNOWN_PARTICIPANT)
+            emits.append(_join_error(sid, _UNKNOWN_PARTICIPANT))
             return
 
         try:
             role = Role(role_raw)
         except ValueError:
-            await _reject(sid, _UNKNOWN_ROLE)
+            emits.append(_join_error(sid, _UNKNOWN_ROLE))
             return
 
         holder = room["role_to_alias"].get(role.value)
         if holder is not None and holder != alias:
-            await _reject(sid, _ROLE_TAKEN)
+            emits.append(_join_error(sid, _ROLE_TAKEN))
             return
 
         current_role = room["participants"][alias].get("role")
@@ -699,16 +704,10 @@ async def claim_role(sid: str, data: dict | None = None) -> None:
         room["role_to_alias"][role.value] = alias
         room["participants"][alias]["role"] = role.value
 
-        roles_event = {
-            "seq": state_svc.next_seq(room),
-            "role_to_alias": dict(room["role_to_alias"]),
-        }
-        lobby_event = _room_service.lobby_payload(room, state_svc.next_seq(room))
+        emits.append(_roles_assigned(room, state_svc))
+        emits.append(_lobby_update(room, state_svc))
 
         await state_svc.save_room(room_code, room)
-
-    await socket_manager.emit_to_room(room_code, "roles_assigned", roles_event)
-    await socket_manager.emit_to_room(room_code, "lobby_update", lobby_event)
 
 
 # --- release_role ------------------------------------------------------------------- #
@@ -725,19 +724,16 @@ async def release_role(sid: str, data: dict | None = None) -> None:
         return
 
     state_svc = get_state_service()
-    room_code: str
-    roles_event: dict | None = None
-    lobby_event: dict | None = None
 
-    async with state_svc.lock(room_id):
+    async with room_turn(room_id) as emits:
         room = await state_svc.get_room(room_id)
         if room is None:
-            await _reject(sid, _ROOM_NOT_FOUND)
+            emits.append(_join_error(sid, _ROOM_NOT_FOUND))
             return
         room_code = room["room_code"]
 
         if room["state"] not in _PRE_START_STATES:
-            await _reject(sid, _ROLE_ACTION_STARTED)
+            emits.append(_join_error(sid, _ROLE_ACTION_STARTED))
             return
 
         alias = room["sid_to_alias"].get(sid)
@@ -752,23 +748,16 @@ async def release_role(sid: str, data: dict | None = None) -> None:
             room["role_to_alias"][current_role] = None
         room["participants"][alias]["role"] = None
 
-        roles_event = {
-            "seq": state_svc.next_seq(room),
-            "role_to_alias": dict(room["role_to_alias"]),
-        }
-        lobby_event = _room_service.lobby_payload(room, state_svc.next_seq(room))
+        emits.append(_roles_assigned(room, state_svc))
+        emits.append(_lobby_update(room, state_svc))
 
         await state_svc.save_room(room_code, room)
-
-    if roles_event is not None and lobby_event is not None:
-        await socket_manager.emit_to_room(room_code, "roles_assigned", roles_event)
-        await socket_manager.emit_to_room(room_code, "lobby_update", lobby_event)
 
 
 # --- start_game --------------------------------------------------------------------- #
 
 
-async def _reject_start(sid: str, message: str, room_code: str | None) -> None:
+def _start_error(sid: str, message: str, room_code: str | None) -> Emit:
     """A refusal of ``start_game``: ``join_error`` ``{message, room_code}``.
 
     ``room_code`` is the room the caller asked to start, so the multi-game
@@ -779,7 +768,7 @@ async def _reject_start(sid: str, message: str, room_code: str | None) -> None:
     payload: dict[str, str] = {"message": message}
     if room_code is not None:
         payload["room_code"] = room_code
-    await socket_manager.emit_to_sid(sid, "join_error", payload)
+    return Emit(sid, "join_error", payload)
 
 
 @sio.event
@@ -793,27 +782,21 @@ async def start_game(sid: str, data: dict | None = None) -> None:
     data = _payload(data)
     room_id = _room_id_of(data)
     if room_id is None:
-        await _reject_start(sid, _ROOM_NOT_FOUND, requested_room_code(data))
+        refusal = _start_error(sid, _ROOM_NOT_FOUND, requested_room_code(data))
+        await socket_manager.emit_to_sid(sid, refusal.event, refusal.data)
         return
 
     state_svc = get_state_service()
-    room_code: str
-    host_target: str
-    game_started_event: dict
-    lobby_event: dict
-    host_state_event: dict
-    your_state_events: list[tuple[str, dict]] = []
 
-    async with state_svc.lock(room_id):
+    async with room_turn(room_id) as emits:
         room = await state_svc.get_room(room_id)
         if room is None:
-            await _reject_start(sid, _ROOM_NOT_FOUND, requested_room_code(data))
+            emits.append(_start_error(sid, _ROOM_NOT_FOUND, requested_room_code(data)))
             return
         room_code = room["room_code"]
-        host_target = _host_target(room, sid)
 
         if not _room_service.check_host_secret(room, data):
-            await _reject_start(sid, _INVALID_HOST_SECRET, room_code)
+            emits.append(_start_error(sid, _INVALID_HOST_SECRET, room_code))
             return
 
         try:
@@ -847,7 +830,7 @@ async def start_game(sid: str, data: dict | None = None) -> None:
                 # `can_start` remains the only rule, and nothing is mutated or
                 # saved either way.
                 return
-            await _reject_start(sid, reason or _INVALID_HOST_SECRET, room_code)
+            emits.append(_start_error(sid, reason or _INVALID_HOST_SECRET, room_code))
             return
 
         assert config is not None  # can_start already parsed it successfully
@@ -885,15 +868,20 @@ async def start_game(sid: str, data: dict | None = None) -> None:
         state_svc.store_engine(room, engine)
         state_svc.store_bots(room, bots)
 
-        game_started_event = _game_started_payload(
-            room, engine, state_svc.next_seq(room)
+        emits.append(
+            Emit(
+                room_code,
+                "game_started",
+                _game_started_payload(room, engine, state_svc.next_seq(room)),
+                to_room=True,
+            )
         )
         # The participant list as it now stands, bots included. The bot seats
         # filled just above exist nowhere else on the wire: `game_started`
         # carries `role_to_alias` but no names, so without this every client
         # held a participant list with no entry for a bot -- and the live
         # results built those seats' cost cards with no name and no Bot tag.
-        lobby_event = _room_service.lobby_payload(room, state_svc.next_seq(room))
+        emits.append(_lobby_update(room, state_svc))
 
         for role in ROLE_ORDER:
             alias = room["role_to_alias"].get(role.value)
@@ -902,9 +890,10 @@ async def start_game(sid: str, data: dict | None = None) -> None:
                 continue
             for player_sid, mapped_alias in room["sid_to_alias"].items():
                 if mapped_alias == alias:
-                    your_state_events.append(
-                        (
+                    emits.append(
+                        Emit(
                             player_sid,
+                            "your_state",
                             {
                                 "seq": state_svc.next_seq(room),
                                 **engine.player_view(role),
@@ -912,15 +901,15 @@ async def start_game(sid: str, data: dict | None = None) -> None:
                         )
                     )
 
-        host_state_event = {"seq": state_svc.next_seq(room), **engine.host_view()}
+        emits.append(
+            Emit(
+                _host_target(room, sid),
+                "host_state",
+                {"seq": state_svc.next_seq(room), **engine.host_view()},
+            )
+        )
 
         await state_svc.save_room(room_code, room)
-
-    await socket_manager.emit_to_room(room_code, "game_started", game_started_event)
-    await socket_manager.emit_to_room(room_code, "lobby_update", lobby_event)
-    for target_sid, payload in your_state_events:
-        await socket_manager.emit_to_sid(target_sid, "your_state", payload)
-    await socket_manager.emit_to_sid(host_target, "host_state", host_state_event)
 
     # The play loop: play every bot role immediately,
     # so a bot-filled room does not sit idle in week 1. This runs after the

@@ -161,6 +161,12 @@ including the one that completes the week, so the console's "decided" marks tick
 arrive and the final week's console shows all four decided; the close then sends the new
 week's `host_state`.
 
+Every event of a room leaves in `seq` order (`app/services/room_turn.py`): a handler takes the
+room's turn, its events are queued while the room's lock is still held and sent once it is
+released, by whoever is already sending that room or by the handler itself. Nothing is sent
+under the lock, and a turn never waits for another's sends: Socket.IO runs `disconnect` inside
+a send to a connection it finds dead, and that send would wait for itself.
+
 Every event name and payload here is a contract with `Beery_Frontend/src/api/socketHandlers.ts`.
 A change to either must ship with the other, backend first, unless the backend stops sending a
 field the live frontend reads: then the frontend ships first (see `DEPLOY.md`).
@@ -268,7 +274,8 @@ process can detect from the inside:
 1. **This must be the only instance serving the app.** Two instances means two players in one
    room land on different processes and never see each other — no error, no log, just a lobby
    that will not fill. If you scale past one instance, or add `--workers`, you must turn Redis
-   on in the same change.
+   on in the same change. Redis does not cover the event order, which `room_turn` keeps in
+   process memory: it would have to move there too.
 2. **Restarting the process ends every game in progress.** A game reaches PostgreSQL only when it
    finishes, so a deploy or a crash mid-session loses the rooms. Redis survives an app restart;
    it does not survive its own restart or eviction, so this is a narrowing of the window rather
@@ -386,6 +393,7 @@ app/
 ├── services/                   the stateful layer over the state store and PostgreSQL
 │   ├── state_backend.py        the REDIS_ENABLED switch and the in-memory backend
 │   ├── state_service.py        room documents, the lock, TTL
+│   ├── room_turn.py            a room's lock and its events, sent in `seq` order
 │   ├── room_service.py         lobby and seating rules
 │   ├── game_service.py         driving the engine through a week
 │   ├── db_service.py           the end-of-game write; the only money-rounding point
