@@ -989,6 +989,7 @@ class GameService:
             else:
                 current["persisted"] = persisted
                 if persisted:
+                    current["public_id"] = public_id
                     persisted_payload = {
                         "seq": state_svc.next_seq(current),
                         "game_id": public_id,

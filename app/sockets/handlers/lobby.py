@@ -159,11 +159,12 @@ async def join_waiting(sid: str, data: dict | None = None) -> None:
 
         # A refreshed host console has an empty store and renders nothing until
         # a `host_state` arrives; without this one it waits for the next week
-        # close, and forever once the game is over. Allocated last so its seq is
-        # the highest of this claim and the client applies it. `game_started` is
+        # close, and forever once the game is over. Allocated after the others so
+        # its seq is higher and the client applies it. `game_started` is
         # deliberately not replayed: it would force the client back to RUNNING
         # over a PAUSED or FINISHED `lobby_update`.
         host_state_event: dict | None = None
+        persisted_event: dict | None = None
         unsaved = _finished_unsaved(room)
         if (
             room["state"] in _RUNNING_STATES
@@ -175,6 +176,14 @@ async def join_waiting(sid: str, data: dict | None = None) -> None:
                     "seq": state_svc.next_seq(room),
                     **engine.host_view(),
                 }
+        # `game_persisted` was broadcast once; a page loaded since has no results
+        # link and would say "Saving the results…" for good. Only a stored game
+        # has the id.
+        if room.get("public_id"):
+            persisted_event = {
+                "seq": state_svc.next_seq(room),
+                "game_id": room["public_id"],
+            }
 
         await state_svc.save_room(room_code, room)
 
@@ -190,6 +199,8 @@ async def join_waiting(sid: str, data: dict | None = None) -> None:
         )
     if host_state_event is not None:
         await socket_manager.emit_to_sid(sid, "host_state", host_state_event)
+    if persisted_event is not None:
+        await socket_manager.emit_to_sid(sid, "game_persisted", persisted_event)
     if unsaved:
         await get_game_service().persist_if_unsaved(room_code)
 
@@ -295,6 +306,17 @@ async def join(sid: str, data: dict | None = None) -> None:
                             {
                                 "seq": state_svc.next_seq(room),
                                 **engine.player_view(role),
+                            },
+                        )
+                    )
+                # Broadcast once when the game was stored, as for the host.
+                if room.get("public_id"):
+                    resync_events.append(
+                        (
+                            "game_persisted",
+                            {
+                                "seq": state_svc.next_seq(room),
+                                "game_id": room["public_id"],
                             },
                         )
                     )
