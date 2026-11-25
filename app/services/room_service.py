@@ -2,7 +2,7 @@
 
 This module holds no I/O of its own:
 no Redis, no Socket.IO, no clock beyond what a caller hands it. Handlers in
-``app/sockets/handlers/lobby.py`` call it inside ``state_svc.lock(room_code)``
+``app/sockets/handlers/lobby.py`` call it inside ``room_turn(room_code)``
 and persist the result themselves.
 
 ``RoomService`` is the one place the room document's membership and

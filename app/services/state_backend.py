@@ -79,8 +79,7 @@ class _MemoryLock:
     hatch for a lock whose owner died mid-operation; within one event loop
     an owner cannot die mid-operation without unwinding through this
     `finally`, so there is nothing for it to rescue. Accepting and ignoring
-    it keeps the 25 `async with state_svc.lock(...)` call sites identical
-    across both backends.
+    it keeps `state_svc.lock(...)` identical across both backends.
     """
 
     def __init__(self, lock: asyncio.Lock, timeout: int) -> None:

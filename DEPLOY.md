@@ -122,7 +122,8 @@ in-memory one.
 
 The abuse limits (`README.md`, "Abuse limits") are counted in the same
 process memory, so they share constraint 1: at N instances each becomes N
-times looser. They key on `CF-Connecting-IP`, else the **rightmost**
+times looser. The order of a room's events is kept there too
+(`app/services/room_turn.py`). The limits key on `CF-Connecting-IP`, else the **rightmost**
 `X-Forwarded-For` entry, which assumes Render's edge sets the first or is the
 last hop appending the second. If the service is ever reachable without that
 edge, `CF-Connecting-IP` becomes client-chosen; if a second proxy is put in

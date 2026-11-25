@@ -212,30 +212,42 @@ The handoff-hardening release deploys **backend first**, then the frontend in th
   backends are **deliberately semantically identical** — both store JSON strings, both
   require an explicit `save_room`. With Redis off, the app must run as exactly one
   instance and no `--workers`.
-- **Locking.** Every read-modify-write of room state is inside
-  `async with state_svc.lock(room_code):`. No exceptions. Never hold the lock across a
+- **Locking and emitting: the room's turn.** Every read-modify-write of room state is inside
+  `async with room_turn(room_code) as emits:` (`services/room_turn.py`), which holds
+  `state_svc.lock`. No exceptions. Read, mutate and save inside it, mint `seq` inside it, and
+  put each event in `emits` (`Emit(sid, …)`, or `Emit(room_code, …, to_room=True)`) **in `seq`
+  order**, refusals included: the events are queued in the room's FIFO before the lock is
+  released and sent after it. A block that raises sends nothing; an early `return` sends what
+  it collected. A client drops any event whose `seq` is not above the last it applied, so an
+  event overtaken by a later one is lost for good: never call `socket_manager.emit_to_*` for a
+  game event, and never send anything under the lock. `flush` never waits for another sender:
+  whoever is sending the room takes the new events too, because Socket.IO runs `disconnect`
+  inside a send to a connection it finds dead, and waiting there (or a send under the lock)
+  would deadlock the room. A page enters its Socket.IO room inside its turn, so nothing
+  between the turn and the entry is missed. The queue is in process memory: one instance only.
+  The only direct emits left are refusals with no room to take a turn on and `@guarded`'s.
+  Never hold the lock across a
   database write — `db_service.build_snapshot` works on a room document already read under
   the lock and runs after it is released; everything below it is lock-free. The lock is
-  **not reentrant**: re-acquiring it deadlocks the room for
-  `LOCK_TIMEOUT_SECONDS` (10). Read, mutate and save inside it; build payloads and mint
-  `seq` inside it; emit and call any other `GameService` method only after it is released.
+  **not reentrant**: a turn inside a turn deadlocks the room for
+  `LOCK_TIMEOUT_SECONDS` (10), so call any other `GameService` method only after the block.
   `submit`, `run_bot_decisions`, `close_week_if_ready` and `broadcast_state` each take their
-  own lock. `finish_game` takes two short ones around a lock-free persistence call: one to
+  own turn. `finish_game` takes two short ones around a lock-free persistence call: one to
   re-read, mint `game_finished`'s `seq` and save, one to re-read, set `persisted` and
   `public_id`, mint `game_persisted`'s `seq` and save — never saving the caller's copy, so a mutation made
   while the database write runs survives. A failed write is retried in the background
   (`PERSIST_RETRY_DELAYS_SECONDS` = 2, 10, 30 s; no lock held while writing or sleeping),
   and a `join_waiting`, `join` or `request_state` in a FINISHED room still `persisted:
   false` with no write in flight (`_persisting`: from before the first attempt until the
-  last one ends, left BEFORE `game_persisted` or the give-up log, so a rejoin during either
-  can start anew) starts it again
+  last one ends, left inside the turn that queues `game_persisted` and BEFORE the give-up log,
+  so a rejoin during either can start anew) starts it again
   (`GameService.persist_if_unsaved`); a stored room's `join_waiting` and `join` re-send
   `game_persisted` from `room["public_id"]`; the write is idempotent on (`room_code`,
   `started_at`). Its callers (`_drive`, `close_week_if_ready`,
-  `end_game_early`) call it only after their own lock block. The all-bot cascade is a loop of short acquisitions
+  `end_game_early`) call it only after their own turn. The all-bot cascade is a loop of short turns
   (`GameService._drive`), not recursion, and a double close is prevented by re-reading the
-  room inside `close_week_if_ready`'s own lock. `start_game`'s `run_bot_decisions` call sits
-  after its lock block.
+  room inside `close_week_if_ready`'s own turn. `start_game`'s `run_bot_decisions` call sits
+  after its turn.
 - **Model / schema separation.** `app/models/` is SQLAlchemy only; `app/schemas/` is
   Pydantic only. The response shapes in `app/schemas/results.py` are **frozen** — the
   shipped frontend expects those exact names. Money fields there are declared `float`, never
@@ -338,13 +350,14 @@ The handoff-hardening release deploys **backend first**, then the frontend in th
   either alias map (`join_waiting` uses `sio.enter_room`, not `socket_manager.join_room`, and
   drops any alias the sid held elsewhere); it does set `socket_manager.sid_to_room`, so its
   disconnect is charged to that room.
-  A socket is in one game room at a time: `join_waiting` and `join` end with
-  `play.leave_other_rooms`, which leaves every other room the sid is in as a disconnect from
-  it would (seat marked disconnected, a running game paused per D7, or `host_sid` cleared and
-  `host_disconnected` sent). It takes the sid out of the Socket.IO room **first** and drops
-  `sid_to_room`/`sid_to_alias` entries naming that room, then tells the old room: the tab has
-  already started its store over for the new room, and one old-room event with that room's
-  higher `seq` would make it drop every event of the new one. Without it a tab that moved to
+  A socket is in one game room at a time: `join_waiting` and `join` leave every other room the
+  sid is in as a disconnect from it would (seat marked disconnected, a running game paused per
+  D7, or `host_sid` cleared and `host_disconnected` sent). `play.exit_other_rooms` takes the sid
+  out of the old Socket.IO rooms **inside** the new room's turn and drops
+  `sid_to_room`/`sid_to_alias` entries naming them; `play.leave_rooms` tells each old room in
+  its own turn, after (two rooms' locks are never held together): the tab has already started
+  its store over for the new room, and one old-room event with that room's higher `seq` would
+  make it drop every event of the new one. Without it a tab that moved to
   a new game kept hearing the old one, and its eventual disconnect could be charged to the
   old room. The frontend also reconnects its socket when its room changes.
 - **`connection.py`'s `disconnect` calls `play.on_participant_disconnected(sid)` before

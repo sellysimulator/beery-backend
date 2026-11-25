@@ -5,14 +5,10 @@ module is discovered by ``app/sockets/handlers/__init__.py`` and needs no
 edit anywhere upstream.
 
 Every read-modify-write of room state is wrapped in
-``async with state_svc.lock(room_code)``, and, following the shape
-``lobby.py`` already ships and the play loop's own locking contract: payloads
-are built from values captured while the lock is held, the block exits, and
-only then are they emitted -- and only then does control pass into another
-``GameService`` method. The one exception, matching ``lobby.py``'s own style,
-is a same-call rejection (``error``/``join_error``): those are cheap, terminal
-and emitted immediately, under the lock, exactly as ``lobby.py``'s ``_reject``
-does.
+``async with room_turn(room_code)``, as in ``lobby.py``: the events are built
+while the lock is held and put in the turn's list, refusals included, the
+block exits, and only then are they sent -- and only then does control pass
+into another ``GameService`` method.
 
 Game rules live in ``app.core``; this module and ``app.services.game_service``
 only orchestrate sockets around them.
@@ -29,6 +25,7 @@ from ...core.enums import Role, RoomState
 from ...core.game_engine import EngineStateError, GameEngine, GamePhase
 from ...services.game_service import get_game_service
 from ...services.room_service import RoomService
+from ...services.room_turn import Emit, room_turn
 from ...services.state_service import StateService, get_state_service
 from ..errors import guarded
 from ..manager import sio, socket_manager
@@ -45,7 +42,7 @@ _UNKNOWN_ROLE = "Unknown role."
 _ROLE_UNFILLED = "That role is unfilled."
 _GAME_NOT_STARTED = "The game has not started."
 
-__all__ = ["leave_other_rooms", "on_participant_disconnected"]
+__all__ = ["exit_other_rooms", "leave_rooms", "on_participant_disconnected"]
 
 
 def _payload(data: Any) -> dict:
@@ -57,7 +54,12 @@ def _room_id_of(data: dict) -> str | None:
     return room_id if isinstance(room_id, str) and room_id else None
 
 
-async def _emit_error(sid: str, message: str, code: str) -> None:
+def _error(sid: str, message: str, code: str) -> Emit:
+    return Emit(sid, "error", {"message": message, "code": code})
+
+
+async def _reject(sid: str, message: str, code: str) -> None:
+    """A refusal with no room to take a turn on."""
     await socket_manager.emit_to_sid(sid, "error", {"message": message, "code": code})
 
 
@@ -72,7 +74,7 @@ async def submit_order(sid: str, data: dict | None = None) -> None:
     data = _payload(data)
     room_id = _room_id_of(data)
     if room_id is None:
-        await _emit_error(sid, _ROOM_NOT_FOUND, "NOT_IN_ROOM")
+        await _reject(sid, _ROOM_NOT_FOUND, "NOT_IN_ROOM")
         return
     await get_game_service().submit(room_id, sid, data.get("week"), data.get("order"))
 
@@ -90,31 +92,30 @@ async def pause_game(sid: str, data: dict | None = None) -> None:
         return
 
     state_svc = get_state_service()
-    room_code = room_id
-    paused_payload: dict | None = None
 
-    async with state_svc.lock(room_id):
+    async with room_turn(room_id) as emits:
         room = await state_svc.get_room(room_id)
         if room is None:
             return
         room_code = room["room_code"]
 
         if not _room_service.check_host_secret(room, data):
-            await _emit_error(sid, _INVALID_HOST_SECRET, "INVALID_HOST_SECRET")
+            emits.append(_error(sid, _INVALID_HOST_SECRET, "INVALID_HOST_SECRET"))
             return
         if room["state"] != RoomState.RUNNING.value:
             return
 
         room["state"] = RoomState.PAUSED.value
         room["paused_reason"] = "The host paused the game."
-        paused_payload = {
-            "seq": state_svc.next_seq(room),
-            "reason": room["paused_reason"],
-        }
+        emits.append(
+            Emit(
+                room_code,
+                "game_paused",
+                {"seq": state_svc.next_seq(room), "reason": room["paused_reason"]},
+                to_room=True,
+            )
+        )
         await state_svc.save_room(room_code, room)
-
-    if paused_payload is not None:
-        await socket_manager.emit_to_room(room_code, "game_paused", paused_payload)
 
 
 @sio.event
@@ -129,33 +130,33 @@ async def resume_game(sid: str, data: dict | None = None) -> None:
         return
 
     state_svc = get_state_service()
-    room_code = room_id
-    resumed_payload: dict | None = None
-    room_snapshot: dict | None = None
 
-    async with state_svc.lock(room_id):
+    async with room_turn(room_id) as emits:
         room = await state_svc.get_room(room_id)
         if room is None:
             return
         room_code = room["room_code"]
 
         if not _room_service.check_host_secret(room, data):
-            await _emit_error(sid, _INVALID_HOST_SECRET, "INVALID_HOST_SECRET")
+            emits.append(_error(sid, _INVALID_HOST_SECRET, "INVALID_HOST_SECRET"))
             return
         if room["state"] != RoomState.PAUSED.value:
             return
 
         room["state"] = RoomState.RUNNING.value
         room["paused_reason"] = None
-        resumed_payload = {"seq": state_svc.next_seq(room)}
+        emits.append(
+            Emit(
+                room_code,
+                "game_resumed",
+                {"seq": state_svc.next_seq(room)},
+                to_room=True,
+            )
+        )
         await state_svc.save_room(room_code, room)
-        room_snapshot = room
 
-    if resumed_payload is not None:
-        await socket_manager.emit_to_room(room_code, "game_resumed", resumed_payload)
-    if room_snapshot is not None:
-        await get_game_service().broadcast_state(room_code)
-        await get_game_service().resume_play(room_code)
+    await get_game_service().broadcast_state(room_code)
+    await get_game_service().resume_play(room_code)
 
 
 # --- force_close_week --------------------------------------------------------- #
@@ -172,28 +173,24 @@ async def force_close_week(sid: str, data: dict | None = None) -> None:
         return
 
     state_svc = get_state_service()
-    room_code = room_id
-    authorised = False
 
-    async with state_svc.lock(room_id):
+    async with room_turn(room_id) as emits:
         room = await state_svc.get_room(room_id)
         if room is None:
             return
         room_code = room["room_code"]
 
         if not _room_service.check_host_secret(room, data):
-            await _emit_error(sid, _INVALID_HOST_SECRET, "INVALID_HOST_SECRET")
+            emits.append(_error(sid, _INVALID_HOST_SECRET, "INVALID_HOST_SECRET"))
             return
         if room["state"] == RoomState.PAUSED.value:
-            await _emit_error(sid, _GAME_PAUSED_MSG, "GAME_PAUSED")
+            emits.append(_error(sid, _GAME_PAUSED_MSG, "GAME_PAUSED"))
             return
         if room["state"] != RoomState.RUNNING.value:
-            await _emit_error(sid, _GAME_NOT_RUNNING_MSG, "GAME_NOT_RUNNING")
+            emits.append(_error(sid, _GAME_NOT_RUNNING_MSG, "GAME_NOT_RUNNING"))
             return
-        authorised = True
 
-    if authorised:
-        await get_game_service().close_week_if_ready(room_code, force=True)
+    await get_game_service().close_week_if_ready(room_code, force=True)
 
 
 # --- substitute_bot ------------------------------------------------------------ #
@@ -221,38 +218,34 @@ async def substitute_bot(sid: str, data: dict | None = None) -> None:
     role_raw: Any = data.get("role")
 
     state_svc = get_state_service()
-    room_code = room_id
-    bot_substituted_payload: dict | None = None
-    host_refresh: tuple[str, dict] | None = None
-    needs_bot_pass = False
 
-    async with state_svc.lock(room_id):
+    async with room_turn(room_id) as emits:
         room = await state_svc.get_room(room_id)
         if room is None:
             return
         room_code = room["room_code"]
 
         if not _room_service.check_host_secret(room, data):
-            await _emit_error(sid, _INVALID_HOST_SECRET, "INVALID_HOST_SECRET")
+            emits.append(_error(sid, _INVALID_HOST_SECRET, "INVALID_HOST_SECRET"))
             return
 
         try:
             role = Role(role_raw)
         except ValueError:
-            await _emit_error(sid, _UNKNOWN_ROLE, "UNKNOWN_ROLE")
+            emits.append(_error(sid, _UNKNOWN_ROLE, "UNKNOWN_ROLE"))
             return
 
         alias = room["role_to_alias"].get(role.value)
         participant = room["participants"].get(alias) if alias else None
         if participant is None:
-            await _emit_error(sid, _ROLE_UNFILLED, "UNKNOWN_ROLE")
+            emits.append(_error(sid, _ROLE_UNFILLED, "UNKNOWN_ROLE"))
             return
         if participant.get("is_bot"):
             return  # already a bot -- no-op
 
         engine = state_svc.load_engine(room)
         if engine is None:
-            await _emit_error(sid, _GAME_NOT_STARTED, "GAME_NOT_RUNNING")
+            emits.append(_error(sid, _GAME_NOT_STARTED, "GAME_NOT_RUNNING"))
             return
 
         config = state_svc.load_config(room)
@@ -264,36 +257,39 @@ async def substitute_bot(sid: str, data: dict | None = None) -> None:
         engine.set_bot(role)
         state_svc.store_engine(room, engine)
 
-        if engine.phase is GamePhase.DECISION and role not in engine.pending_orders:
-            needs_bot_pass = True
+        needs_bot_pass = (
+            engine.phase is GamePhase.DECISION and role not in engine.pending_orders
+        )
 
-        bot_substituted_payload = {
-            "seq": state_svc.next_seq(room),
-            "role": role.value,
-            "display_name": participant.get("display_name"),
-        }
-        host_refresh = _host_state_for(room, engine, state_svc)
+        emits.append(
+            Emit(
+                room_code,
+                "bot_substituted",
+                {
+                    "seq": state_svc.next_seq(room),
+                    "role": role.value,
+                    "display_name": participant.get("display_name"),
+                },
+                to_room=True,
+            )
+        )
+        emits += _host_state_for(room, engine, state_svc)
         await state_svc.save_room(room_code, room)
 
-    if bot_substituted_payload is not None:
-        await socket_manager.emit_to_room(
-            room_code, "bot_substituted", bot_substituted_payload
-        )
-    if host_refresh is not None:
-        await socket_manager.emit_to_sid(host_refresh[0], "host_state", host_refresh[1])
     if needs_bot_pass:
         await get_game_service().run_bot_decisions(room_code)
 
 
 def _host_state_for(
     room: dict, engine: GameEngine, state_svc: StateService
-) -> tuple[str, dict] | None:
-    """The host's sid and a fresh ``host_state``, or None with no host
-    connected. Called inside the lock: it allocates a ``seq``."""
+) -> list[Emit]:
+    """A fresh ``host_state``, or nothing with no host connected. Called inside
+    the room's turn: it allocates a ``seq``."""
     host_sid = room.get("host_sid")
     if not isinstance(host_sid, str) or not host_sid:
-        return None
-    return host_sid, {"seq": state_svc.next_seq(room), **engine.host_view()}
+        return []
+    payload = {"seq": state_svc.next_seq(room), **engine.host_view()}
+    return [Emit(host_sid, "host_state", payload)]
 
 
 # --- reclaim_seat ---------------------------------------------------------------- #
@@ -323,44 +319,40 @@ async def reclaim_seat(sid: str, data: dict | None = None) -> None:
     data = _payload(data)
     room_id = _room_id_of(data)
     if room_id is None:
-        await _emit_error(sid, _ROOM_NOT_FOUND, "NOT_IN_ROOM")
+        await _reject(sid, _ROOM_NOT_FOUND, "NOT_IN_ROOM")
         return
 
     state_svc = get_state_service()
-    room_code = room_id
-    reclaimed_payload: dict | None = None
-    your_state: dict | None = None
-    host_refresh: tuple[str, dict] | None = None
 
-    async with state_svc.lock(room_id):
+    async with room_turn(room_id) as emits:
         room = await state_svc.get_room(room_id)
         if room is None:
-            await _emit_error(sid, _ROOM_NOT_FOUND, "NOT_IN_ROOM")
+            emits.append(_error(sid, _ROOM_NOT_FOUND, "NOT_IN_ROOM"))
             return
         room_code = room["room_code"]
 
         alias = room["sid_to_alias"].get(sid)
         participant = room["participants"].get(alias) if alias else None
         if participant is None:
-            await _emit_error(sid, _NOT_SEATED, "NOT_IN_ROOM")
+            emits.append(_error(sid, _NOT_SEATED, "NOT_IN_ROOM"))
             return
         role_raw = participant.get("role")
         if role_raw is None:
-            await _emit_error(sid, _NO_ROLE, "NO_ROLE")
+            emits.append(_error(sid, _NO_ROLE, "NO_ROLE"))
             return
         if not participant.get("is_bot"):
             return  # already the player's -- a double click
 
         if room["state"] == RoomState.FINISHED.value:
-            await _emit_error(sid, _GAME_FINISHED_MSG, "GAME_FINISHED")
+            emits.append(_error(sid, _GAME_FINISHED_MSG, "GAME_FINISHED"))
             return
         if room["state"] not in (RoomState.RUNNING.value, RoomState.PAUSED.value):
-            await _emit_error(sid, _GAME_NOT_RUNNING_MSG, "GAME_NOT_RUNNING")
+            emits.append(_error(sid, _GAME_NOT_RUNNING_MSG, "GAME_NOT_RUNNING"))
             return
 
         engine = state_svc.load_engine(room)
         if engine is None:
-            await _emit_error(sid, _GAME_NOT_STARTED, "GAME_NOT_RUNNING")
+            emits.append(_error(sid, _GAME_NOT_STARTED, "GAME_NOT_RUNNING"))
             return
 
         role = Role(role_raw)
@@ -373,24 +365,28 @@ async def reclaim_seat(sid: str, data: dict | None = None) -> None:
         engine.set_bot(role, False)
         state_svc.store_engine(room, engine)
 
-        reclaimed_payload = {
-            "seq": state_svc.next_seq(room),
-            "role": role.value,
-            "alias": alias,
-            "display_name": participant.get("display_name"),
-        }
-        your_state = {"seq": state_svc.next_seq(room), **engine.player_view(role)}
-        host_refresh = _host_state_for(room, engine, state_svc)
-        await state_svc.save_room(room_code, room)
-
-    if reclaimed_payload is not None:
-        await socket_manager.emit_to_room(
-            room_code, "seat_reclaimed", reclaimed_payload
+        emits.append(
+            Emit(
+                room_code,
+                "seat_reclaimed",
+                {
+                    "seq": state_svc.next_seq(room),
+                    "role": role.value,
+                    "alias": alias,
+                    "display_name": participant.get("display_name"),
+                },
+                to_room=True,
+            )
         )
-    if your_state is not None:
-        await socket_manager.emit_to_sid(sid, "your_state", your_state)
-    if host_refresh is not None:
-        await socket_manager.emit_to_sid(host_refresh[0], "host_state", host_refresh[1])
+        emits.append(
+            Emit(
+                sid,
+                "your_state",
+                {"seq": state_svc.next_seq(room), **engine.player_view(role)},
+            )
+        )
+        emits += _host_state_for(room, engine, state_svc)
+        await state_svc.save_room(room_code, room)
 
 
 # --- end_game_early ------------------------------------------------------------ #
@@ -413,26 +409,23 @@ async def end_game_early(sid: str, data: dict | None = None) -> None:
         return
 
     state_svc = get_state_service()
-    room_code = room_id
-    room_snapshot: dict | None = None
-    refresh_events: list[tuple[str, str, dict]] = []
 
-    async with state_svc.lock(room_id):
+    async with room_turn(room_id) as emits:
         room = await state_svc.get_room(room_id)
         if room is None:
             return
         room_code = room["room_code"]
 
         if not _room_service.check_host_secret(room, data):
-            await _emit_error(sid, _INVALID_HOST_SECRET, "INVALID_HOST_SECRET")
+            emits.append(_error(sid, _INVALID_HOST_SECRET, "INVALID_HOST_SECRET"))
             return
         if room["state"] not in (RoomState.RUNNING.value, RoomState.PAUSED.value):
-            await _emit_error(sid, _GAME_NOT_RUNNING_MSG, "GAME_NOT_RUNNING")
+            emits.append(_error(sid, _GAME_NOT_RUNNING_MSG, "GAME_NOT_RUNNING"))
             return
 
         engine = state_svc.load_engine(room)
         if engine is None:
-            await _emit_error(sid, _GAME_NOT_STARTED, "GAME_NOT_RUNNING")
+            emits.append(_error(sid, _GAME_NOT_STARTED, "GAME_NOT_RUNNING"))
             return
 
         try:
@@ -443,16 +436,10 @@ async def end_game_early(sid: str, data: dict | None = None) -> None:
         state_svc.store_engine(room, engine)
         room["state"] = RoomState.FINISHED.value
         room["finished_at"] = datetime.now(UTC).isoformat()
-        refresh_events = get_game_service().state_refresh_events(
-            room, engine, state_svc
-        )
+        emits += get_game_service().state_refresh_events(room, engine, state_svc)
         await state_svc.save_room(room_code, room)
-        room_snapshot = room
 
-    for target_sid, event, payload in refresh_events:
-        await socket_manager.emit_to_sid(target_sid, event, payload)
-    if room_snapshot is not None:
-        await get_game_service().finish_game(room_code, room_snapshot)
+    await get_game_service().finish_game(room_code, room)
 
 
 # --- request_state -------------------------------------------------------------- #
@@ -468,7 +455,7 @@ async def request_state(sid: str, data: dict | None = None) -> None:
     applied, so a reply reusing the room's current number is dropped by
     exactly the client that has seen the latest event, and the recovery path
     recovers nothing. Minting that number is a read-modify-write, so it takes
-    the lock, and the reply goes out after the lock is released.
+    the room's turn.
     """
     data = _payload(data)
     room_id = _room_id_of(data)
@@ -476,9 +463,8 @@ async def request_state(sid: str, data: dict | None = None) -> None:
         return
 
     state_svc = get_state_service()
-    reply: tuple[str, dict]
 
-    async with state_svc.lock(room_id):
+    async with room_turn(room_id) as emits:
         room = await state_svc.get_room(room_id)
         if room is None:
             return
@@ -493,7 +479,8 @@ async def request_state(sid: str, data: dict | None = None) -> None:
             return
 
         if sid == room.get("host_sid"):
-            reply = (
+            reply = Emit(
+                sid,
                 "host_state",
                 {"seq": state_svc.next_seq(room), **engine.host_view()},
             )
@@ -503,15 +490,15 @@ async def request_state(sid: str, data: dict | None = None) -> None:
             if participant is None or participant.get("role") is None:
                 return
             role = Role(participant["role"])
-            reply = (
+            reply = Emit(
+                sid,
                 "your_state",
                 {"seq": state_svc.next_seq(room), **engine.player_view(role)},
             )
 
+        emits.append(reply)
         await state_svc.save_room(room_code, room)
 
-    event, payload = reply
-    await socket_manager.emit_to_sid(sid, event, payload)
     if unsaved:
         await get_game_service().persist_if_unsaved(room_code)
 
@@ -539,34 +526,46 @@ async def on_participant_disconnected(sid: str) -> None:
         logger.exception("on_participant_disconnected failed for sid %s.", sid)
 
 
-async def leave_other_rooms(sid: str, room_code: str) -> None:
-    """``sid`` has just claimed or joined ``room_code``: leave every other
-    game room it is still in, as a disconnect from that room would.
+async def exit_other_rooms(sid: str, room_code: str) -> list[str]:
+    """``sid`` has just claimed or joined ``room_code``: take it out of every
+    other game room's Socket.IO room, and return their codes for
+    ``leave_rooms``.
 
     A tab that goes from one game to another keeps its socket. Left in the
     old room it would still hear that room's broadcasts, and the old room
     would still name it as its host or a seated player -- so when the socket
     finally drops, the disconnect below (which finds one room for a sid)
-    could mark the wrong room. Called by ``join_waiting`` and ``join`` after
-    their own lock is released; each old room takes its own lock here.
+    could mark the wrong room.
 
-    The socket leaves the Socket.IO room BEFORE the old room is told: the
-    tab has already started its store over for the new room, and the old
-    room's ``participant_disconnected`` / ``game_paused`` carry that room's
-    much higher ``seq``. Heard by this socket, it would raise the tab's
+    Called by ``join_waiting`` and ``join`` inside the new room's turn, so the
+    socket is out before any event of the new room can be sent: the tab has
+    already started its store over for that room, and the old room's
+    ``participant_disconnected`` / ``game_paused`` carry that room's much
+    higher ``seq``. Heard by this socket, it would raise the tab's
     ``lastSeq`` above every event of the new room, which would all be
     dropped. The per-process maps that still point at the old room go too,
     so the eventual disconnect is charged to the new one.
     """
-    for other in [name for name in sio.rooms(sid) if name not in (sid, room_code)]:
+    others = [name for name in sio.rooms(sid) if name not in (sid, room_code)]
+    for other in others:
         await sio.leave_room(sid, other)
         if socket_manager.sid_to_room.get(sid) == other:
             socket_manager.sid_to_room.pop(sid, None)
             socket_manager.sid_to_alias.pop(sid, None)
+    return others
+
+
+async def leave_rooms(sid: str, room_codes: list[str]) -> None:
+    """Tell each room ``sid`` was taken out of, as a disconnect from it would.
+
+    Each takes its own turn, so this runs after the new room's: two rooms'
+    locks are never held together.
+    """
+    for room_code in room_codes:
         try:
-            await _leave_room_document(sid, other)
+            await _leave_room_document(sid, room_code)
         except Exception:
-            logger.exception("Leaving room %s failed for sid %s.", other, sid)
+            logger.exception("Leaving room %s failed for sid %s.", room_code, sid)
 
 
 async def _disconnect_from_room(sid: str) -> None:
@@ -585,12 +584,8 @@ async def _leave_room_document(sid: str, room_code: str) -> None:
     """``sid`` is gone from ``room_code``: its seat is marked disconnected
     (pausing a running game, D7) or, for the host, ``host_sid`` is cleared."""
     state_svc = get_state_service()
-    room_code_out = room_code
-    disconnected_payload: dict | None = None
-    paused_payload: dict | None = None
-    host_disconnected_payload: dict | None = None
 
-    async with state_svc.lock(room_code):
+    async with room_turn(room_code) as emits:
         room = await state_svc.get_room(room_code)
         if room is None:
             return
@@ -607,12 +602,19 @@ async def _leave_room_document(sid: str, room_code: str) -> None:
             if participant is not None:
                 participant["connected"] = False
                 room["sid_to_alias"].pop(sid, None)
-                disconnected_payload = {
-                    "seq": state_svc.next_seq(room),
-                    "alias": alias,
-                    "display_name": participant.get("display_name"),
-                    "role": participant.get("role"),
-                }
+                emits.append(
+                    Emit(
+                        room_code_out,
+                        "participant_disconnected",
+                        {
+                            "seq": state_svc.next_seq(room),
+                            "alias": alias,
+                            "display_name": participant.get("display_name"),
+                            "role": participant.get("role"),
+                        },
+                        to_room=True,
+                    )
+                )
 
                 if (
                     room["state"] == RoomState.RUNNING.value
@@ -627,10 +629,14 @@ async def _leave_room_document(sid: str, room_code: str) -> None:
                         )
                         room["state"] = RoomState.PAUSED.value
                         room["paused_reason"] = reason
-                        paused_payload = {
-                            "seq": state_svc.next_seq(room),
-                            "reason": reason,
-                        }
+                        emits.append(
+                            Emit(
+                                room_code_out,
+                                "game_paused",
+                                {"seq": state_svc.next_seq(room), "reason": reason},
+                                to_room=True,
+                            )
+                        )
 
         if is_host:
             room["host_sid"] = None
@@ -638,17 +644,13 @@ async def _leave_room_document(sid: str, room_code: str) -> None:
             # told, by a transient alert. The host reclaims with
             # `join_waiting`, which announces `host_reconnected`.
             if room["state"] in (RoomState.RUNNING.value, RoomState.PAUSED.value):
-                host_disconnected_payload = {"seq": state_svc.next_seq(room)}
+                emits.append(
+                    Emit(
+                        room_code_out,
+                        "host_disconnected",
+                        {"seq": state_svc.next_seq(room)},
+                        to_room=True,
+                    )
+                )
 
         await state_svc.save_room(room_code_out, room)
-
-    if disconnected_payload is not None:
-        await socket_manager.emit_to_room(
-            room_code_out, "participant_disconnected", disconnected_payload
-        )
-    if paused_payload is not None:
-        await socket_manager.emit_to_room(room_code_out, "game_paused", paused_payload)
-    if host_disconnected_payload is not None:
-        await socket_manager.emit_to_room(
-            room_code_out, "host_disconnected", host_disconnected_payload
-        )

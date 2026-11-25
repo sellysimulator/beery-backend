@@ -212,6 +212,10 @@ def _reset_process_caches(monkeypatch):
         monkeypatch.setattr(game_service, "PERSIST_RETRY_DELAYS_SECONDS", ())
         game_service._persisting.clear()
         game_service._submission_counts.clear()
+    room_turn = sys.modules.get("app.services.room_turn")
+    if room_turn is not None:
+        room_turn._queues.clear()
+        room_turn._sending.clear()
     health = sys.modules.get("app.api.v1.health")
     if health is not None:
         health.reset_deep_health_cache()

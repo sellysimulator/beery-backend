@@ -40,9 +40,10 @@ from ...schemas.room import (
 from ...services.config_merge import merge_config_patch
 from ...services.display_name import sanitise_display_name
 from ...services.room_service import RoomService
+from ...services.room_turn import room_turn
 from ...services.state_backend import StoreFullError
 from ...services.state_service import get_state_service
-from ...sockets.config_events import config_saved_events, emit_config_saved
+from ...sockets.config_events import config_saved_emits
 
 logger = logging.getLogger(__name__)
 
@@ -371,7 +372,7 @@ async def update_config(
     """
     state_svc = get_state_service()
     try:
-        async with state_svc.lock(room_code):
+        async with room_turn(room_code) as emits:
             room = await state_svc.get_room(room_code)
             if room is None:
                 raise HTTPException(
@@ -390,7 +391,7 @@ async def update_config(
             room["config"] = config.to_payload()
             if room["state"] == RoomState.LOBBY.value:
                 room["state"] = RoomState.CONFIGURING.value
-            events = config_saved_events(room, state_svc, room.get("host_sid") or None)
+            emits += config_saved_emits(room, state_svc, room.get("host_sid") or None)
             await state_svc.save_room(room_code, room)
     except HTTPException:
         raise
@@ -401,7 +402,6 @@ async def update_config(
             detail=_INTERNAL_ERROR_DETAIL,
         ) from None
 
-    await emit_config_saved(events)
     return ConfigResponse(
         room_code=room["room_code"],
         state=RoomState(room["state"]),
